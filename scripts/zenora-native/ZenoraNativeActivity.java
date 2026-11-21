@@ -238,7 +238,7 @@ public final class ZenoraNativeActivity extends Activity {
                 JSONObject tokens = response.optJSONObject("tokens");
                 if (tokens == null) throw new ApiException(500, "پاسخ احراز هویت ناقص است.");
                 SessionStore.save(this, tokens.optString("access_token"), tokens.optString("refresh_token"));
-                runOnUiThread(() -> loadChats(false));
+                runOnUiThread(() -> { busy = false; setBusy(false); loadChats(false); });
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     setBusy(false);
@@ -585,10 +585,10 @@ public final class ZenoraNativeActivity extends Activity {
                     : first(source, "name", "room_chat_id");
             if (this.title == null || this.title.trim().isEmpty()) this.title = privateChat ? "کاربر" : "گفتگو";
             this.unread = source.optInt("unread_count", 0);
-            this.pinned = source.optInt("is_pinned", 0) == 1;
+            this.pinned = saved || source.optInt("is_pinned", 0) == 1;
             this.archived = source.optInt("is_archived", 0) == 1;
             this.markedUnread = source.optInt("is_marked_unread", 0) == 1;
-            this.pinOrder = source.optInt("pin_order", 0);
+            this.pinOrder = saved ? -1 : source.optInt("pin_order", 0);
             this.body = source.optString("last_message_body", "");
             this.mediaKind = source.optString("last_message_media_kind", "");
             this.time = parseTime(source.optString("last_message_time", ""));
@@ -678,7 +678,7 @@ public final class ZenoraNativeActivity extends Activity {
             if (access == null || access.length() != 64 || refresh == null || refresh.length() != 96) {
                 throw new IllegalArgumentException("Invalid native session tokens");
             }
-            SharedPreferences preferences = context.getSharedPreferences(PREFS, MODE_PRIVATE);
+            SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             preferences.edit()
                     .putString("access", encrypt(context, access))
                     .putString("refresh", encrypt(context, refresh))
