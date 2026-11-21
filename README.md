@@ -128,3 +128,17 @@ python3 scripts/configure-fork.py --mode release --application-id ir.zenora.zeno
 - The source is licensed under GPL-2.0-or-later. Preserve the upstream license and comply with the source and dependency licenses when distributing binaries.
 - Release signing keys must remain stable. Losing the private key prevents in-place upgrades of already installed APKs.
 - Upstream changes are proposed through a pull request after the initial import, so local Zenora changes are not silently overwritten.
+
+## ZenoraChat native account integration (Stage 1)
+
+The branch `feat/zenora-native-bearer-client-20261121` connects the native Telegram Android navigation and chat-list surface to the ZenoraChat backend.
+
+- The phone-number login path is replaced by the existing Zenora username/password account flow. No Telegram login is used.
+- The app calls `https://miladalizadw.ir/telegram/api/native/` over HTTPS.
+- Access tokens expire after 15 minutes and rotating refresh tokens after 30 days. Both are encrypted at rest with Android Keystore AES-GCM; the password is not persisted.
+- The backend hashes tokens in MySQL and maintains a separate native device session. The web application's PHP cookie/session contract remains available and unchanged for browser users.
+- The chat list uses Telegram's existing `DialogsActivity` layout and `DialogCell` rendering primitives, populated through a dedicated Zenora adapter. DM peer names and avatars are read from the web API's peer-specific fields; group, channel, Saved Messages, preview, unread, pin and mute data are mapped separately.
+- MTProto requests are disabled in Zenora mode. Zenora account credentials and API traffic are not sent to Telegram servers.
+- Opening conversations, message history, sending/receiving messages, calls and other MTProto-backed features are outside Stage 1.
+
+Deploy the companion web branch `feat/zenora-native-bearer-api-20261121` to the `/telegram` application before testing live login. Verify `GET https://miladalizadw.ir/telegram/api/native/health.php` returns `ok=true`, `service=zenora-native-api`, `database=true` and `api_version=1`. The Stage 1 release workflow uploads the APK as an Actions artifact and only publishes a GitHub pre-release after this health check passes.
