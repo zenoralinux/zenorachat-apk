@@ -138,6 +138,7 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.TopicsController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.zenora.ZenoraApiClient;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
@@ -571,7 +572,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
         LiteMode.addOnPowerSaverAppliedListener(onPowerSaverCallback = this::onPowerSaver);
         if (actionBarLayout.getFragmentStack().isEmpty() && (layersActionBarLayout == null || layersActionBarLayout.getFragmentStack().isEmpty())) {
-            if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+            if (!ZenoraApiClient.hasSession(getApplicationContext())) {
                 actionBarLayout.addFragmentToStack(getClientNotActivatedFragment());
             } else {
                 MainTabsActivity mainTabsActivity = new MainTabsActivity();
@@ -1120,10 +1121,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private BaseFragment getClientNotActivatedFragment() {
-        if (LoginActivity.loadCurrentState(false, currentAccount).getInt("currentViewNum", 0) != 0) {
-            return new LoginActivity();
-        }
-        return new IntroActivity();
+        return new ZenoraLoginActivity();
     }
 
     public FireworksOverlay getFireworksOverlay() {
