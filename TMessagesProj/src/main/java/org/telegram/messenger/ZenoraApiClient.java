@@ -26,6 +26,7 @@ public final class ZenoraApiClient {
     private static final String API_BASE = "https://miladalizadw.ir/telegram/api/";
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
+    private static final String ROOMS_CACHE_KEY = "rooms_cache";
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Object cookieLock = new Object();
@@ -76,7 +77,22 @@ public final class ZenoraApiClient {
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
                 .putLong("user_id", profile.optLong("id", 0))
-                .apply();
+                .commit();
+    }
+
+    public static JSONObject getCachedRooms() {
+        try {
+            String cached = prefs().getString(ROOMS_CACHE_KEY, null);
+            return cached == null || cached.isEmpty() ? null : new JSONObject(cached);
+        } catch (Exception e) {
+            FileLog.e(e);
+            return null;
+        }
+    }
+
+    public static void cacheRooms(JSONObject response) {
+        if (response == null) return;
+        prefs().edit().putString(ROOMS_CACHE_KEY, response.toString()).commit();
     }
 
     public static void clearSession() {
@@ -192,7 +208,7 @@ public final class ZenoraApiClient {
                 if (equals > 0) values.put(item.substring(0, equals).trim(), item.substring(equals + 1).trim());
             }
             for (Map.Entry<String, List<String>> header : connection.getHeaderFields().entrySet()) {
-                if (header.getKey() == null || !"Set-Cookie".equalsIgnoreCase(header.getKey()) || header.getValue() == null) continue;
+                if (header.getKey() == null || (!"Set-Cookie".equalsIgnoreCase(header.getKey()) && !"Set-Cookie2".equalsIgnoreCase(header.getKey())) || header.getValue() == null) continue;
                 for (String setCookie : header.getValue()) {
                     if (setCookie == null) continue;
                     String pair = setCookie.split(";", 2)[0].trim();
@@ -209,7 +225,7 @@ public final class ZenoraApiClient {
                 if (joined.length() > 0) joined.append("; ");
                 joined.append(item.getKey()).append('=').append(item.getValue());
             }
-            prefs().edit().putString(COOKIE_KEY, joined.toString()).apply();
+            prefs().edit().putString(COOKIE_KEY, joined.toString()).commit();
         }
     }
 
