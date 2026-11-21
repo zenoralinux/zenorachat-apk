@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: zenora-stage1-release
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
