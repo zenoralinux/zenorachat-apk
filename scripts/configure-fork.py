@@ -134,7 +134,7 @@ def configure(args: argparse.Namespace) -> None:
     if args.mode == "debug" and not api_id:
         # Never ship Telegram's official app credentials in an unofficial fork.
         # The APK remains buildable, but login/API calls need the developer's own credentials.
-        build_vars = replace_one(build_vars, r"public static int APP_ID = \\d+;", "public static int APP_ID = 1;", "debug placeholder API ID")
+        build_vars = replace_one(build_vars, r"public static int APP_ID = \d+;", "public static int APP_ID = 1;", "debug placeholder API ID")
         build_vars = replace_one(build_vars, r'public static String APP_HASH = "[^"]*";', 'public static String APP_HASH = "00000000000000000000000000000000";', "debug placeholder API hash")
     if api_id:
         if not api_id.isdigit() or int(api_id) <= 0:
