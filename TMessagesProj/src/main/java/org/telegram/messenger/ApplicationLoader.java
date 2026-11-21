@@ -263,6 +263,30 @@ public class ApplicationLoader extends Application {
             }
         }
 
+        // ZenoraChat owns the signed-in account and chat list for this fork.
+        // Prevent the Telegram MTProto dialog loader from replacing the Zenora list.
+        final int zenoraAccount = UserConfig.selectedAccount;
+        if (zenoraAccount >= 0 && zenoraAccount < UserConfig.MAX_ACCOUNT_COUNT
+                && UserConfig.getInstance(zenoraAccount).isClientActivated()
+                && ZenoraApiClient.hasSession()) {
+            ZenoraDialogsBridge.holdNativeDialogLoad(zenoraAccount);
+            ZenoraApiClient.fetchRooms(new ZenoraApiClient.RoomsCallback() {
+                @Override
+                public void onSuccess(org.json.JSONObject rooms) {
+                    try {
+                        ZenoraDialogsBridge.apply(zenoraAccount, rooms.optJSONObject("me"), rooms);
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                }
+
+                @Override
+                public void onError(String message) {
+                    FileLog.e("ZenoraChat session restore failed: " + message);
+                }
+            });
+        }
+
         ApplicationLoader app = (ApplicationLoader) ApplicationLoader.applicationContext;
         app.initPushServices();
         if (BuildVars.LOGS_ENABLED) {
