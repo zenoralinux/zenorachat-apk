@@ -27,6 +27,9 @@ public final class ZenoraApiClient {
     public static final String API_BASE = "https://miladalizadw.ir/Telegram/api/";
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
+    private static final String AUTHENTICATED_KEY = "authenticated";
+    private static final String USER_KEY = "user";
+    private static final String ROOMS_CACHE_KEY = "rooms_cache";
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 20000;
 
@@ -58,6 +61,14 @@ public final class ZenoraApiClient {
         if (!response.optBoolean("ok")) {
             throw new ZenoraApiException(response.optString("error", "LOGIN_FAILED"));
         }
+        JSONObject user = response.optJSONObject("user");
+        if (user == null || user.optLong("id", 0) <= 0) {
+            throw new JSONException("ZenoraChat returned an invalid user identity");
+        }
+        preferences.edit()
+                .putBoolean(AUTHENTICATED_KEY, true)
+                .putString(USER_KEY, user.toString())
+                .apply();
         return response;
     }
 
@@ -70,17 +81,56 @@ public final class ZenoraApiClient {
         JSONArray directMessages = response.optJSONArray("dm_rooms");
         JSONArray combined = new JSONArray();
         if (rooms != null) {
-            for (int i = 0; i < rooms.length(); i++) combined.put(rooms.optJSONObject(i));
+            for (int i = 0; i < rooms.length(); i++) {
+                JSONObject room = rooms.optJSONObject(i);
+                if (room != null) {
+                    room.put("_zenora_kind", "room");
+                    combined.put(room);
+                }
+            }
         }
         if (directMessages != null) {
-            for (int i = 0; i < directMessages.length(); i++) combined.put(directMessages.optJSONObject(i));
+            for (int i = 0; i < directMessages.length(); i++) {
+                JSONObject room = directMessages.optJSONObject(i);
+                if (room != null) {
+                    room.put("_zenora_kind", "dm");
+                    combined.put(room);
+                }
+            }
         }
+        cacheRooms(combined);
         return combined;
     }
 
     public void clearSession() {
-        preferences.edit().remove(COOKIE_KEY).apply();
+        preferences.edit()
+                .remove(COOKIE_KEY)
+                .remove(AUTHENTICATED_KEY)
+                .remove(USER_KEY)
+                .remove(ROOMS_CACHE_KEY)
+                .apply();
         csrfToken = null;
+    }
+
+    public static boolean hasSession(Context context) {
+        SharedPreferences prefs = context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return prefs.getBoolean(AUTHENTICATED_KEY, false)
+                && !prefs.getString(COOKIE_KEY, "").isEmpty();
+    }
+
+    public JSONArray getCachedRooms() {
+        String cached = preferences.getString(ROOMS_CACHE_KEY, "");
+        if (cached.isEmpty()) return new JSONArray();
+        try {
+            return new JSONArray(cached);
+        } catch (JSONException ignored) {
+            return new JSONArray();
+        }
+    }
+
+    private void cacheRooms(JSONArray rooms) {
+        preferences.edit().putString(ROOMS_CACHE_KEY, rooms.toString()).apply();
     }
 
     private JSONObject request(String path, String method, JSONObject body,
@@ -109,8 +159,8 @@ public final class ZenoraApiClient {
             }
         }
 
-        persistResponseCookies(connection);
         int status = connection.getResponseCode();
+        persistResponseCookies(connection);
         InputStream stream = status >= 400
                 ? connection.getErrorStream() : connection.getInputStream();
         StringBuilder result = new StringBuilder();
