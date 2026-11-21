@@ -95,6 +95,8 @@ public final class ZenoraSessionStore {
                 || user == null || user.optLong("id", 0) <= 0) return false;
         try {
             SharedPreferences.Editor editor = prefs(context).edit();
+            editor.remove("cookies");
+            editor.remove("csrf");
             editor.putString(K_ACCESS, encrypt(accessToken));
             editor.putString(K_REFRESH, encrypt(refreshToken));
             editor.putString(K_USER, encrypt(user.toString()));
