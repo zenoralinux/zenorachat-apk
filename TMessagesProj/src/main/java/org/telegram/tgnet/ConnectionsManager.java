@@ -755,6 +755,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public static void setRegId(String regId, @PushListenerController.PushType int type, String status) {
+        if (ZenoraMode.isEnabled()) return;
         String pushString = regId;
         if (!TextUtils.isEmpty(pushString) && type == PushListenerController.PUSH_TYPE_HUAWEI) {
             pushString = "huawei://" + pushString;
