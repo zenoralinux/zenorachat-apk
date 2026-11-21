@@ -55,6 +55,8 @@ The Firebase project must contain Android apps for both:
 
 The second ID is used by the Debug variant. The Release workflow refuses to publish when required production credentials are missing.
 
+For a Debug APK that can actually connect to Telegram, also configure both `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`. These two secrets are optional for Debug compilation, but when omitted the build uses dummy placeholder credentials: the APK can be built and installed, but Telegram login/API requests will not work. The script deliberately never embeds Telegram's official app credentials in an unofficial fork.
+
 Optional secret:
 - `ZENORA_GOOGLE_MAPS_API_KEY`: your own Google Maps Android API key. Without it, the build removes the upstream Maps key and map tiles may not work.
 
