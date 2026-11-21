@@ -85,7 +85,7 @@ def patch_library():
         content = content[:target.start()] + insert + content[target.end():]
     content = patch_debug_symbols(content, path)
     old = "                arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-23' //, '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'"
-    if CMAKE_ARGS.strip() not in content:
+    if CMAKE_ARGS.rstrip() not in content:
         if content.count(old) != 1:
             raise SystemExit(f"Cannot safely add ccache CMake launcher arguments in {path}")
         content = content.replace(old, CMAKE_ARGS.rstrip(), 1)
