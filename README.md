@@ -121,20 +121,16 @@ python3 scripts/configure-fork.py --mode release --application-id ir.zenora.zeno
 ./gradlew :TMessagesProj_App:assembleAfatRelease --build-cache --parallel --max-workers=4 -PZENORA_ABIS=armeabi-v7a,arm64-v8a,x86,x86_64
 ```
 
-## Zenora native account integration (phase 1)
+## Telegram-native UI integration
 
-The `feat/zenora-native-auth-chatlist-20261121` branch adds an isolated first-phase Zenora REST client while retaining the upstream Telegram source and build system.
+The branch `feat/telegram-native-ui-preserved-arm64-release-20261121` restores the original Telegram Android navigation and screen stack.
 
-- App launch is routed to the native Zenora account entry before Telegram's MTProto initialization.
-- Sign-in uses the existing ZenoraChat username and password. The password is sent only over HTTPS and is not persisted by the app.
-- Native access and rotating refresh tokens are encrypted using Android Keystore-backed AES-GCM storage.
-- The chat list consumes the existing web chat visibility rules through the native bearer endpoint, including direct chats, groups/channels, Saved Messages, unread counts and archive state.
-- Native API routes are under `/telegram/api/native/`: `login.php`, `refresh.php`, `me.php`, `logout.php` and `chats.php`.
-- The build workflow reapplies `.github/scripts/apply-zenora-native.py`; the upstream source-sync workflow reapplies the same overlay after importing Telegram source.
+- The build overlay no longer redirects `LaunchActivity` to the standalone `ZenoraNativeActivity`.
+- The legacy activity is not copied into the Android source set or registered in the manifest.
+- Telegram's own `LoginActivity`, `MainTabsActivity`, `DialogsActivity` and `ChatActivity` remain the app entry and UI.
+- This preview therefore uses Telegram's normal phone-number sign-in and Telegram network session. It does **not** yet authenticate a ZenoraChat username/password or load Zenora REST conversations into Telegram's models; that requires a separate REST-to-Telegram model and messaging adapter.
+- A successful fast ARM64 build pushed to this feature branch is published as a versioned GitHub pre-release. The native Zenora API health gate is intentionally not used for this preview because the standalone REST activity is disabled.
 
-Phase 1 intentionally stops at account sign-in and chat-list viewing. Opening a conversation, sending messages, calls, stories and other Telegram-network features are not connected yet. The original Telegram UI sources remain in the repository, but this phase uses a dedicated Zenora native entry screen rather than pretending Telegram's MTProto-backed dialog models are already populated from REST data. Review the rendered client and build before merging.
-
-The API implementation must be deployed from the matching `zenoralinux/zenorachat` feature branch before the APK can authenticate against the live website.
 
 ## Important
 
