@@ -164,6 +164,10 @@ import org.telegram.ui.Cells.ActiveGiftAuctionsHintCell;
 import org.telegram.ui.Cells.AnimatedStatusView;
 import org.telegram.ui.Cells.ArchiveHintInnerCell;
 import org.telegram.ui.Cells.DialogCell;
+import org.telegram.ui.zenora.ZenoraDialogsAdapter;
+import org.telegram.messenger.zenora.ZenoraApiClient;
+import org.telegram.messenger.zenora.ZenoraMode;
+import org.telegram.messenger.zenora.ZenoraSessionStore;
 import org.telegram.ui.Cells.DialogsEmptyCell;
 import org.telegram.ui.Cells.DialogsHintCell;
 import org.telegram.ui.Cells.GraySectionCell;
@@ -355,6 +359,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private boolean storiesOverscrollCalled;
     private boolean wasDrawn;
     public boolean hasMainTabs;
+    private ZenoraDialogsAdapter zenoraDialogsAdapter;
+    private RecyclerListView zenoraRecyclerListView;
+    private boolean zenoraLoading;
 
     public MessagesStorage.TopicKey getOpenedDialogId() {
         return openedDialogId;
@@ -2801,6 +2808,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             requestPeerBotId = arguments.getLong("requestPeerBotId", 0);
         }
 
+        if (ZenoraMode.isEnabled()) {
+            hasMainTabs = arguments != null && arguments.getBoolean("hasMainTabs", false);
+            return true;
+        }
+
         if (initialDialogsType == DIALOGS_TYPE_DEFAULT) {
             askAboutContacts = MessagesController.getGlobalNotificationsSettings().getBoolean("askAboutContacts", true);
             SharedConfig.loadProxyList();
@@ -2989,6 +3001,13 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
     @Override
     public void onFragmentDestroy() {
+        if (ZenoraMode.isEnabled()) {
+            zenoraLoading = false;
+            zenoraDialogsAdapter = null;
+            zenoraRecyclerListView = null;
+            super.onFragmentDestroy();
+            return;
+        }
         super.onFragmentDestroy();
         if (observersGroup != null) {
             observersGroup.removeAllObservers();
@@ -3117,8 +3136,87 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+
+    private View createZenoraView(Context context) {
+        actionBar.setAddToContainer(false);
+        actionBar.setBackButtonImage(0);
+        actionBar.setAllowOverlayTitle(true);
+        actionBar.setTitle(LocaleController.getString(R.string.MainTabsChats));
+        actionBar.setCastShadows(false);
+
+        FrameLayout root = new FrameLayout(context);
+        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+        root.addView(actionBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, ActionBar.getCurrentActionBarHeight(), Gravity.TOP));
+
+        zenoraRecyclerListView = new RecyclerListView(context);
+        zenoraRecyclerListView.setLayoutManager(new LinearLayoutManager(context));
+        zenoraRecyclerListView.setVerticalScrollBarEnabled(false);
+        zenoraRecyclerListView.setClipToPadding(false);
+        zenoraRecyclerListView.setPadding(0, 0, 0, dp(12));
+        zenoraDialogsAdapter = new ZenoraDialogsAdapter(context, this, currentAccount);
+        zenoraRecyclerListView.setAdapter(zenoraDialogsAdapter);
+        zenoraRecyclerListView.setOnItemClickListener((view, position, x, y) ->
+                Toast.makeText(context, "باز کردن گفتگو در مرحله بعد فعال می‌شود.", Toast.LENGTH_SHORT).show());
+
+        FrameLayout.LayoutParams listParams = LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP);
+        listParams.topMargin = ActionBar.getCurrentActionBarHeight();
+        root.addView(zenoraRecyclerListView, listParams);
+
+        fragmentView = root;
+        reloadZenoraRooms();
+        return root;
+    }
+
+    private void reloadZenoraRooms() {
+        if (!ZenoraMode.isEnabled() || zenoraLoading || zenoraDialogsAdapter == null || getParentActivity() == null) return;
+        zenoraLoading = true;
+        ZenoraApiClient.checkSession(getParentActivity(), (session, sessionError) ->
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (isFinished || zenoraDialogsAdapter == null) {
+                        zenoraLoading = false;
+                        return;
+                    }
+                    if (sessionError != null || session == null) {
+                        zenoraLoading = false;
+                        boolean expired = "AUTH_REQUIRED".equals(sessionError) || "AUTH_REDIRECT".equals(sessionError);
+                        if (expired) {
+                            ZenoraSessionStore.clear(getParentActivity());
+                            Bundle loginArgs = new Bundle();
+                            loginArgs.putBoolean("resumeExistingTabs", true);
+                            presentFragment(new ZenoraLoginActivity(loginArgs), true);
+                        } else {
+                            Toast.makeText(getParentActivity(), "دریافت نشست زنورا انجام نشد: " + sessionError, Toast.LENGTH_LONG).show();
+                        }
+                        return;
+                    }
+
+                    ZenoraSessionStore.applyCachedUser(getParentActivity(), currentAccount);
+                    ZenoraApiClient.fetchRooms(getParentActivity(), (rooms, roomsError) ->
+                            AndroidUtilities.runOnUIThread(() -> {
+                                zenoraLoading = false;
+                                if (isFinished || zenoraDialogsAdapter == null) return;
+                                if (roomsError != null || rooms == null) {
+                                    boolean expired = "AUTH_REQUIRED".equals(roomsError) || "AUTH_REDIRECT".equals(roomsError);
+                                    if (expired) {
+                                        ZenoraSessionStore.clear(getParentActivity());
+                                        Bundle loginArgs = new Bundle();
+                                        loginArgs.putBoolean("resumeExistingTabs", true);
+                                        presentFragment(new ZenoraLoginActivity(loginArgs), true);
+                                    } else {
+                                        Toast.makeText(getParentActivity(), "دریافت گفتگوها ناموفق بود: " + roomsError, Toast.LENGTH_LONG).show();
+                                    }
+                                    return;
+                                }
+                                zenoraDialogsAdapter.submitRooms(rooms);
+                            }));
+                }));
+    }
+
     @Override
     public View createView(final Context context) {
+        if (ZenoraMode.isEnabled()) {
+            return createZenoraView(context);
+        }
         searching = false;
         searchWas = false;
         wasDrawn = false;
@@ -6944,6 +7042,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onResume() {
         super.onResume();
+        if (ZenoraMode.isEnabled()) {
+            reloadZenoraRooms();
+            return;
+        }
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
         }
