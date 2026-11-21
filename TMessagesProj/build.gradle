@@ -183,7 +183,7 @@ android {
                 if (zenoraFastDebug) {
                     zenoraCmakeArguments.add('-DZENORA_FAST_DEBUG=ON')
                 }
-                arguments zenoraCmakeArguments
+                arguments(*zenoraCmakeArguments)
                 targets 'tmessages.49', 'twidget'
             }
         }

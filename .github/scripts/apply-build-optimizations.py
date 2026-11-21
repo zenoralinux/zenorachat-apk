@@ -33,7 +33,7 @@ CMAKE_ARGS = """                def zenoraCmakeArguments = [
                 if (zenoraFastDebug) {
                     zenoraCmakeArguments.add('-DZENORA_FAST_DEBUG=ON')
                 }
-                arguments zenoraCmakeArguments
+                arguments(*zenoraCmakeArguments)
 """
 
 def read_file(relative):
