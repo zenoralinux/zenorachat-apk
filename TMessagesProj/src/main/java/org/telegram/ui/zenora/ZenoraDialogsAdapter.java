@@ -324,7 +324,7 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
                 int current = holder.getAdapterPosition();
                 if (current == RecyclerView.NO_POSITION || current != expectedPosition || current >= items.size()) return;
                 if (items.get(current).stableId != stableId) return;
-                holder.cell.avatarImage.setImageBitmap(new BitmapDrawable(context.getResources(), result));
+                holder.cell.avatarImage.setImageDrawable(new BitmapDrawable(context.getResources(), result));
             });
         });
     }
