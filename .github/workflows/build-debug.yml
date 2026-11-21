@@ -43,6 +43,11 @@ on:
           - fast
           - universal
         default: fast
+      publish_release:
+        description: 'Publish the validated ARM64 APK as a GitHub pre-release (requires the native API to be deployed)'
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -225,7 +230,7 @@ jobs:
           } > dist/BUILD-INFO.txt
 
       - name: Prepare rolling Debug Preview release notes
-        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
         shell: bash
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -236,6 +241,15 @@ jobs:
           VERSION_CODE="$(awk -F= '$1=="APP_VERSION_CODE" {print $2}' gradle.properties | tail -n1)"
           UPSTREAM_SHA="$(cat UPSTREAM_COMMIT.txt 2>/dev/null || echo unknown)"
           REPO_SHA="$(git rev-parse HEAD)"
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            RELEASE_TAG="zenora-debug-latest"
+            RELEASE_NAME="ZenoraChat Debug Preview (latest ARM64)"
+          else
+            RELEASE_TAG="zenorachat-v${VERSION_NAME}-build${VERSION_CODE}-arm64-run${GITHUB_RUN_NUMBER}"
+            RELEASE_NAME="ZenoraChat ${VERSION_NAME} (${VERSION_CODE}) - ARM64 Debug #${GITHUB_RUN_NUMBER}"
+          fi
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=$RELEASE_NAME" >> "$GITHUB_ENV"
           if [[ -n "$TELEGRAM_API_ID" && -n "$TELEGRAM_API_HASH" ]]; then
             LOGIN_STATUS="Configured: Telegram API credentials are present."
           else
@@ -244,7 +258,11 @@ jobs:
           {
             echo "# ZenoraChat Debug Preview"
             echo
-            echo "This rolling pre-release is replaced after each successful Fast ARM64 Debug build on main. It is a test build, not a stable release."
+            if [[ "$RELEASE_TAG" == "zenora-debug-latest" ]]; then
+              echo "This rolling pre-release is replaced after each successful Fast ARM64 Debug build on main. It is a test build, not a stable release."
+            else
+              echo "Versioned ARM64 Debug pre-release created by a manually requested workflow run. It is a test build, not a stable release."
+            fi
             echo
             echo "## Build information"
             echo "- App version: ${VERSION_NAME} (${VERSION_CODE})"
@@ -269,7 +287,7 @@ jobs:
           retention-days: 14
 
       - name: Update rolling Debug Preview tag
-        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -283,13 +301,22 @@ jobs:
             gh api --method POST "${API}/refs" -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" >/dev/null
           fi
 
-      - name: Publish rolling Debug Preview to GitHub Releases
-        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      - name: Verify deployed native API before publishing
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_HEALTH_URL="https://miladalizadw.ir/telegram/api/native/health.php"
+          RESPONSE="$(curl --fail --silent --show-error --location --max-time 25 -H 'Accept: application/json' "$API_HEALTH_URL")"
+          printf '%s' "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("service") == "zenora-native-api" and d.get("database") is True, "Native API health check returned an unexpected payload"; print("Native API deployment and database: OK")'
+
+      - name: Publish ARM64 Debug APK to GitHub Releases
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
         uses: softprops/action-gh-release@v3.0.4
         with:
-          tag_name: zenora-debug-latest
+          tag_name: ${{ env.RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: ZenoraChat Debug Preview (latest ARM64)
+          name: ${{ env.RELEASE_NAME }}
           body_path: dist/debug-preview-notes.md
           files: |
             dist/ZenoraChat-debug-arm64.apk
