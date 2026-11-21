@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/zenora-native-login-dialogs-20261121
+      - feat/zenora-native-bearer-client-20261121
     paths:
       - 'TMessagesProj/**'
       - 'TMessagesProj_App/**'
@@ -119,6 +120,25 @@ jobs:
             echo "Branch: ${GITHUB_REF_NAME}"
             echo "Commit: ${GITHUB_SHA}"
           } > dist/BUILD-INFO.txt
+
+      - name: Upload APK for testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZenoraChat-Stage1-universal-debug-${{ github.run_number }}
+          path: |
+            dist/ZenoraChat-Stage1-universal-debug.apk
+            dist/SHA256SUMS
+            dist/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify deployed Zenora native API
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEALTH_URL="https://miladalizadw.ir/telegram/api/native/health.php"
+          RESPONSE="$(curl --fail --silent --show-error --max-time 25 -H 'Accept: application/json' "$HEALTH_URL")"
+          printf '%s' "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("service") == "zenora-native-api" and d.get("database") is True and d.get("api_version") == 1, "Native API health check failed"; print("Zenora native API and database are ready.")'
 
       - name: Publish GitHub Release preview
         uses: softprops/action-gh-release@v2
