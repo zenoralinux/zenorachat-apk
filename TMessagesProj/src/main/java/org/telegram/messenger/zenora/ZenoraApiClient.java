@@ -83,43 +83,48 @@ public final class ZenoraApiClient {
 
     private static HttpResult request(Context context, String method, String endpoint, JSONObject body, String csrf) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(API_BASE + endpoint).openConnection();
-        connection.setRequestMethod(method);
-        connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        connection.setReadTimeout(READ_TIMEOUT_MS);
-        connection.setInstanceFollowRedirects(false);
-        connection.setUseCaches(false);
-        connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("X-Requested-With", "XMLHttpRequest");
-        connection.setRequestProperty("User-Agent", "ZenoraChat-Android/Stage1");
-        String cookies = ZenoraSessionStore.getCookies(context);
-        if (!cookies.isEmpty()) connection.setRequestProperty("Cookie", cookies);
-        if (csrf != null && !csrf.isEmpty()) connection.setRequestProperty("X-CSRF-Token", csrf);
-
-        if (body != null) {
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
-            try (OutputStream output = connection.getOutputStream()) {
-                output.write(payload);
-                output.flush();
-            }
-        }
-
-        int status = connection.getResponseCode();
-        mergeCookies(context, connection.getHeaderFields());
-        InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-        String responseText = readAll(stream);
-        connection.disconnect();
-
-        JSONObject json;
         try {
-            json = responseText.isEmpty() ? new JSONObject() : new JSONObject(responseText);
-        } catch (Exception invalidJson) {
-            json = new JSONObject();
-            json.put("ok", false);
-            json.put("error", status >= 300 && status < 400 ? "AUTH_REDIRECT" : "INVALID_SERVER_RESPONSE");
+            connection.setRequestMethod(method);
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("X-Requested-With", "XMLHttpRequest");
+            connection.setRequestProperty("User-Agent", "ZenoraChat-Android/Stage1");
+            String cookies = ZenoraSessionStore.getCookies(context);
+            if (!cookies.isEmpty()) connection.setRequestProperty("Cookie", cookies);
+            if (csrf != null && !csrf.isEmpty()) connection.setRequestProperty("X-CSRF-Token", csrf);
+
+            if (body != null) {
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(payload);
+                    output.flush();
+                }
+            }
+
+            int status = connection.getResponseCode();
+            mergeCookies(context, connection.getHeaderFields());
+            String responseText;
+            try (InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream()) {
+                responseText = readAll(stream);
+            }
+
+            JSONObject json;
+            try {
+                json = responseText.isEmpty() ? new JSONObject() : new JSONObject(responseText);
+            } catch (Exception invalidJson) {
+                json = new JSONObject();
+                json.put("ok", false);
+                json.put("error", status >= 300 && status < 400 ? "AUTH_REDIRECT" : "INVALID_SERVER_RESPONSE");
+            }
+            return new HttpResult(status, json);
+        } finally {
+            connection.disconnect();
         }
-        return new HttpResult(status, json);
     }
 
     private static JSONObject requireOk(HttpResult result) throws Exception {
