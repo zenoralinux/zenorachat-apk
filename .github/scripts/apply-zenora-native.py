@@ -50,7 +50,7 @@ def patch_launch_activity() -> None:
         return
     pattern = re.compile(r"(@Override\s+protected void onCreate\(Bundle savedInstanceState\)\s*\{)")
     updated, count = pattern.subn(
-        r"""\\1
+        r"""\1
         // ZENORA_NATIVE_BOOTSTRAP: keep the Telegram protocol stack out of Zenora account mode.
         // The original Telegram screens remain in the source tree; the Zenora REST client
         // runs as an isolated native entry point and never starts an MTProto session.
