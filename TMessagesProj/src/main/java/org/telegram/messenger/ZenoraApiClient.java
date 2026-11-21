@@ -56,7 +56,18 @@ public final class ZenoraApiClient {
     public static boolean isZenoraSessionEnabled() {
         return ApplicationLoader.applicationContext != null
                 && prefs().getBoolean("enabled", false)
-                && !prefs().getString(COOKIE_KEY, "").isEmpty();
+                && hasAuthCookie();
+    }
+
+    private static boolean hasAuthCookie() {
+        String stored = cookies();
+        for (String part : stored.split(";")) {
+            String item = part.trim();
+            if (item.startsWith("zenorachat_auth=") && item.length() > "zenorachat_auth=".length()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static void enableSession(JSONObject profile) {
@@ -85,6 +96,9 @@ public final class ZenoraApiClient {
                 JSONObject me = result.optJSONObject("me");
                 if (me == null || me.optLong("id", 0) <= 0) {
                     throw new IllegalStateException("Incomplete account profile");
+                }
+                if (!hasAuthCookie()) {
+                    throw new IllegalStateException("The server did not issue a ZenoraChat session cookie.");
                 }
                 enableSession(me);
                 dispatch(callback, result, null);
