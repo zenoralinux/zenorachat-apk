@@ -618,8 +618,10 @@ public final class ZenoraNativeActivity extends Activity {
 
         int avatarColor() {
             int[] colors = new int[] {0xff5e97d1, 0xff8e85c2, 0xffd17d74, 0xff5da99b, 0xffc18a55, 0xff7199a5};
-            int hash = Math.abs((title == null ? 0 : title.hashCode()));
-            return colors[Math.floorMod(hash, colors.length)];
+            int hash = title == null ? 0 : title.hashCode();
+            int index = hash % colors.length;
+            if (index < 0) index += colors.length;
+            return colors[index];
         }
 
         String preview() {
