@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.LaunchActivity;
+import org.telegram.ui.DialogsActivity;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
