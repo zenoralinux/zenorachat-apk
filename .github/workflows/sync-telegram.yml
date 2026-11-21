@@ -94,6 +94,9 @@ jobs:
           git show "$UPSTREAM_SHA:README.md" > docs/TELEGRAM_UPSTREAM_README.md
           printf '%s\n' "$UPSTREAM_SHA" > UPSTREAM_COMMIT.txt
 
+          # Reapply Zenora's build-only overlay after every upstream tree replacement.
+          python3 .github/scripts/apply-build-optimizations.py
+
           git add -f .github scripts README.md upstream.json UPSTREAM_COMMIT.txt docs/TELEGRAM_UPSTREAM_README.md
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -m "Sync Telegram Android source ${UPSTREAM_SHA}"

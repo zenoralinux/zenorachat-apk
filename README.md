@@ -85,6 +85,7 @@ Do not commit keystores, passwords, API hashes or Firebase configuration to Git.
 - Gradle build caching is enabled, while the Gradle setup action persists reusable Gradle caches between runs.
 - ABI filters are applied in both the app module and Telegram native library module, so ARM64 mode avoids compiling other architectures instead of merely excluding them at packaging time.
 - Debug artifacts include Gradle profiling and GNU `time` resource diagnostics.
+- The scheduled Telegram source-sync workflow reapplies these Gradle overlays after importing upstream, so the fast-build configuration survives future source updates.
 - Gradle Configuration Cache is not forced until compatibility with the upstream custom plugins is verified.
 
 ## Local build commands
