@@ -479,7 +479,8 @@ def patch_dialogs_adapter() -> None:
 '''
     content = replace_exact(
         content,
-        "            case VIEW_TYPE_DIALOG_COMMUNITY:\\n",
+        """            case VIEW_TYPE_DIALOG_COMMUNITY:
+""",
         create_case,
         "DialogsAdapter Zenora cell creation",
     )
