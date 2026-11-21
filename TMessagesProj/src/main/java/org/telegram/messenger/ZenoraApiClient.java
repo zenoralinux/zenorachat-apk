@@ -153,6 +153,26 @@ public final class ZenoraApiClient {
         });
     }
 
+    public static void logout(Context context, Runnable callback) {
+        final Context appContext = context == null ? null : context.getApplicationContext();
+        final String cookieHeader = ZenoraSession.getCookieHeader();
+        final LinkedHashMap<String, String> cookies = parseCookieHeader(cookieHeader);
+        // End the local session immediately; the server revocation is best-effort
+        // and uses the already captured cookie after the encrypted copy is removed.
+        ZenoraSession.clear(appContext);
+        EXECUTOR.execute(() -> {
+            try {
+                if (!cookies.isEmpty()) {
+                    request("GET", "/logout.php", cookies, null, null);
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
+            } finally {
+                if (callback != null) MAIN.post(callback);
+            }
+        });
+    }
+
     public static void fetchDialogs(Context context, DialogsCallback callback) {
         final Context appContext = context.getApplicationContext();
         EXECUTOR.execute(() -> {

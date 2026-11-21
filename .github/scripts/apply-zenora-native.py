@@ -17,6 +17,7 @@ SESSION = ROOT / "TMessagesProj" / "src" / "main" / "java" / "org" / "telegram" 
 API_CLIENT = ROOT / "TMessagesProj" / "src" / "main" / "java" / "org" / "telegram" / "messenger" / "ZenoraApiClient.java"
 LOGIN_ACTIVITY = ROOT / "TMessagesProj" / "src" / "main" / "java" / "org" / "telegram" / "ui" / "ZenoraLoginActivity.java"
 LEGACY_ACTIVITY = ROOT / "TMessagesProj" / "src" / "main" / "java" / "org" / "telegram" / "ui" / "zenora" / "ZenoraNativeActivity.java"
+LOGOUT_ACTIVITY = ROOT / "TMessagesProj" / "src" / "main" / "java" / "org" / "telegram" / "ui" / "LogoutActivity.java"
 
 
 def read(path: Path) -> str:
@@ -646,6 +647,90 @@ def patch_dialog_cell() -> None:
     write(DIALOG_CELL, content)
 
 
+
+def patch_logout_activity() -> None:
+    content = read(LOGOUT_ACTIVITY)
+    content = replace_exact(
+        content,
+        "import org.telegram.messenger.UserConfig;\n",
+        "import org.telegram.messenger.UserConfig;\nimport org.telegram.messenger.ZenoraApiClient;\nimport org.telegram.messenger.ZenoraSession;\n",
+        "LogoutActivity Zenora imports",
+    )
+    content = replace_exact(
+        content,
+        "    private AnimatorSet animatorSet;\n",
+        "    private AnimatorSet animatorSet;\n    private boolean zenoraAccountMode;\n",
+        "LogoutActivity Zenora account state",
+    )
+    content = replace_exact(
+        content,
+        "        super.onFragmentCreate();\n\n        rowCount = 0;",
+        "        super.onFragmentCreate();\n        zenoraAccountMode = ZenoraSession.isAuthenticated();\n\n        rowCount = 0;",
+        "LogoutActivity identify Zenora account",
+    )
+    content = replace_exact(
+        content,
+        "        if (UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {",
+        "        if (!zenoraAccountMode && UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {",
+        "LogoutActivity hide Telegram add-account option for Zenora",
+    )
+    content = replace_exact(
+        content,
+        "        cacheRow = rowCount++;\n        phoneRow = rowCount++;\n",
+        "        cacheRow = zenoraAccountMode ? -1 : rowCount++;\n        phoneRow = zenoraAccountMode ? -1 : rowCount++;\n",
+        "LogoutActivity hide Telegram cache and phone options for Zenora",
+    )
+    content = replace_exact(
+        content,
+        "        alternativeSectionRow = rowCount++;\n",
+        "        alternativeSectionRow = zenoraAccountMode ? -1 : rowCount++;\n",
+        "LogoutActivity hide Telegram account section for Zenora",
+    )
+    content = replace_exact(
+        content,
+        '''    public void showLogOutDialog() {
+        final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);''',
+        '''    private void showZenoraLogOutDialog() {
+        new AlertDialog.Builder(getContext())
+                .setTitle(getString(R.string.LogOut))
+                .setMessage(getString(R.string.AreYouSureLogout))
+                .setPositiveButton(getString(R.string.LogOut), (dialogInterface, i) -> {
+                    ZenoraApiClient.logout(getParentActivity(), () -> {
+                        if (getParentActivity() != null && !getParentActivity().isFinishing()) {
+                            android.content.Intent restart = new android.content.Intent(getParentActivity(), LaunchActivity.class);
+                            restart.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK | android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                            getParentActivity().startActivity(restart);
+                            getParentActivity().finish();
+                        }
+                    });
+                })
+                .setNegativeButton(getString(R.string.Cancel), null)
+                .makeRed(DialogInterface.BUTTON_POSITIVE)
+                .show();
+    }
+
+    public void showLogOutDialog() {
+        if (ZenoraSession.isAuthenticated()) {
+            showZenoraLogOutDialog();
+            return;
+        }
+        final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);''',
+        "LogoutActivity Zenora logout route",
+    )
+    content = replace_exact(
+        content,
+        '''    protected void onDialogDismiss(Dialog dialog) {
+        DownloadController.getInstance(currentAccount).checkAutodownloadSettings();
+    }''',
+        '''    protected void onDialogDismiss(Dialog dialog) {
+        if (!zenoraAccountMode) {
+            DownloadController.getInstance(currentAccount).checkAutodownloadSettings();
+        }
+    }''',
+        "LogoutActivity prevent Telegram autodownload call for Zenora",
+    )
+    write(LOGOUT_ACTIVITY, content)
+
 def verify_sources() -> None:
     for path in (SESSION, API_CLIENT, LOGIN_ACTIVITY):
         read(path)
@@ -654,6 +739,7 @@ def verify_sources() -> None:
     adapter = read(DIALOGS_ADAPTER)
     dialogs = read(DIALOGS_ACTIVITY)
     cell = read(DIALOG_CELL)
+    logout = read(LOGOUT_ACTIVITY)
     checks = {
         "Zenora login selected": "return new ZenoraLoginActivity();" in launch,
         "Zenora account compatibility": "ZenoraSession.createCompatUser()" in user_config,
@@ -662,6 +748,8 @@ def verify_sources() -> None:
         "Telegram native dialog cell": "cell.setDialog(customDialog);" in adapter,
         "Zenora avatar support": "customDialog.avatarPath" in cell,
         "No Telegram login fallback": "return new IntroActivity();" not in launch,
+        "Zenora logout path": "ZenoraApiClient.logout(getParentActivity()" in logout,
+        "No Telegram add-account action": "if (!zenoraAccountMode && UserConfig.getActivatedAccountsCount()" in logout,
     }
     failed = [name for name, passed in checks.items() if not passed]
     if failed:
@@ -676,6 +764,7 @@ def main() -> None:
     patch_dialogs_activity()
     patch_dialogs_adapter()
     patch_dialog_cell()
+    patch_logout_activity()
     verify_sources()
     print("Zenora Phase 1 overlay applied: Zenora auth + REST dialogs on Telegram-native DialogsActivity/DialogCell.")
 
