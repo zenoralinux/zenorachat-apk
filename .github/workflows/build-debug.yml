@@ -14,6 +14,7 @@ on:
       - 'TMessagesProj_App/**'
       - 'TMessagesProj_Modules/**'
       - 'UPSTREAM_COMMIT.txt'
+      - '.github/workflows/build-debug.yml'
   pull_request:
     branches: [main]
     paths:
@@ -80,7 +81,7 @@ jobs:
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           java -version
-          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --version
+          sdkmanager --version
 
       - name: Set up Gradle and dependency cache
         uses: gradle/actions/setup-gradle@v6
