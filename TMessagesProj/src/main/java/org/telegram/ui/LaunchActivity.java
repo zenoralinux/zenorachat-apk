@@ -138,6 +138,8 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.TopicsController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.zenora.ZenoraMode;
+import org.telegram.messenger.zenora.ZenoraSessionStore;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
@@ -419,10 +421,13 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         ApplicationLoader.postInitApplication();
         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
         currentAccount = UserConfig.selectedAccount;
+        if (ZenoraMode.isEnabled() && ZenoraSessionStore.hasSession(this)) {
+            ZenoraSessionStore.applyCachedUser(this, currentAccount);
+        }
         if (BuildVars.DEBUG_VERSION || BuildVars.DEBUG_PRIVATE_VERSION) {
             registerDebugThemeReceiver();
         }
-        if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+        if (ZenoraMode.isEnabled() ? !ZenoraSessionStore.hasSession(this) : !UserConfig.getInstance(currentAccount).isClientActivated()) {
             Intent intent = getIntent();
             boolean isProxy = false;
             if (intent != null && intent.getAction() != null) {
@@ -571,7 +576,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
         LiteMode.addOnPowerSaverAppliedListener(onPowerSaverCallback = this::onPowerSaver);
         if (actionBarLayout.getFragmentStack().isEmpty() && (layersActionBarLayout == null || layersActionBarLayout.getFragmentStack().isEmpty())) {
-            if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+            if (ZenoraMode.isEnabled() ? !ZenoraSessionStore.hasSession(this) : !UserConfig.getInstance(currentAccount).isClientActivated()) {
                 actionBarLayout.addFragmentToStack(getClientNotActivatedFragment());
             } else {
                 MainTabsActivity mainTabsActivity = new MainTabsActivity();
@@ -1120,6 +1125,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private BaseFragment getClientNotActivatedFragment() {
+        if (ZenoraMode.isEnabled()) {
+            return new ZenoraLoginActivity();
+        }
         if (LoginActivity.loadCurrentState(false, currentAccount).getInt("currentViewNum", 0) != 0) {
             return new LoginActivity();
         }
@@ -3358,7 +3366,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         }
         if (!pushOpened && !isNew) {
             if (AndroidUtilities.isTablet()) {
-                if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+                if (ZenoraMode.isEnabled() ? !ZenoraSessionStore.hasSession(this) : !UserConfig.getInstance(currentAccount).isClientActivated()) {
                     if (layersActionBarLayout.getFragmentStack().isEmpty()) {
                         layersActionBarLayout.addFragmentToStack(getClientNotActivatedFragment(), INavigationLayout.FORCE_NOT_ATTACH_VIEW);
                     }
@@ -3374,7 +3382,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 }
             } else {
                 if (actionBarLayout.getFragmentStack().isEmpty()) {
-                    if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+                    if (ZenoraMode.isEnabled() ? !ZenoraSessionStore.hasSession(this) : !UserConfig.getInstance(currentAccount).isClientActivated()) {
                         actionBarLayout.addFragmentToStack(getClientNotActivatedFragment(), INavigationLayout.FORCE_NOT_ATTACH_VIEW);
                     } else {
                         MainTabsActivity mainTabsActivity = new MainTabsActivity();
@@ -8165,7 +8173,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             return;
         }
         Utilities.globalQueue.postRunnable(() -> {
-            if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+            if (ZenoraMode.isEnabled() ? !ZenoraSessionStore.hasSession(this) : !UserConfig.getInstance(currentAccount).isClientActivated()) {
                 return;
             }
             try {
@@ -8291,7 +8299,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private void showLanguageAlert(boolean force) {
-        if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
+        if (ZenoraMode.isEnabled() ? !ZenoraSessionStore.hasSession(this) : !UserConfig.getInstance(currentAccount).isClientActivated()) {
             return;
         }
         try {
