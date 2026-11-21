@@ -52,12 +52,13 @@ def patch_launch_activity() -> None:
     updated, count = pattern.subn(
         r"""\1
         // ZENORA_NATIVE_BOOTSTRAP: keep the Telegram protocol stack out of Zenora account mode.
-        // The original Telegram screens remain in the source tree; the Zenora REST client
-        // runs as an isolated native entry point and never starts an MTProto session.
-        super.onCreate(savedInstanceState);
-        startActivity(new android.content.Intent(this, org.telegram.ui.zenora.ZenoraNativeActivity.class));
-        finish();
-        return;
+        // Use a runtime predicate so the original Telegram implementation remains compilable.
+        if (org.telegram.ui.zenora.ZenoraNativeActivity.isZenoraModeEnabled()) {
+            super.onCreate(savedInstanceState);
+            startActivity(new android.content.Intent(this, org.telegram.ui.zenora.ZenoraNativeActivity.class));
+            finish();
+            return;
+        }
 """,
         content,
         count=1,
