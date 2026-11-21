@@ -673,6 +673,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public void setUserId(long id) {
+        if (ZenoraMode.isEnabled()) return;
         native_setUserId(currentAccount, id);
     }
 
@@ -694,7 +695,7 @@ public class ConnectionsManager extends BaseController {
     public void init(int version, int layer, int apiId, String deviceModel, String systemVersion, String appVersion, String langCode, String systemLangCode, String configPath, String logPath, String regId, String cFingerprint, int timezoneOffset, long userId, boolean userPremium, boolean enablePushConnection) {
         final SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
         final ProxySettings proxySettings = ProxySettings.fromSharedPreferences(preferences);
-        if (preferences.getBoolean("proxy_enabled", false) && proxySettings.isValid()) {
+        if (!ZenoraMode.isEnabled() && preferences.getBoolean("proxy_enabled", false) && proxySettings.isValid()) {
             if (proxySettings.getType() == ProxySettings.Type.WEB) {
                 int localPort = WebProxyTransport.start(proxySettings.getAddress(), proxySettings.getSecret());
                 native_setProxySettings(currentAccount, "127.0.0.1", localPort != 0 ? localPort : 9, "", "",
@@ -734,6 +735,14 @@ public class ConnectionsManager extends BaseController {
             packageId = "";
         }
 
+        if (ZenoraMode.isEnabled()) {
+            // Don't give the MTProto engine a Zenora account id, premium state,
+            // push token or network availability.
+            userId = 0;
+            userPremium = false;
+            enablePushConnection = false;
+            regId = "";
+        }
         native_init(currentAccount, version, layer, apiId, deviceModel, systemVersion, appVersion, langCode, systemLangCode, configPath, logPath, regId, cFingerprint, installer, packageId, timezoneOffset, userId, userPremium, enablePushConnection, !ZenoraMode.isEnabled() && ApplicationLoader.isNetworkOnline(), ApplicationLoader.getCurrentNetworkType(), SharedConfig.measureDevicePerformanceClass());
         checkConnection();
     }
