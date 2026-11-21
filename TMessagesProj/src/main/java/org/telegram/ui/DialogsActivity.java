@@ -3210,7 +3210,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     if (sessionError != null || session == null) {
                         zenoraLoading = false;
                         setZenoraLoading(false);
-                        boolean expired = "AUTH_REQUIRED".equals(sessionError) || "AUTH_REDIRECT".equals(sessionError);
+                        boolean expired = "AUTH_REQUIRED".equals(sessionError) || "AUTH_REDIRECT".equals(sessionError) || "SESSION_REVOKED".equals(sessionError) || "ACCOUNT_DELETED".equals(sessionError);
                         if (expired) {
                             ZenoraSessionStore.clear(getParentActivity());
                             Bundle loginArgs = new Bundle();
@@ -3229,7 +3229,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                 setZenoraLoading(false);
                                 if (isFinished || zenoraAdapters.isEmpty()) return;
                                 if (roomsError != null || rooms == null) {
-                                    boolean expired = "AUTH_REQUIRED".equals(roomsError) || "AUTH_REDIRECT".equals(roomsError);
+                                    boolean expired = "AUTH_REQUIRED".equals(roomsError) || "AUTH_REDIRECT".equals(roomsError) || "SESSION_REVOKED".equals(roomsError) || "ACCOUNT_DELETED".equals(roomsError);
                                     if (expired) {
                                         ZenoraSessionStore.clear(getParentActivity());
                                         Bundle loginArgs = new Bundle();
