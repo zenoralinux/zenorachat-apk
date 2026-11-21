@@ -82,6 +82,7 @@ jobs:
           [[ -d "$SDK_ROOT" ]] || { echo "::error::Android SDK directory not found: $SDK_ROOT"; exit 1; }
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          sdkmanager --version
 
       - name: Set up Gradle and dependency cache
         uses: gradle/actions/setup-gradle@v6
