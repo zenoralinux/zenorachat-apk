@@ -359,8 +359,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private boolean storiesOverscrollCalled;
     private boolean wasDrawn;
     public boolean hasMainTabs;
-    private ZenoraDialogsAdapter zenoraDialogsAdapter;
-    private RecyclerListView zenoraRecyclerListView;
+    private final ArrayList<ZenoraDialogsAdapter> zenoraAdapters = new ArrayList<>();
     private boolean zenoraLoading;
 
     public MessagesStorage.TopicKey getOpenedDialogId() {
@@ -2810,6 +2809,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
         if (ZenoraMode.isEnabled()) {
             hasMainTabs = arguments != null && arguments.getBoolean("hasMainTabs", false);
+            // Keep the native fragment lifecycle alive while preventing Telegram
+            // dialog observers and network pagination from running in Zenora mode.
+            observersGroup = getNotificationCenter().createObserversGroup(this);
             return true;
         }
 
@@ -3003,8 +3005,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     public void onFragmentDestroy() {
         if (ZenoraMode.isEnabled()) {
             zenoraLoading = false;
-            zenoraDialogsAdapter = null;
-            zenoraRecyclerListView = null;
+            for (ZenoraDialogsAdapter adapter : zenoraAdapters) {
+                adapter.clear();
+            }
+            zenoraAdapters.clear();
+            if (observersGroup != null) {
+                observersGroup.removeAllObservers();
+                observersGroup = null;
+            }
             super.onFragmentDestroy();
             return;
         }
@@ -3137,53 +3145,74 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
 
-    private View createZenoraView(Context context) {
-        actionBar.setAddToContainer(false);
-        actionBar.setBackButtonImage(0);
-        actionBar.setAllowOverlayTitle(true);
-        actionBar.setTitle(LocaleController.getString(R.string.MainTabsChats));
-        actionBar.setCastShadows(false);
+    private void installZenoraListOverlays(Context context) {
+        zenoraAdapters.clear();
+        if (viewPages == null) return;
 
-        FrameLayout root = new FrameLayout(context);
-        root.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
-        root.addView(actionBar, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, ActionBar.getCurrentActionBarHeight(), Gravity.TOP));
+        for (ViewPage page : viewPages) {
+            if (page == null || page.listView == null) continue;
 
-        zenoraRecyclerListView = new RecyclerListView(context);
-        zenoraRecyclerListView.setLayoutManager(new LinearLayoutManager(context));
-        zenoraRecyclerListView.setVerticalScrollBarEnabled(false);
-        zenoraRecyclerListView.setClipToPadding(false);
-        zenoraRecyclerListView.setPadding(0, 0, 0, dp(12));
-        zenoraDialogsAdapter = new ZenoraDialogsAdapter(context, this, currentAccount);
-        zenoraRecyclerListView.setAdapter(zenoraDialogsAdapter);
-        zenoraRecyclerListView.setOnItemClickListener((view, position, x, y) ->
-                Toast.makeText(context, "باز کردن گفتگو در مرحله بعد فعال می‌شود.", Toast.LENGTH_SHORT).show());
+            // Keep the stock DialogsRecyclerView measured: it calculates the
+            // exact top/bottom insets for Telegram's search, stories and filters.
+            DialogsRecyclerView stockList = page.listView;
+            stockList.setVisibility(View.INVISIBLE);
 
-        FrameLayout.LayoutParams listParams = LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP);
-        listParams.topMargin = ActionBar.getCurrentActionBarHeight();
-        root.addView(zenoraRecyclerListView, listParams);
+            RecyclerListView zenoraList = new RecyclerListView(context) {
+                @Override
+                protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                    setPadding(stockList.getPaddingLeft(), stockList.getPaddingTop(),
+                            stockList.getPaddingRight(), stockList.getPaddingBottom());
+                    super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                }
+            };
+            zenoraList.setLayoutManager(new LinearLayoutManager(context));
+            zenoraList.setVerticalScrollBarEnabled(true);
+            zenoraList.setClipToPadding(false);
+            zenoraList.setInstantClick(true);
+            zenoraList.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
 
-        fragmentView = root;
+            ZenoraDialogsAdapter adapter = new ZenoraDialogsAdapter(context, this, currentAccount);
+            zenoraList.setAdapter(adapter);
+            zenoraList.setOnItemClickListener((view, position, x, y) ->
+                    Toast.makeText(context, "باز کردن گفتگو در مرحله بعد فعال می‌شود.", Toast.LENGTH_SHORT).show());
+
+            page.addView(zenoraList, LayoutHelper.createFrame(
+                    LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP));
+            zenoraAdapters.add(adapter);
+            if (page.progressView != null) page.progressView.setVisibility(View.VISIBLE);
+        }
+
         reloadZenoraRooms();
-        return root;
+    }
+
+    private void setZenoraLoading(boolean loading) {
+        if (viewPages == null) return;
+        for (ViewPage page : viewPages) {
+            if (page != null && page.progressView != null) {
+                page.progressView.setVisibility(loading ? View.VISIBLE : View.GONE);
+            }
+        }
     }
 
     private void reloadZenoraRooms() {
-        if (!ZenoraMode.isEnabled() || zenoraLoading || zenoraDialogsAdapter == null || getParentActivity() == null) return;
+        if (!ZenoraMode.isEnabled() || zenoraLoading || zenoraAdapters.isEmpty() || getParentActivity() == null) return;
         zenoraLoading = true;
+        setZenoraLoading(true);
         ZenoraApiClient.checkSession(getParentActivity(), (session, sessionError) ->
                 AndroidUtilities.runOnUIThread(() -> {
-                    if (isFinished || zenoraDialogsAdapter == null) {
+                    if (isFinished || zenoraAdapters.isEmpty()) {
                         zenoraLoading = false;
                         return;
                     }
                     if (sessionError != null || session == null) {
                         zenoraLoading = false;
+                        setZenoraLoading(false);
                         boolean expired = "AUTH_REQUIRED".equals(sessionError) || "AUTH_REDIRECT".equals(sessionError);
                         if (expired) {
                             ZenoraSessionStore.clear(getParentActivity());
                             Bundle loginArgs = new Bundle();
                             loginArgs.putBoolean("resumeExistingTabs", true);
-                            presentFragment(new ZenoraLoginActivity(loginArgs), true);
+                            presentFragment(new ZenoraLoginActivity(loginArgs), false);
                         } else {
                             Toast.makeText(getParentActivity(), "دریافت نشست زنورا انجام نشد: " + sessionError, Toast.LENGTH_LONG).show();
                         }
@@ -3194,29 +3223,29 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     ZenoraApiClient.fetchRooms(getParentActivity(), (rooms, roomsError) ->
                             AndroidUtilities.runOnUIThread(() -> {
                                 zenoraLoading = false;
-                                if (isFinished || zenoraDialogsAdapter == null) return;
+                                setZenoraLoading(false);
+                                if (isFinished || zenoraAdapters.isEmpty()) return;
                                 if (roomsError != null || rooms == null) {
                                     boolean expired = "AUTH_REQUIRED".equals(roomsError) || "AUTH_REDIRECT".equals(roomsError);
                                     if (expired) {
                                         ZenoraSessionStore.clear(getParentActivity());
                                         Bundle loginArgs = new Bundle();
                                         loginArgs.putBoolean("resumeExistingTabs", true);
-                                        presentFragment(new ZenoraLoginActivity(loginArgs), true);
+                                        presentFragment(new ZenoraLoginActivity(loginArgs), false);
                                     } else {
                                         Toast.makeText(getParentActivity(), "دریافت گفتگوها ناموفق بود: " + roomsError, Toast.LENGTH_LONG).show();
                                     }
                                     return;
                                 }
-                                zenoraDialogsAdapter.submitRooms(rooms);
+                                for (ZenoraDialogsAdapter adapter : zenoraAdapters) {
+                                    adapter.submitRooms(rooms);
+                                }
                             }));
                 }));
     }
 
     @Override
     public View createView(final Context context) {
-        if (ZenoraMode.isEnabled()) {
-            return createZenoraView(context);
-        }
         searching = false;
         searchWas = false;
         wasDrawn = false;
@@ -5663,6 +5692,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         glassEngine.setPositionsMerger(new GlassPositionsMerger(Float.POSITIVE_INFINITY, dp(48)));
 
         ViewCompat.setOnApplyWindowInsetsListener(fragmentView, this::onApplyWindowInsets);
+        if (ZenoraMode.isEnabled()) {
+            installZenoraListOverlays(context);
+        }
         return fragmentView;
     }
 
@@ -7837,6 +7869,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void checkListLoad(ViewPage viewPage, int firstVisibleItem, int lastVisibleItem) {
+        if (ZenoraMode.isEnabled()) return;
         if (tabsAnimationInProgress || startedTracking || filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isAnimatingIndicator()) {
             return;
         }
