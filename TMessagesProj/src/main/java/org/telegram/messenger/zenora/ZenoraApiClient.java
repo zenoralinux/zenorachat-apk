@@ -151,6 +151,10 @@ public final class ZenoraApiClient {
                 JSONObject user = loggedIn.optJSONObject("user");
                 if (newCsrf.isEmpty() || user == null) throw new Exception("INVALID_LOGIN_RESPONSE");
                 ZenoraSessionStore.saveAuthenticatedSession(app, ZenoraSessionStore.getCookies(app), newCsrf, user);
+                if (!ZenoraSessionStore.hasSession(app)) {
+                    ZenoraSessionStore.clear(app);
+                    throw new Exception("SESSION_STORAGE_FAILED");
+                }
                 callback.onResult(loggedIn, null);
             } catch (Exception e) {
                 // Do not retain a temporary CSRF-only session after a failed login.
@@ -170,6 +174,10 @@ public final class ZenoraApiClient {
                 JSONObject user = result.optJSONObject("user");
                 if (csrf.isEmpty() || user == null) throw new Exception("INVALID_SESSION_RESPONSE");
                 ZenoraSessionStore.saveAuthenticatedSession(app, ZenoraSessionStore.getCookies(app), csrf, user);
+                if (!ZenoraSessionStore.hasSession(app)) {
+                    ZenoraSessionStore.clear(app);
+                    throw new Exception("SESSION_STORAGE_FAILED");
+                }
                 callback.onResult(result, null);
             } catch (Exception e) {
                 callback.onResult(null, e.getMessage() == null ? "SESSION_CHECK_FAILED" : e.getMessage());
