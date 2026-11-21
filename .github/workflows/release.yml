@@ -71,7 +71,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # sdkmanager exits after the final license prompt; with pipefail, yes receives
+          # SIGPIPE and would incorrectly fail the workflow after successful acceptance.
+          set +o pipefail
           yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-${ANDROID_API_LEVEL}" \
