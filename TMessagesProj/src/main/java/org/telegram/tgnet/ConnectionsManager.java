@@ -45,6 +45,7 @@ import org.telegram.messenger.PushListenerController;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.StatsController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.zenora.ZenoraMode;
 import org.telegram.messenger.Utilities;
 import org.telegram.utils.proxy.WebProxyConnectionTester;
 import org.telegram.utils.proxy.WebProxyTransport;
@@ -420,6 +421,25 @@ public class ConnectionsManager extends BaseController {
     }
 
     private void sendRequestInternal(TLObject object, RequestDelegate onComplete, RequestDelegateTimestamp onCompleteTimestamp, QuickAckDelegate onQuickAck, WriteToSocketDelegate onWriteToSocket, int flags, int datacenterId, int connectionType, boolean immediate, int requestToken) {
+        if (ZenoraMode.isEnabled()) {
+            // Zenora is an independent backend. Never serialize or pass a TL
+            // request to native MTProto while this build is in Zenora mode.
+            try {
+                object.freeResources();
+            } catch (Throwable ignore) {
+            }
+            TLRPC.TL_error error = new TLRPC.TL_error();
+            error.code = 403;
+            error.text = "ZENORA_MODE_DISABLED";
+            Utilities.stageQueue.postRunnable(() -> {
+                if (onComplete != null) {
+                    onComplete.run(null, error);
+                } else if (onCompleteTimestamp != null) {
+                    onCompleteTimestamp.run(null, error, 0);
+                }
+            });
+            return;
+        }
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("send request " + object + " with token = " + requestToken);
         }
@@ -657,6 +677,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public void checkConnection() {
+        if (ZenoraMode.isEnabled()) return;
         byte selectedStrategy = getIpStrategy();
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("selected ip strategy " + selectedStrategy);
@@ -666,6 +687,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public void setPushConnectionEnabled(boolean value) {
+        if (ZenoraMode.isEnabled()) return;
         native_setPushConnectionEnabled(currentAccount, value);
     }
 
@@ -712,7 +734,7 @@ public class ConnectionsManager extends BaseController {
             packageId = "";
         }
 
-        native_init(currentAccount, version, layer, apiId, deviceModel, systemVersion, appVersion, langCode, systemLangCode, configPath, logPath, regId, cFingerprint, installer, packageId, timezoneOffset, userId, userPremium, enablePushConnection, ApplicationLoader.isNetworkOnline(), ApplicationLoader.getCurrentNetworkType(), SharedConfig.measureDevicePerformanceClass());
+        native_init(currentAccount, version, layer, apiId, deviceModel, systemVersion, appVersion, langCode, systemLangCode, configPath, logPath, regId, cFingerprint, installer, packageId, timezoneOffset, userId, userPremium, enablePushConnection, !ZenoraMode.isEnabled() && ApplicationLoader.isNetworkOnline(), ApplicationLoader.getCurrentNetworkType(), SharedConfig.measureDevicePerformanceClass());
         checkConnection();
     }
 
@@ -758,6 +780,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public void resumeNetworkMaybe() {
+        if (ZenoraMode.isEnabled()) return;
         native_resumeNetwork(currentAccount, true);
     }
 
@@ -774,6 +797,7 @@ public class ConnectionsManager extends BaseController {
     }
 
     public long checkProxy(ProxySettings settings, RequestTimeDelegate requestTimeDelegate) {
+        if (ZenoraMode.isEnabled()) return 0;
         if (settings == null || !settings.isValid()) {
             return 0;
         }
@@ -807,6 +831,7 @@ public class ConnectionsManager extends BaseController {
                 appResumeCount = 0;
             }
         }
+        if (ZenoraMode.isEnabled()) return;
         if (appResumeCount == 0) {
             if (lastPauseTime == 0) {
                 lastPauseTime = System.currentTimeMillis();
