@@ -3179,7 +3179,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             page.addView(zenoraList, LayoutHelper.createFrame(
                     LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.TOP));
             zenoraAdapters.add(adapter);
-            if (page.progressView != null) page.progressView.setVisibility(View.VISIBLE);
+            if (page.progressView != null) {
+                page.progressView.bringToFront();
+                page.progressView.setVisibility(View.VISIBLE);
+            }
         }
 
         reloadZenoraRooms();
