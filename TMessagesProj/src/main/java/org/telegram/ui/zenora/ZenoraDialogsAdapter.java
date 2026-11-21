@@ -181,7 +181,7 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
         String path = item.avatarPath;
         if (path == null || path.isEmpty()) return;
         final long roomId = item.roomId;
-        final int expectedPosition = holder.getBindingAdapterPosition();
+        final int expectedPosition = holder.getAdapterPosition();
         final String url;
         if (path.startsWith("https://") || path.startsWith("http://")) url = path;
         else if (path.startsWith("/")) url = "https://miladalizadw.ir" + path;
@@ -209,7 +209,7 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
             final Bitmap result = bitmap;
             if (result == null) return;
             AndroidUtilities.runOnUIThread(() -> {
-                int current = holder.getBindingAdapterPosition();
+                int current = holder.getAdapterPosition();
                 if (current == RecyclerView.NO_POSITION || current != expectedPosition || current >= items.size()) return;
                 if (items.get(current).roomId != roomId) return;
                 holder.cell.avatarImage.setImageBitmap(new BitmapDrawable(context.getResources(), result));
