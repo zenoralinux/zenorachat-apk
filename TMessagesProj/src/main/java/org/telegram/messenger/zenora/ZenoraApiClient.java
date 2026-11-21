@@ -160,6 +160,8 @@ public final class ZenoraApiClient {
         }
 
         int status = connection.getResponseCode();
+        String responseContentType = connection.getContentType();
+        String responseUrl = connection.getURL().toString();
         persistResponseCookies(connection);
         InputStream stream = status >= 400
                 ? connection.getErrorStream() : connection.getInputStream();
@@ -173,7 +175,31 @@ public final class ZenoraApiClient {
         }
         connection.disconnect();
 
-        JSONObject json = new JSONObject(result.toString());
+        String responseBody = result.toString().trim();
+        if (responseBody.isEmpty()) {
+            throw new ZenoraApiException("EMPTY_RESPONSE", status,
+                    responseContentType, responseUrl);
+        }
+
+        final JSONObject json;
+        try {
+            json = new JSONObject(responseBody);
+        } catch (JSONException invalidJson) {
+            String code = status == 404 ? "ENDPOINT_NOT_FOUND"
+                    : (status >= 300 ? "HTTP_" + status : "NON_JSON_RESPONSE");
+            throw new ZenoraApiException(code, status,
+                    responseContentType, responseUrl);
+        }
+
+        if (status == 404 && !json.optBoolean("ok")) {
+            throw new ZenoraApiException("ENDPOINT_NOT_FOUND", status,
+                    responseContentType, responseUrl);
+        }
+        if (status >= 500 && !json.optBoolean("ok")) {
+            throw new ZenoraApiException(
+                    json.optString("error", "HTTP_" + status), status,
+                    responseContentType, responseUrl);
+        }
         if (status == 401 && "AUTH_REQUIRED".equals(json.optString("error"))) {
             clearSession();
         }
@@ -215,10 +241,21 @@ public final class ZenoraApiClient {
 
     public static final class ZenoraApiException extends Exception {
         public final String errorCode;
+        public final int httpStatus;
+        public final String contentType;
+        public final String responseUrl;
 
         ZenoraApiException(String errorCode) {
+            this(errorCode, -1, "", "");
+        }
+
+        ZenoraApiException(String errorCode, int httpStatus,
+                           String contentType, String responseUrl) {
             super(errorCode);
             this.errorCode = errorCode;
+            this.httpStatus = httpStatus;
+            this.contentType = contentType == null ? "" : contentType;
+            this.responseUrl = responseUrl == null ? "" : responseUrl;
         }
     }
 }
