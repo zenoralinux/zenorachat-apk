@@ -79,7 +79,11 @@ public final class ZenoraDialogsBridge {
             if (roomId <= 0) continue;
 
             TLRPC.Dialog dialog;
-            if ("dm".equals(type) || "direct".equals(type)) {
+            if ("saved".equals(type)) {
+                Object peer = newObject("org.telegram.tgnet.TLRPC$TL_peerUser");
+                set(peer, "user_id", self.id);
+                dialog = makeDialog(self.id, peer, row);
+            } else if ("dm".equals(type) || "direct".equals(type)) {
                 long otherId = row.optLong("other_user_id", 0);
                 if (otherId <= 0 || otherId == self.id) continue;
                 JSONObject userData = new JSONObject();
