@@ -169,7 +169,7 @@ public class ZenoraLoginActivity extends BaseFragment {
 
     private String friendlyError(String error) {
         if ("INVALID_CREDENTIALS".equals(error)) return "نام کاربری یا رمز عبور صحیح نیست.";
-        if ("AUTH_REDIRECT".equals(error) || "AUTH_REQUIRED".equals(error)) return "ورود به سرور انجام نشد؛ API موبایل را بررسی کنید.";
+        if ("AUTH_REDIRECT".equals(error) || "AUTH_REQUIRED".equals(error) || "INVALID_SERVER_RESPONSE".equals(error)) return "API موبایل روی سرور هنوز نصب یا به‌روزرسانی نشده است.";
         if ("CSRF_INVALID".equals(error) || "CSRF_UNAVAILABLE".equals(error)) return "نشست امنیتی ورود ایجاد نشد. دوباره تلاش کنید.";
         if ("NETWORK_ERROR".equals(error)) return "ارتباط با سرور برقرار نشد.";
         return "ورود انجام نشد. " + (error == null ? "" : error);
