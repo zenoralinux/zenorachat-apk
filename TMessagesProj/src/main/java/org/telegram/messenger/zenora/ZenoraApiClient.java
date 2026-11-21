@@ -67,7 +67,15 @@ public final class ZenoraApiClient {
             throw new ZenoraApiException(response.optString("error", "ROOMS_FETCH_FAILED"));
         }
         JSONArray rooms = response.optJSONArray("rooms");
-        return rooms != null ? rooms : new JSONArray();
+        JSONArray directMessages = response.optJSONArray("dm_rooms");
+        JSONArray combined = new JSONArray();
+        if (rooms != null) {
+            for (int i = 0; i < rooms.length(); i++) combined.put(rooms.optJSONObject(i));
+        }
+        if (directMessages != null) {
+            for (int i = 0; i < directMessages.length(); i++) combined.put(directMessages.optJSONObject(i));
+        }
+        return combined;
     }
 
     public void clearSession() {
