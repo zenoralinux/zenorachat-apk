@@ -121,15 +121,19 @@ python3 scripts/configure-fork.py --mode release --application-id ir.zenora.zeno
 ./gradlew :TMessagesProj_App:assembleAfatRelease --build-cache --parallel --max-workers=4 -PZENORA_ABIS=armeabi-v7a,arm64-v8a,x86,x86_64
 ```
 
-## Telegram-native UI integration
+## Zenora account + Telegram-native dialog list (Phase 1)
 
-The branch `feat/telegram-native-ui-preserved-arm64-release-20261121` restores the original Telegram Android navigation and screen stack.
+The branch `feat/zenora-auth-native-dialogs-phase1-20261121` keeps Telegram's native Android navigation and dialog-list components while using ZenoraChat as the account and data backend.
 
-- The build overlay no longer redirects `LaunchActivity` to the standalone `ZenoraNativeActivity`.
-- The legacy activity is not copied into the Android source set or registered in the manifest.
-- Telegram's own `LoginActivity`, `MainTabsActivity`, `DialogsActivity` and `ChatActivity` remain the app entry and UI.
-- This preview therefore uses Telegram's normal phone-number sign-in and Telegram network session. It does **not** yet authenticate a ZenoraChat username/password or load Zenora REST conversations into Telegram's models; that requires a separate REST-to-Telegram model and messaging adapter.
-- A successful fast ARM64 build pushed to this feature branch is published as a versioned GitHub pre-release. The native Zenora API health gate is intentionally not used for this preview because the standalone REST activity is disabled.
+- Sign-in uses the existing ZenoraChat website form at `/index.php` and verifies the authenticated session through `/api/rooms.php`; no parallel password verifier or new account database is introduced.
+- The session cookie is encrypted with an Android Keystore AES-GCM key. The password is not persisted.
+- Telegram's phone-number onboarding is bypassed for the Zenora app. A small Zenora login fragment is shown first; after sign-in the app enters Telegram's `MainTabsActivity`.
+- The main conversation list is populated from `rooms` and `dm_rooms` in `/api/rooms.php`, with archive filtering, pinned order, unread counts, mute state, date, previews and cached avatars.
+- Rows are rendered by Telegram's native `DialogsActivity`, `DialogsAdapter` and `DialogCell`; the app does not use a standalone custom chat-list activity.
+- Phase 1 ends at authentication and list viewing. Opening a conversation, history, sending/receiving, search, calls, Telegram contacts and MTProto-backed features are not connected yet. Tapping a Zenora dialog displays a clear Phase 2 notice rather than opening a Telegram conversation with a mismatched ID.
+- Fast ARM64 pushes to this branch publish a versioned GitHub pre-release.
+
+The separate branch `feat/telegram-native-ui-preserved-arm64-release-20261121` is the earlier UI-only preview and does not include Zenora account integration.
 
 
 ## Important

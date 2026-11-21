@@ -3,7 +3,7 @@ run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
   push:
-    branches: [main, feat/native-login-json-release-arm64-20261121, feat/telegram-native-ui-preserved-arm64-release-20261121]
+    branches: [main, feat/native-login-json-release-arm64-20261121, feat/telegram-native-ui-preserved-arm64-release-20261121, feat/zenora-auth-native-dialogs-phase1-20261121]
     paths:
       - 'settings.gradle'
       - 'build.gradle'
@@ -85,6 +85,10 @@ jobs:
 
       - name: Apply Zenora native client overlay
         run: python3 .github/scripts/apply-zenora-native.py
+
+      - name: Isolate Phase 1 Zenora dialog list from MTProto
+        if: github.ref == 'refs/heads/feat/zenora-auth-native-dialogs-phase1-20261121'
+        run: python3 .github/scripts/apply-zenora-phase1-dialog-isolation.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -225,7 +229,7 @@ jobs:
           } > dist/BUILD-INFO.txt
 
       - name: Prepare rolling Debug Preview release notes
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121')) || (github.event_name == 'workflow_dispatch'))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121' || github.ref == 'refs/heads/feat/zenora-auth-native-dialogs-phase1-20261121')) || (github.event_name == 'workflow_dispatch'))
         shell: bash
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -245,16 +249,20 @@ jobs:
           fi
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
           echo "RELEASE_NAME=$RELEASE_NAME" >> "$GITHUB_ENV"
-          if [[ -n "$TELEGRAM_API_ID" && -n "$TELEGRAM_API_HASH" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-auth-native-dialogs-phase1-20261121" ]]; then
+            LOGIN_STATUS="ZenoraChat username/password authentication is enabled through the existing HTTPS website login and auth_sessions cookie. Telegram phone-number login is bypassed; Telegram API credentials are not used for Zenora account sign-in."
+          elif [[ -n "$TELEGRAM_API_ID" && -n "$TELEGRAM_API_HASH" ]]; then
             LOGIN_STATUS="Configured: Telegram API credentials are present."
           else
-            LOGIN_STATUS="WARNING: this preview was built with placeholder Telegram API credentials. Telegram sign-in and API requests will not work until TELEGRAM_API_ID and TELEGRAM_API_HASH are configured as repository secrets."
+            LOGIN_STATUS="WARNING: this Telegram-native preview uses placeholder Telegram API credentials. Telegram sign-in and API requests will not work until TELEGRAM_API_ID and TELEGRAM_API_HASH are configured as repository secrets."
           fi
           {
             echo "# ZenoraChat Debug Preview"
             echo
             if [[ "$RELEASE_TAG" == "zenora-debug-latest" ]]; then
               echo "This rolling pre-release is replaced after each successful Fast ARM64 Debug build on main. It is a test build, not a stable release."
+            elif [[ "$GITHUB_REF" == "refs/heads/feat/zenora-auth-native-dialogs-phase1-20261121" ]]; then
+              echo "Versioned ARM64 Debug pre-release with ZenoraChat account login and Zenora REST conversations rendered using Telegram's native dialog list. Opening conversations is not part of Phase 1."
             else
               echo "Versioned ARM64 Debug pre-release created from the Telegram-native-UI feature branch or a manually requested workflow run. It is a test build, not a stable release."
             fi
@@ -269,8 +277,10 @@ jobs:
             echo
             echo "## Important"
             echo "$LOGIN_STATUS"
-            if [[ "$GITHUB_REF" == "refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121" ]]; then
-              echo "This build preserves Telegram Android native UI and its standard Telegram phone-number login. The separate ZenoraNativeActivity login/list UI is not launched or bundled into the Android source set."
+            if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-auth-native-dialogs-phase1-20261121" ]]; then
+              echo "This build uses the existing ZenoraChat username/password login, stores the auth cookie encrypted with Android Keystore, and renders rooms/dm_rooms from /api/rooms.php using Telegram's native DialogsActivity, DialogsAdapter and DialogCell. Opening chats, message history and sending/receiving are reserved for Phase 2."
+            elif [[ "$GITHUB_REF" == "refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121" ]]; then
+              echo "This build preserves Telegram Android native UI. Zenora account login and REST dialog integration are not included in this preview."
             fi
             echo "The app uses the Debug signing configuration and package suffix .beta. It is not a production-signed build."
           } > dist/debug-preview-notes.md
@@ -309,7 +319,7 @@ jobs:
           printf '%s' "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("service") == "zenora-native-api" and d.get("database") is True, "Native API health check returned an unexpected payload"; print("Native API deployment and database: OK")'
 
       - name: Publish ARM64 Debug APK to GitHub Releases
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121')) || (github.event_name == 'workflow_dispatch'))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121' || github.ref == 'refs/heads/feat/zenora-auth-native-dialogs-phase1-20261121')) || (github.event_name == 'workflow_dispatch'))
         uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
