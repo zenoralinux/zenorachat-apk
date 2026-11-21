@@ -393,6 +393,26 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
     public static LaunchActivity instance;
 
+    public static void requestZenoraLogin() {
+        LaunchActivity activity = instance;
+        if (activity == null) {
+            return;
+        }
+        AndroidUtilities.runOnUIThread(() -> {
+            if (instance != activity) {
+                return;
+            }
+            ZenoraApiClient.clearSession();
+            UserConfig.getInstance(activity.currentAccount).clearConfig();
+            DialogsActivity.resetZenoraLoadState(activity.currentAccount);
+            INavigationLayout layout = activity.getActionBarLayout();
+            if (layout != null) {
+                layout.presentFragment(new INavigationLayout.NavigationParams(new ZenoraLoginActivity())
+                        .setRemoveLast(true));
+            }
+        });
+    }
+
     public boolean voipLaunchedInBackground;
 
     public WindowAnimatedInsetsProvider getRootAnimatedInsetsListener() {

@@ -2872,8 +2872,23 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
 
         loadDialogs(getAccountInstance());
-        getMessagesController().getStoriesController().loadAllStories();
-        getMessagesController().loadPinnedDialogs(folderId, 0, null);
+        if (!ZenoraChatController.isZenoraEnabled()) {
+            getMessagesController().getStoriesController().loadAllStories();
+            getMessagesController().loadPinnedDialogs(folderId, 0, null);
+            if (isArchive()) {
+                getMessagesController().getStoriesController().loadHiddenStories();
+            } else {
+                getMessagesController().getStoriesController().loadStories();
+            }
+            getContactsController().loadGlobalPrivacySetting();
+            if (getMessagesController().savedViewAsChats) {
+                getMessagesController().getSavedMessagesController().preloadDialogs(true);
+            }
+            if (communityId != 0) {
+                getMessagesController().loadFullChat(communityId, 0, true);
+            }
+            BirthdayController.getInstance(currentAccount).check();
+        }
         if (databaseMigrationHint != null && !getMessagesStorage().isDatabaseMigrationInProgress()) {
             View localView = databaseMigrationHint;
             if (localView.getParent() != null) {
@@ -2902,6 +2917,12 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         additionFloatingButtonOffset = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT + DialogsActivity.MAIN_TABS_MARGIN) : 0;
 
         return true;
+    }
+
+    public static void resetZenoraLoadState(int account) {
+        if (account >= 0 && account < dialogsLoaded.length) {
+            dialogsLoaded[account] = false;
+        }
     }
 
     public static void loadDialogs(AccountInstance accountInstance) {
@@ -10762,7 +10783,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else if (id == NotificationCenter.onDatabaseReset) {
             dialogsLoaded[currentAccount] = false;
             loadDialogs(getAccountInstance());
-            getMessagesController().loadPinnedDialogs(folderId, 0, null);
+            if (!ZenoraChatController.isZenoraEnabled()) {
+                getMessagesController().loadPinnedDialogs(folderId, 0, null);
+            }
         } else if (id == NotificationCenter.chatlistFolderUpdate) {
             int filterId = (int) args[0];
             for (int i = 0; i < viewPages.length; ++i) {

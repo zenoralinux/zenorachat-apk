@@ -6,6 +6,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.ui.LaunchActivity;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -40,12 +41,15 @@ public final class ZenoraChatController {
     public static void loadDialogs(AccountInstance accountInstance) {
         ZenoraApiClient.fetchRooms((response, error) -> {
             if (error != null) {
-                String message = "اتصال به زنوراچت ناموفق بود. اتصال اینترنت و نشانی API را بررسی کنید.";
                 if (error instanceof ZenoraApiClient.ApiException
                         && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
-                    message = "نشست زنوراچت معتبر نیست؛ دوباره وارد شوید.";
+                    ZenoraApiClient.clearSession();
+                    LaunchActivity.requestZenoraLogin();
+                    return;
                 }
-                Toast.makeText(ApplicationLoader.applicationContext, message, Toast.LENGTH_LONG).show();
+                Toast.makeText(ApplicationLoader.applicationContext,
+                        "اتصال به زنوراچت ناموفق بود. اتصال اینترنت و نشانی API را بررسی کنید.",
+                        Toast.LENGTH_LONG).show();
                 return;
             }
             try {
@@ -106,20 +110,28 @@ public final class ZenoraChatController {
             controller.dialogsByFolder.put(0, visible);
         }
         if (visible.isEmpty() && !controller.allDialogs.isEmpty()) {
-            visible.addAll(controller.allDialogs);
-            Collections.sort(visible, (left, right) -> {
+            ArrayList<TLRPC.Dialog> archived = controller.dialogsByFolder.get(1);
+            if (archived == null) {
+                archived = new ArrayList<>();
+                controller.dialogsByFolder.put(1, archived);
+            }
+            for (TLRPC.Dialog dialog : controller.allDialogs) {
+                if (dialog.folder_id == 1) archived.add(dialog);
+                else visible.add(dialog);
+            }
+            java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
                 if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
                 if (left.pinned) return Integer.compare(right.pinnedNum, left.pinnedNum);
                 return Integer.compare(right.last_message_date, left.last_message_date);
-            });
+            };
+            Collections.sort(visible, order);
+            Collections.sort(archived, order);
         }
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
 
     private static void addDialog(int account, MessagesController controller, TLRPC.User self,
                                   JSONObject row, boolean fromDmList) throws Exception {
-        if (row.optInt("is_archived", 0) == 1) return;
-
         String type = row.optString("type", fromDmList ? "dm" : "group");
         boolean saved = "saved".equals(type);
         boolean direct = fromDmList && !saved;
@@ -194,7 +206,7 @@ public final class ZenoraChatController {
         dialog.unread_mark = row.optInt("is_marked_unread", 0) == 1;
         dialog.pinned = row.optInt("is_pinned", 0) == 1;
         dialog.pinnedNum = 100000 - Math.max(0, row.optInt("pin_order", 0));
-        dialog.folder_id = 0;
+        dialog.folder_id = row.optInt("is_archived", 0) == 1 ? 1 : 0;
         dialog.last_message_date = date;
         dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
 
