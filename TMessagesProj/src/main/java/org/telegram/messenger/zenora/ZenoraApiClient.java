@@ -24,7 +24,7 @@ import java.util.Map;
  * background executor/thread, never from Android's main thread.
  */
 public final class ZenoraApiClient {
-    public static final String API_BASE = "https://miladalizadw.ir/Telegram/api/";
+    public static final String API_BASE = "https://miladalizadw.ir/telegram/api/";
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
     private static final String AUTHENTICATED_KEY = "authenticated";
