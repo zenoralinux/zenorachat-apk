@@ -197,7 +197,7 @@ public final class ZenoraApiClient {
                 refreshSession(context);
             } catch (Exception refreshError) {
                 String refreshCode = errorCode(refreshError);
-                if (result.status == 401 || "INVALID_REFRESH_TOKEN".equals(refreshCode)
+                if ("INVALID_REFRESH_TOKEN".equals(refreshCode)
                         || "ACCOUNT_UNAVAILABLE".equals(refreshCode)) {
                     ZenoraSessionStore.clear(context);
                     throw new ApiException("AUTH_REQUIRED", 401);
