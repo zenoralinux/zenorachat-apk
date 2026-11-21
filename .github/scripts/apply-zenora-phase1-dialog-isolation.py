@@ -15,6 +15,11 @@ def main() -> None:
         raise SystemExit("DialogsAdapter.java is missing.")
     source = ADAPTER.read_text(encoding="utf-8")
 
+    type_mapping = 'customDialog.type = "channel".equals(info.type) ? 2 : ("group".equals(info.type) ? 1 : 0);'
+    if source.count(type_mapping) != 1:
+        raise SystemExit("Could not safely neutralize Telegram-only custom dialog type mapping.")
+    source = source.replace(type_mapping, "customDialog.type = 0;", 1)
+
     pattern = re.compile(
         r"    private void updateItemList\(\) \{\n"
         r"        if \(communityId != 0\) \{\n"
