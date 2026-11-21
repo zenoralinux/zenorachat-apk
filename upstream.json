@@ -1,0 +1,7 @@
+{
+  "repository": "TelegramMessenger/Telegram-Android",
+  "branch": "master",
+  "sync_schedule": "daily",
+  "initial_import": "direct-to-main",
+  "subsequent_updates": "pull-request"
+}
