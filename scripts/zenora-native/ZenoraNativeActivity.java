@@ -520,6 +520,7 @@ public final class ZenoraNativeActivity extends Activity {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(API_ROOT + path).openConnection();
+            connection.setInstanceFollowRedirects(false);
             connection.setRequestMethod(method);
             connection.setConnectTimeout(15000);
             connection.setReadTimeout(25000);
@@ -535,9 +536,29 @@ public final class ZenoraNativeActivity extends Activity {
                 }
             }
             int status = connection.getResponseCode();
+            String responseUrl = connection.getURL().toString();
+            String contentType = connection.getContentType() == null ? "" : connection.getContentType();
+            if (status >= 300 && status < 400) {
+                String location = connection.getHeaderField("Location");
+                throw new ApiException(status, "API_REDIRECT: " + (location == null ? responseUrl : location));
+            }
             InputStream input = status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream();
             String responseText = readAll(input);
-            JSONObject response = responseText.trim().isEmpty() ? new JSONObject() : new JSONObject(responseText);
+            String trimmed = responseText == null ? "" : responseText.trim();
+            if (trimmed.startsWith("<") || contentType.toLowerCase(Locale.ROOT).contains("text/html")) {
+                String pathOnly;
+                try { pathOnly = new URL(responseUrl).getPath(); } catch (Exception ignored) { pathOnly = responseUrl; }
+                throw new ApiException(status, "API_NON_JSON_RESPONSE: HTTP " + status
+                        + ", content-type=" + (contentType.isEmpty() ? "unknown" : contentType)
+                        + ", path=" + pathOnly);
+            }
+            JSONObject response;
+            try {
+                response = trimmed.isEmpty() ? new JSONObject() : new JSONObject(trimmed);
+            } catch (org.json.JSONException parseError) {
+                throw new ApiException(status, "API_INVALID_JSON: HTTP " + status
+                        + ", content-type=" + (contentType.isEmpty() ? "unknown" : contentType));
+            }
             if (status < 200 || status >= 300 || !response.optBoolean("ok", status >= 200 && status < 300)) {
                 throw new ApiException(status, response.optString("error", "REQUEST_FAILED"));
             }
@@ -560,7 +581,11 @@ public final class ZenoraNativeActivity extends Activity {
     private String readableError(Exception e) {
         if (e instanceof ApiException) {
             int code = ((ApiException) e).status;
-            String error = e.getMessage();
+            String error = e.getMessage() == null ? "" : e.getMessage();
+            if (error.startsWith("API_NON_JSON_RESPONSE")) return "سرور API به‌جای JSON یک صفحه HTML برگرداند. مسیر API یا انتشار نسخه جدید سرور را بررسی کنید.\n" + error;
+            if (error.startsWith("API_REDIRECT")) return "درخواست API به صفحه دیگری هدایت شد؛ آدرس API، HTTPS و تنظیمات مسیر /telegram را بررسی کنید.\n" + error;
+            if (error.startsWith("API_INVALID_JSON")) return "پاسخ سرور JSON معتبر نیست. تنظیمات PHP و خروجی ناخواسته قبل از JSON را بررسی کنید.\n" + error;
+            if ("AUTH_SERVICE_UNAVAILABLE".equals(error)) return "سرویس ورود موقتاً در دسترس نیست؛ نصب API و اتصال دیتابیس را بررسی کنید.";
             if ("INVALID_CREDENTIALS".equals(error)) return "نام کاربری یا رمز عبور صحیح نیست.";
             if ("LOGIN_RATE_LIMITED".equals(error)) return "تعداد تلاش‌های ورود زیاد است؛ ۱۵ دقیقه دیگر تلاش کنید.";
             if ("INVALID_REFRESH_TOKEN".equals(error) || "ACCESS_TOKEN_EXPIRED".equals(error)) return "نشست شما منقضی شده است؛ دوباره وارد شوید.";
