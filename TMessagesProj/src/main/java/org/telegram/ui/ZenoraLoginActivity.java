@@ -15,10 +15,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.os.Bundle;
 
-import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
-import org.telegram.messenger.R;
-import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.zenora.ZenoraApiClient;
 import org.telegram.messenger.zenora.ZenoraSessionStore;
 import org.telegram.ui.ActionBar.ActionBar;
@@ -26,18 +23,10 @@ import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Components.LayoutHelper;
 
-/**
- * Native username/password entry for ZenoraChat. Visual primitives and colors
- * are taken from Telegram's current theme; Telegram phone/SMS auth is bypassed.
- */
+/** Zenora username/password sign-in using Telegram's active theme and controls. */
 public class ZenoraLoginActivity extends BaseFragment {
-    public ZenoraLoginActivity() {
-        super();
-    }
-
-    public ZenoraLoginActivity(Bundle args) {
-        super(args);
-    }
+    public ZenoraLoginActivity() { super(); }
+    public ZenoraLoginActivity(Bundle args) { super(args); }
 
     private EditText usernameField;
     private EditText passwordField;
@@ -141,6 +130,7 @@ public class ZenoraLoginActivity extends BaseFragment {
             Toast.makeText(getParentActivity(), "نام کاربری و رمز عبور را وارد کنید.", Toast.LENGTH_SHORT).show();
             return;
         }
+
         submitting = true;
         submitButton.setEnabled(false);
         submitButton.setAlpha(0.65f);
@@ -154,10 +144,13 @@ public class ZenoraLoginActivity extends BaseFragment {
                     submitButton.setEnabled(true);
                     submitButton.setAlpha(1f);
                     submitButton.setText("ورود");
+                    if (passwordField != null) passwordField.setText("");
+
                     if (error != null || result == null || !result.optBoolean("authenticated", false)) {
                         Toast.makeText(getParentActivity(), friendlyError(error), Toast.LENGTH_LONG).show();
                         return;
                     }
+
                     ZenoraSessionStore.applyCachedUser(getParentActivity(), currentAccount);
                     if (arguments != null && arguments.getBoolean("resumeExistingTabs", false)) {
                         finishFragment();
@@ -169,8 +162,13 @@ public class ZenoraLoginActivity extends BaseFragment {
 
     private String friendlyError(String error) {
         if ("INVALID_CREDENTIALS".equals(error)) return "نام کاربری یا رمز عبور صحیح نیست.";
-        if ("AUTH_REDIRECT".equals(error) || "AUTH_REQUIRED".equals(error) || "INVALID_SERVER_RESPONSE".equals(error)) return "API موبایل روی سرور هنوز نصب یا به‌روزرسانی نشده است.";
-        if ("CSRF_INVALID".equals(error) || "CSRF_UNAVAILABLE".equals(error)) return "نشست امنیتی ورود ایجاد نشد. دوباره تلاش کنید.";
+        if ("LOGIN_RATE_LIMITED".equals(error)) return "تلاش‌های ورود بیش از حد بوده؛ کمی بعد دوباره امتحان کنید.";
+        if ("AUTH_SERVICE_UNAVAILABLE".equals(error)) return "سرویس ورود زنورا موقتاً در دسترس نیست.";
+        if ("SESSION_STORAGE_FAILED".equals(error)) return "ذخیره امن نشست روی این دستگاه انجام نشد.";
+        if ("API_REDIRECT".equals(error) || "API_NON_JSON_RESPONSE".equals(error)
+                || "INVALID_SERVER_RESPONSE".equals(error)) {
+            return "پاسخ سرور معتبر نیست؛ مسیر انتشار API موبایل را بررسی کنید.";
+        }
         if ("NETWORK_ERROR".equals(error)) return "ارتباط با سرور برقرار نشد.";
         return "ورود انجام نشد. " + (error == null ? "" : error);
     }
