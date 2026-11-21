@@ -43,11 +43,6 @@ on:
           - fast
           - universal
         default: fast
-      publish_release:
-        description: 'Publish the validated ARM64 APK as a GitHub pre-release (requires the native API to be deployed)'
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -230,7 +225,7 @@ jobs:
           } > dist/BUILD-INFO.txt
 
       - name: Prepare rolling Debug Preview release notes
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch'))
         shell: bash
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -302,7 +297,7 @@ jobs:
           fi
 
       - name: Verify deployed native API before publishing
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch'))
         shell: bash
         run: |
           set -euo pipefail
@@ -311,7 +306,7 @@ jobs:
           printf '%s' "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("service") == "zenora-native-api" and d.get("database") is True, "Native API health check returned an unexpected payload"; print("Native API deployment and database: OK")'
 
       - name: Publish ARM64 Debug APK to GitHub Releases
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch'))
         uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
