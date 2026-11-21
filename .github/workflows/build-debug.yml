@@ -3,7 +3,7 @@ run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
   push:
-    branches: [main, feat/native-login-json-release-arm64-20261121]
+    branches: [main, feat/native-login-json-release-arm64-20261121, feat/telegram-native-ui-preserved-arm64-release-20261121]
     paths:
       - 'settings.gradle'
       - 'build.gradle'
@@ -225,7 +225,7 @@ jobs:
           } > dist/BUILD-INFO.txt
 
       - name: Prepare rolling Debug Preview release notes
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch'))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121')) || (github.event_name == 'workflow_dispatch'))
         shell: bash
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -256,7 +256,7 @@ jobs:
             if [[ "$RELEASE_TAG" == "zenora-debug-latest" ]]; then
               echo "This rolling pre-release is replaced after each successful Fast ARM64 Debug build on main. It is a test build, not a stable release."
             else
-              echo "Versioned ARM64 Debug pre-release created by a manually requested workflow run. It is a test build, not a stable release."
+              echo "Versioned ARM64 Debug pre-release created from the Telegram-native-UI feature branch or a manually requested workflow run. It is a test build, not a stable release."
             fi
             echo
             echo "## Build information"
@@ -269,6 +269,9 @@ jobs:
             echo
             echo "## Important"
             echo "$LOGIN_STATUS"
+            if [[ "$GITHUB_REF" == "refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121" ]]; then
+              echo "This build preserves Telegram Android native UI and its standard Telegram phone-number login. The separate ZenoraNativeActivity login/list UI is not launched or bundled into the Android source set."
+            fi
             echo "The app uses the Debug signing configuration and package suffix .beta. It is not a production-signed build."
           } > dist/debug-preview-notes.md
 
@@ -306,7 +309,7 @@ jobs:
           printf '%s' "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("service") == "zenora-native-api" and d.get("database") is True, "Native API health check returned an unexpected payload"; print("Native API deployment and database: OK")'
 
       - name: Publish ARM64 Debug APK to GitHub Releases
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch'))
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/telegram-native-ui-preserved-arm64-release-20261121')) || (github.event_name == 'workflow_dispatch'))
         uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
