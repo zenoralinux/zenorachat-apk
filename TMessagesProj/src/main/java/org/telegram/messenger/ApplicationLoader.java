@@ -283,6 +283,12 @@ public class ApplicationLoader extends Application {
                 @Override
                 public void onError(String message) {
                     FileLog.e("ZenoraChat session restore failed: " + message);
+                    if (message != null && message.contains("(HTTP 401)")) {
+                        ZenoraApiClient.clearSession();
+                        UserConfig.getInstance(zenoraAccount).clearConfig();
+                        NotificationCenter.getInstance(zenoraAccount)
+                                .postNotificationName(NotificationCenter.appDidLogout);
+                    }
                 }
             });
         }
