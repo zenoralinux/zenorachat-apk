@@ -48,7 +48,7 @@ def patch_launch_activity() -> None:
     marker = "// ZENORA_NATIVE_BOOTSTRAP"
     if marker in content:
         return
-    pattern = re.compile(r"(@Override\\s+protected void onCreate\\(Bundle savedInstanceState\\)\\s*\\{)")
+    pattern = re.compile(r"(@Override\s+protected void onCreate\(Bundle savedInstanceState\)\s*\{)")
     updated, count = pattern.subn(
         r"""\\1
         // ZENORA_NATIVE_BOOTSTRAP: keep the Telegram protocol stack out of Zenora account mode.
