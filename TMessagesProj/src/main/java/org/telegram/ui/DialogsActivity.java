@@ -3171,7 +3171,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             zenoraList.setInstantClick(true);
             zenoraList.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
 
-            ZenoraDialogsAdapter adapter = new ZenoraDialogsAdapter(context, this, currentAccount);
+            ZenoraDialogsAdapter adapter = new ZenoraDialogsAdapter(context, this, currentAccount, folderId == 1);
             zenoraList.setAdapter(adapter);
             zenoraList.setOnItemClickListener((view, position, x, y) ->
                     Toast.makeText(context, "باز کردن گفتگو در مرحله بعد فعال می‌شود.", Toast.LENGTH_SHORT).show());
