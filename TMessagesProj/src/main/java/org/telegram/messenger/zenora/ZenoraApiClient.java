@@ -133,7 +133,7 @@ public final class ZenoraApiClient {
         Context app = context.getApplicationContext();
         IO.execute(() -> {
             try {
-                JSONObject csrfResponse = requireOk(request(app, "GET", "csrf_token.php", null, null));
+                JSONObject csrfResponse = requireOk(request(app, "GET", "mobile_csrf.php", null, null));
                 String initialCsrf = csrfResponse.optString("csrf", "");
                 if (initialCsrf.isEmpty()) throw new Exception("CSRF_UNAVAILABLE");
                 ZenoraSessionStore.saveCsrf(app, initialCsrf);
