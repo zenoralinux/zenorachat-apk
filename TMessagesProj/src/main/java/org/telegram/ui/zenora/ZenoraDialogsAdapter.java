@@ -62,12 +62,14 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
     private final Context context;
     private final DialogsActivity parent;
     private final int account;
+    private final boolean archivedOnly;
     private final ArrayList<Item> items = new ArrayList<>();
 
-    public ZenoraDialogsAdapter(Context context, DialogsActivity parent, int account) {
+    public ZenoraDialogsAdapter(Context context, DialogsActivity parent, int account, boolean archivedOnly) {
         this.context = context.getApplicationContext();
         this.parent = parent;
         this.account = account;
+        this.archivedOnly = archivedOnly;
         setHasStableIds(true);
     }
 
@@ -115,7 +117,8 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
         if (roomId <= 0) return;
 
         boolean saved = forceSaved || "saved".equals(row.optString("type", ""));
-        if (!saved && row.optInt("is_archived", 0) == 1) return;
+        boolean archived = row.optInt("is_archived", 0) == 1;
+        if (archivedOnly != archived) return;
 
         Item item = new Item();
         item.roomId = roomId;
