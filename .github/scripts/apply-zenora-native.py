@@ -285,6 +285,40 @@ def patch_dialogs_activity() -> None:
         "DialogsActivity Zenora long press isolation",
     )
 
+    content = replace_exact(
+        content,
+        '''        public int getMovementFlags(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder viewHolder) {
+            if (waitingForDialogsAnimationEnd(parentPage)''',
+        '''        public int getMovementFlags(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder viewHolder) {
+            if (ZenoraSession.isAuthenticated()) {
+                return 0;
+            }
+            if (waitingForDialogsAnimationEnd(parentPage)''',
+        "DialogsActivity disable Telegram swipe gestures for Zenora",
+    )
+    content = replace_exact(
+        content,
+        '''        public boolean onMove(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder source, RecyclerView.ViewHolder target) {
+            if (!(target.itemView instanceof DialogCell)) {''',
+        '''        public boolean onMove(@NonNull RecyclerView recyclerView, @NonNull RecyclerView.ViewHolder source, RecyclerView.ViewHolder target) {
+            if (ZenoraSession.isAuthenticated()) {
+                return false;
+            }
+            if (!(target.itemView instanceof DialogCell)) {''',
+        "DialogsActivity disable Telegram reordering for Zenora",
+    )
+    content = replace_exact(
+        content,
+        '''        public void onSwiped(RecyclerView.ViewHolder viewHolder, int direction) {
+            if (viewHolder != null) {''',
+        '''        public void onSwiped(RecyclerView.ViewHolder viewHolder, int direction) {
+            if (ZenoraSession.isAuthenticated()) {
+                return;
+            }
+            if (viewHolder != null) {''',
+        "DialogsActivity prevent Telegram swipe actions for Zenora",
+    )
+
     marker = '''    @Override
     public void onResume() {
         super.onResume();'''
