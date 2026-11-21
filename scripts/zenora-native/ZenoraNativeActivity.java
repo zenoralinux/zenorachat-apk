@@ -65,6 +65,10 @@ public final class ZenoraNativeActivity extends Activity {
     private boolean busy;
     private JSONObject cachedChats;
 
+    public static boolean isZenoraModeEnabled() {
+        return true;
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
