@@ -686,7 +686,7 @@ public final class ZenoraNativeActivity extends Activity {
         }
 
         static void clear(Context context) {
-            context.getSharedPreferences(PREFS, MODE_PRIVATE).edit().clear().apply();
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
         }
 
         private static SecretKey key(Context context) throws Exception {
@@ -716,7 +716,7 @@ public final class ZenoraNativeActivity extends Activity {
 
         private static String decrypt(Context context, String field) {
             try {
-                String encoded = context.getSharedPreferences(PREFS, MODE_PRIVATE).getString(field, null);
+                String encoded = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(field, null);
                 if (encoded == null) return null;
                 byte[] combined = android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP);
                 if (combined.length <= 12) return null;
