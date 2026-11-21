@@ -83,6 +83,9 @@ jobs:
       - name: Apply Zenora build optimizations
         run: python3 .github/scripts/apply-build-optimizations.py
 
+      - name: Apply Zenora native client overlay
+        run: python3 .github/scripts/apply-zenora-native.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:
