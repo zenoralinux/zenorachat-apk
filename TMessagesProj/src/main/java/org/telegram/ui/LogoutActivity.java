@@ -15,6 +15,7 @@ import static org.telegram.ui.Components.Premium.LimitReachedBottomSheet.TYPE_AC
 import android.animation.AnimatorSet;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.DialogInterface;
 import android.view.Gravity;
 import android.view.View;
@@ -33,6 +34,9 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.zenora.ZenoraApiClient;
+import org.telegram.messenger.zenora.ZenoraMode;
+import org.telegram.messenger.zenora.ZenoraSessionStore;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -60,6 +64,7 @@ public class LogoutActivity extends BaseFragment {
     private ListAdapter listAdapter;
     private RecyclerListView listView;
     private AnimatorSet animatorSet;
+    private boolean zenoraAccountMode;
 
     private int alternativeHeaderRow;
     private int addAccountRow;
@@ -75,10 +80,11 @@ public class LogoutActivity extends BaseFragment {
     @Override
     public boolean onFragmentCreate() {
         super.onFragmentCreate();
+        zenoraAccountMode = ZenoraMode.isEnabled();
 
         rowCount = 0;
-        alternativeHeaderRow = rowCount++;
-        if (UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {
+        alternativeHeaderRow = zenoraAccountMode ? -1 : rowCount++;
+        if (!zenoraAccountMode && UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {
             addAccountRow = rowCount++;
         } else {
             addAccountRow = -1;
@@ -88,10 +94,10 @@ public class LogoutActivity extends BaseFragment {
         } else {
             passcodeRow = -1;
         }
-        cacheRow = rowCount++;
-        phoneRow = rowCount++;
+        cacheRow = zenoraAccountMode ? -1 : rowCount++;
+        phoneRow = zenoraAccountMode ? -1 : rowCount++;
         supportRow = rowCount++;
-        alternativeSectionRow = rowCount++;
+        alternativeSectionRow = zenoraAccountMode ? -1 : rowCount++;
         logoutRow = rowCount++;
         logoutSectionRow = rowCount++;
 
@@ -197,7 +203,33 @@ public class LogoutActivity extends BaseFragment {
         return alertDialog;
     }
 
+    private void showZenoraLogOutDialog() {
+        new AlertDialog.Builder(getContext())
+            .setTitle(getString(R.string.LogOut))
+            .setMessage(getString(R.string.AreYouSureLogout))
+            .setPositiveButton(getString(R.string.LogOut), (dialogInterface, i) -> {
+                ZenoraApiClient.logout(getParentActivity(), (result, error) ->
+                    AndroidUtilities.runOnUIThread(() -> {
+                        ZenoraSessionStore.clear(getParentActivity());
+                        if (getParentActivity() != null && !getParentActivity().isFinishing()) {
+                            Intent restart = new Intent(getParentActivity(), LaunchActivity.class);
+                            restart.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                            getParentActivity().startActivity(restart);
+                            getParentActivity().finish();
+                        }
+                    })
+                );
+            })
+            .setNegativeButton(getString(R.string.Cancel), null)
+            .makeRed(DialogInterface.BUTTON_POSITIVE)
+            .show();
+    }
+
     public void showLogOutDialog() {
+        if (ZenoraMode.isEnabled()) {
+            showZenoraLogOutDialog();
+            return;
+        }
         final AlertDialog progressDialog = new AlertDialog(getContext(), AlertDialog.ALERT_TYPE_SPINNER);
         progressDialog.showDelayed(500);
         GramWallet.ensureLocalWalletBalances(currentAccount, () -> {
