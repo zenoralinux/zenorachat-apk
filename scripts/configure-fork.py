@@ -129,6 +129,13 @@ def configure(args: argparse.Namespace) -> None:
     api_hash = os.environ.get("TELEGRAM_API_HASH", "").strip()
     if args.mode == "release" and (not api_id.isdigit() or not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash)):
         raise SystemExit("Release builds require valid TELEGRAM_API_ID and TELEGRAM_API_HASH secrets.")
+    if args.mode == "debug" and bool(api_id) != bool(api_hash):
+        raise SystemExit("Debug builds require both TELEGRAM_API_ID and TELEGRAM_API_HASH, or neither.")
+    if args.mode == "debug" and not api_id:
+        # Never ship Telegram's official app credentials in an unofficial fork.
+        # The APK remains buildable, but login/API calls need the developer's own credentials.
+        build_vars = replace_one(build_vars, r"public static int APP_ID = \\d+;", "public static int APP_ID = 1;", "debug placeholder API ID")
+        build_vars = replace_one(build_vars, r'public static String APP_HASH = "[^"]*";', 'public static String APP_HASH = "00000000000000000000000000000000";', "debug placeholder API hash")
     if api_id:
         if not api_id.isdigit() or int(api_id) <= 0:
             raise SystemExit("TELEGRAM_API_ID must be a positive integer.")
