@@ -54,6 +54,7 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
+import org.telegram.messenger.zenora.ZenoraApiClient;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.ActionBarMenuSubItem;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -842,6 +843,9 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
             args.putBoolean("hasMainTabs", true);
             return new SettingsActivity(args);
         } else if (position == POSITION_CHATS) {
+            if (ZenoraApiClient.hasSession(ApplicationLoader.applicationContext)) {
+                return new ZenoraDialogsActivity();
+            }
             Bundle args = new Bundle();
             args.putBoolean("hasMainTabs", true);
             dialogsActivity = new DialogsActivity(args);
