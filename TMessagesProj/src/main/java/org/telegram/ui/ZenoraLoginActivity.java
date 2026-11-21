@@ -194,9 +194,18 @@ public final class ZenoraLoginActivity extends BaseFragment {
                 }
                 AndroidUtilities.runOnUIThread(() -> finishLogin(user));
             } catch (Exception error) {
-                final String code = error instanceof ZenoraApiClient.ZenoraApiException
-                        ? ((ZenoraApiClient.ZenoraApiException) error).errorCode
-                        : error.getMessage();
+                final String code;
+                if (error instanceof ZenoraApiClient.ZenoraApiException) {
+                    code = ((ZenoraApiClient.ZenoraApiException) error).errorCode;
+                } else if (error instanceof java.net.UnknownHostException) {
+                    code = "DNS_ERROR";
+                } else if (error instanceof java.net.SocketTimeoutException) {
+                    code = "NETWORK_TIMEOUT";
+                } else if (error instanceof javax.net.ssl.SSLException) {
+                    code = "TLS_ERROR";
+                } else {
+                    code = error.getClass().getSimpleName();
+                }
                 AndroidUtilities.runOnUIThread(() -> {
                     submitting = false;
                     if (loginButton != null) {
@@ -214,7 +223,23 @@ public final class ZenoraLoginActivity extends BaseFragment {
         if ("INVALID_CREDENTIALS".equals(code)) return "نام کاربری یا گذرواژه نادرست است.";
         if ("AUTH_INTERNAL_ERROR".equals(code)) return "ورود با خطای داخلی سرور روبه‌رو شد.";
         if ("CREDENTIALS_REQUIRED".equals(code)) return "نام کاربری و گذرواژه را وارد کنید.";
-        return "اتصال به سرور زنوراچت برقرار نشد. دوباره تلاش کنید.";
+        if ("ENDPOINT_NOT_FOUND".equals(code)) {
+            return "مسیر ورود اندروید روی سرور پیدا نشد (404). فایل /Telegram/api/mobile_auth.php را روی هاست منتشر کن.";
+        }
+        if ("NON_JSON_RESPONSE".equals(code)) {
+            return "سرور به‌جای JSON صفحه HTML برگرداند. مسیر استقرار API یا ریدایرکت هاست را بررسی کن.";
+        }
+        if ("CSRF_INVALID".equals(code)) {
+            return "نشست امنیتی ورود نامعتبر شد (CSRF). کوکی PHP و مسیر دامنه را بررسی کن و دوباره تلاش کن.";
+        }
+        if ("NETWORK_TIMEOUT".equals(code)) return "پاسخ سرور زنوراچت بیش از حد طول کشید.";
+        if ("DNS_ERROR".equals(code)) return "دامنه سرور زنوراچت از این دستگاه resolve نمی‌شود.";
+        if ("TLS_ERROR".equals(code)) return "اتصال امن TLS به سرور برقرار نشد.";
+        if ("EMPTY_RESPONSE".equals(code)) return "سرور پاسخ خالی برگرداند.";
+        if (code != null && code.startsWith("HTTP_")) {
+            return "سرور زنوراچت پاسخ HTTP " + code.substring(5) + " برگرداند.";
+        }
+        return "خطای ارتباط با زنوراچت: " + (code == null ? "UNKNOWN" : code);
     }
 
     private void finishLogin(JSONObject userData) {
