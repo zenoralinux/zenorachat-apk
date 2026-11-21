@@ -224,7 +224,7 @@ public final class ZenoraLoginActivity extends BaseFragment {
         if ("AUTH_INTERNAL_ERROR".equals(code)) return "ورود با خطای داخلی سرور روبه‌رو شد.";
         if ("CREDENTIALS_REQUIRED".equals(code)) return "نام کاربری و گذرواژه را وارد کنید.";
         if ("ENDPOINT_NOT_FOUND".equals(code)) {
-            return "مسیر ورود اندروید روی سرور پیدا نشد (404). فایل /Telegram/api/mobile_auth.php را روی هاست منتشر کن.";
+            return "مسیر ورود اندروید روی سرور پیدا نشد (404). فایل /telegram/api/mobile_auth.php را روی هاست منتشر کن.";
         }
         if ("NON_JSON_RESPONSE".equals(code)) {
             return "سرور به‌جای JSON صفحه HTML برگرداند. مسیر استقرار API یا ریدایرکت هاست را بررسی کن.";
