@@ -83,8 +83,8 @@ public class LogoutActivity extends BaseFragment {
         zenoraAccountMode = ZenoraMode.isEnabled();
 
         rowCount = 0;
-        alternativeHeaderRow = zenoraAccountMode ? -1 : rowCount++;
-        if (!zenoraAccountMode && UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {
+        alternativeHeaderRow = rowCount++;
+        if (UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {
             addAccountRow = rowCount++;
         } else {
             addAccountRow = -1;
@@ -94,10 +94,10 @@ public class LogoutActivity extends BaseFragment {
         } else {
             passcodeRow = -1;
         }
-        cacheRow = zenoraAccountMode ? -1 : rowCount++;
-        phoneRow = zenoraAccountMode ? -1 : rowCount++;
+        cacheRow = rowCount++;
+        phoneRow = rowCount++;
         supportRow = rowCount++;
-        alternativeSectionRow = zenoraAccountMode ? -1 : rowCount++;
+        alternativeSectionRow = rowCount++;
         logoutRow = rowCount++;
         logoutSectionRow = rowCount++;
 
@@ -138,6 +138,10 @@ public class LogoutActivity extends BaseFragment {
         listView.setAdapter(listAdapter);
         listView.setOnItemClickListener((view, position, x, y) -> {
             if (position == addAccountRow) {
+                if (ZenoraMode.isEnabled()) {
+                    Toast.makeText(context, "پشتیبانی از چند حساب زنورا در مرحله بعد فعال می‌شود.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
                 int freeAccounts = 0;
                 Integer availableAccount = null;
                 for (int a = UserConfig.MAX_ACCOUNT_COUNT - 1; a >= 0; a--) {
@@ -162,7 +166,11 @@ public class LogoutActivity extends BaseFragment {
             } else if (position == cacheRow) {
                 presentFragment(new CacheControlActivity());
             } else if (position == phoneRow) {
-                presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_CHANGE_PHONE_NUMBER));
+                if (ZenoraMode.isEnabled()) {
+                    Toast.makeText(context, "مدیریت شماره و اطلاعات ورود حساب زنورا از طریق نسخه وب انجام می‌شود.", Toast.LENGTH_SHORT).show();
+                } else {
+                    presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_CHANGE_PHONE_NUMBER));
+                }
             } else if (position == supportRow) {
                 showDialog(AlertsCreator.createSupportAlert(LogoutActivity.this, null));
             } else if (position == logoutRow) {
