@@ -20,6 +20,8 @@ import java.util.Locale;
  * The existing DialogsActivity and DialogCell views are not replaced.
  */
 public final class ZenoraChatController {
+    private static final boolean[] loadingAccounts = new boolean[4];
+
     private ZenoraChatController() {
     }
 
@@ -39,25 +41,60 @@ public final class ZenoraChatController {
     }
 
     public static void loadDialogs(AccountInstance accountInstance) {
-        ZenoraApiClient.fetchRooms((response, error) -> {
-            if (error != null) {
-                if (error instanceof ZenoraApiClient.ApiException
-                        && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
-                    ZenoraApiClient.clearSession();
-                    LaunchActivity.requestZenoraLogin();
-                    return;
-                }
-                Toast.makeText(ApplicationLoader.applicationContext,
-                        "اتصال به زنوراچت ناموفق بود. اتصال اینترنت و نشانی API را بررسی کنید.",
-                        Toast.LENGTH_LONG).show();
-                return;
-            }
+        final int account = accountInstance.getCurrentAccount();
+        synchronized (loadingAccounts) {
+            if (account < 0 || account >= loadingAccounts.length || loadingAccounts[account]) return;
+            loadingAccounts[account] = true;
+        }
+
+        // Render the last known server snapshot immediately; refresh it in the background.
+        JSONObject cached = ZenoraApiClient.getCachedRooms();
+        if (cached != null) {
             try {
-                applyRooms(accountInstance, response);
+                applyRooms(accountInstance, cached);
             } catch (Exception e) {
                 FileLog.e(e);
+            }
+        }
+
+        ZenoraApiClient.fetchRooms((response, error) -> {
+            try {
+                if (error != null) {
+                    if (error instanceof ZenoraApiClient.ApiException
+                            && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
+                        ZenoraApiClient.clearSession();
+                        LaunchActivity.requestZenoraLogin();
+                        return;
+                    }
+                    DialogsActivity.resetZenoraLoadState(account);
+                    Toast.makeText(ApplicationLoader.applicationContext,
+                            "اتصال به زنوراچت ناموفق بود. آخرین فهرست ذخیره‌شده حفظ شد.",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                JSONArray rooms = response.optJSONArray("rooms");
+                JSONArray directRooms = response.optJSONArray("dm_rooms");
+                if (rooms == null || directRooms == null) {
+                    throw new IllegalStateException("Incomplete rooms response");
+                }
+                // An unexpected empty response must not erase a previously populated chat list.
+                if (rooms.length() == 0 && directRooms.length() == 0
+                        && !accountInstance.getMessagesController().allDialogs.isEmpty()) {
+                    DialogsActivity.resetZenoraLoadState(account);
+                    return;
+                }
+                applyRooms(accountInstance, response);
+                ZenoraApiClient.cacheRooms(response);
+            } catch (Exception e) {
+                FileLog.e(e);
+                DialogsActivity.resetZenoraLoadState(account);
                 Toast.makeText(ApplicationLoader.applicationContext,
-                        "دریافت فهرست گفتگوهای زنوراچت ناموفق بود.", Toast.LENGTH_LONG).show();
+                        "دریافت فهرست گفتگوهای زنوراچت ناموفق بود. آخرین فهرست ذخیره‌شده حفظ شد.",
+                        Toast.LENGTH_LONG).show();
+            } finally {
+                synchronized (loadingAccounts) {
+                    loadingAccounts[account] = false;
+                }
             }
         });
     }
@@ -90,6 +127,12 @@ public final class ZenoraChatController {
 
         JSONArray rooms = response.optJSONArray("rooms");
         JSONArray directRooms = response.optJSONArray("dm_rooms");
+        if (rooms == null || directRooms == null) {
+            throw new IllegalStateException("Incomplete rooms response");
+        }
+        if (rooms.length() == 0 && directRooms.length() == 0 && !controller.allDialogs.isEmpty()) {
+            return;
+        }
         if (rooms != null) {
             for (int i = 0; i < rooms.length(); i++) {
                 JSONObject row = rooms.optJSONObject(i);
@@ -103,30 +146,23 @@ public final class ZenoraChatController {
             }
         }
 
-        controller.sortDialogs(null);
-        ArrayList<TLRPC.Dialog> visible = controller.dialogsByFolder.get(0);
-        if (visible == null) {
-            visible = new ArrayList<>();
-            controller.dialogsByFolder.put(0, visible);
+        // Build the folder lists directly. MessagesController.sortDialogs() can defer
+        // work while the main interface is paused, leaving a freshly loaded list empty.
+        ArrayList<TLRPC.Dialog> visible = new ArrayList<>();
+        ArrayList<TLRPC.Dialog> archived = new ArrayList<>();
+        for (TLRPC.Dialog dialog : controller.allDialogs) {
+            if (dialog.folder_id == 1) archived.add(dialog);
+            else visible.add(dialog);
         }
-        if (visible.isEmpty() && !controller.allDialogs.isEmpty()) {
-            ArrayList<TLRPC.Dialog> archived = controller.dialogsByFolder.get(1);
-            if (archived == null) {
-                archived = new ArrayList<>();
-                controller.dialogsByFolder.put(1, archived);
-            }
-            for (TLRPC.Dialog dialog : controller.allDialogs) {
-                if (dialog.folder_id == 1) archived.add(dialog);
-                else visible.add(dialog);
-            }
-            java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
-                if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
-                if (left.pinned) return Integer.compare(right.pinnedNum, left.pinnedNum);
-                return Integer.compare(right.last_message_date, left.last_message_date);
-            };
-            Collections.sort(visible, order);
-            Collections.sort(archived, order);
-        }
+        java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
+            if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
+            if (left.pinned) return Integer.compare(right.pinnedNum, left.pinnedNum);
+            return Integer.compare(right.last_message_date, left.last_message_date);
+        };
+        Collections.sort(visible, order);
+        Collections.sort(archived, order);
+        controller.dialogsByFolder.put(0, visible);
+        controller.dialogsByFolder.put(1, archived);
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
 
