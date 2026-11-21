@@ -2896,23 +2896,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             databaseMigrationHint = null;
         }
-        if (isArchive()) {
-            getMessagesController().getStoriesController().loadHiddenStories();
-        } else {
-            getMessagesController().getStoriesController().loadStories();
-        }
-
-        getContactsController().loadGlobalPrivacySetting();
-
-        if (getMessagesController().savedViewAsChats) {
-            getMessagesController().getSavedMessagesController().preloadDialogs(true);
-        }
-
-        if (communityId != 0) {
-            getMessagesController().loadFullChat(communityId, 0, true);
-        }
-
-        BirthdayController.getInstance(currentAccount).check();
         additionNavigationBarHeight = hasMainTabs ? dp(MAIN_TABS_HEIGHT_WITH_MARGINS) : 0;
         additionFloatingButtonOffset = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT + DialogsActivity.MAIN_TABS_MARGIN) : 0;
 
