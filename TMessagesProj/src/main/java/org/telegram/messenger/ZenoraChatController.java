@@ -1,0 +1,291 @@
+package org.telegram.messenger;
+
+import android.text.TextUtils;
+import android.widget.Toast;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.telegram.tgnet.TLRPC;
+
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Locale;
+
+/**
+ * Converts ZenoraChat API rooms into Telegram's native TL dialog model.
+ * The existing DialogsActivity and DialogCell views are not replaced.
+ */
+public final class ZenoraChatController {
+    private ZenoraChatController() {
+    }
+
+    public static boolean isZenoraEnabled() {
+        return ZenoraApiClient.isZenoraSessionEnabled();
+    }
+
+    public static void activateAccount(int account, JSONObject profile) {
+        TLRPC.User self = makeUser(profile.optLong("id", 0),
+                profile.optString("username", ""),
+                profile.optString("display_name", ""), true);
+        if (self == null) return;
+        UserConfig config = UserConfig.getInstance(account);
+        config.setCurrentUser(self);
+        config.saveConfig(true);
+        MessagesController.getInstance(account).putUser(self, false, true);
+    }
+
+    public static void loadDialogs(AccountInstance accountInstance) {
+        ZenoraApiClient.fetchRooms((response, error) -> {
+            if (error != null) {
+                String message = "اتصال به زنوراچت ناموفق بود. اتصال اینترنت و نشانی API را بررسی کنید.";
+                if (error instanceof ZenoraApiClient.ApiException
+                        && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
+                    message = "نشست زنوراچت معتبر نیست؛ دوباره وارد شوید.";
+                }
+                Toast.makeText(ApplicationLoader.applicationContext, message, Toast.LENGTH_LONG).show();
+                return;
+            }
+            try {
+                applyRooms(accountInstance, response);
+            } catch (Exception e) {
+                FileLog.e(e);
+                Toast.makeText(ApplicationLoader.applicationContext,
+                        "دریافت فهرست گفتگوهای زنوراچت ناموفق بود.", Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private static void applyRooms(AccountInstance accountInstance, JSONObject response) throws Exception {
+        int account = accountInstance.getCurrentAccount();
+        UserConfig userConfig = accountInstance.getUserConfig();
+        MessagesController controller = accountInstance.getMessagesController();
+        JSONObject meJson = response.optJSONObject("me");
+        TLRPC.User self = userConfig.getCurrentUser();
+
+        if (meJson != null && meJson.optLong("id", 0) > 0
+                && (self == null || self.id != meJson.optLong("id", 0))) {
+            self = makeUser(meJson.optLong("id", 0), meJson.optString("username", ""),
+                    meJson.optString("display_name", ""), true);
+            if (self != null) {
+                userConfig.setCurrentUser(self);
+                userConfig.saveConfig(true);
+            }
+        }
+        if (self == null) throw new IllegalStateException("ZenoraChat profile is missing");
+
+        controller.dialogs_dict.clear();
+        controller.dialogMessage.clear();
+        controller.dialogsByFolder.clear();
+        controller.allDialogs.clear();
+        controller.getUsers().clear();
+        controller.getChats().clear();
+        controller.putUser(self, false, true);
+
+        JSONArray rooms = response.optJSONArray("rooms");
+        JSONArray directRooms = response.optJSONArray("dm_rooms");
+        if (rooms != null) {
+            for (int i = 0; i < rooms.length(); i++) {
+                JSONObject row = rooms.optJSONObject(i);
+                if (row != null) addDialog(account, controller, self, row, false);
+            }
+        }
+        if (directRooms != null) {
+            for (int i = 0; i < directRooms.length(); i++) {
+                JSONObject row = directRooms.optJSONObject(i);
+                if (row != null) addDialog(account, controller, self, row, true);
+            }
+        }
+
+        controller.sortDialogs(null);
+        ArrayList<TLRPC.Dialog> visible = controller.dialogsByFolder.get(0);
+        if (visible == null) {
+            visible = new ArrayList<>();
+            controller.dialogsByFolder.put(0, visible);
+        }
+        if (visible.isEmpty() && !controller.allDialogs.isEmpty()) {
+            visible.addAll(controller.allDialogs);
+            Collections.sort(visible, (left, right) -> {
+                if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
+                if (left.pinned) return Integer.compare(right.pinnedNum, left.pinnedNum);
+                return Integer.compare(right.last_message_date, left.last_message_date);
+            });
+        }
+        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+    }
+
+    private static void addDialog(int account, MessagesController controller, TLRPC.User self,
+                                  JSONObject row, boolean fromDmList) throws Exception {
+        if (row.optInt("is_archived", 0) == 1) return;
+
+        String type = row.optString("type", fromDmList ? "dm" : "group");
+        boolean saved = "saved".equals(type);
+        boolean direct = fromDmList && !saved;
+        boolean channel = "channel".equals(type);
+        long roomId = row.optLong("id", 0);
+        if (roomId <= 0) return;
+
+        long dialogId;
+        TLRPC.Peer peer;
+        if (saved) {
+            TLRPC.TL_chat savedChat = new TLRPC.TL_chat();
+            savedChat.id = roomId;
+            savedChat.title = nonEmpty(row.optString("name", ""), "پیام‌های ذخیره‌شده");
+            savedChat.photo = new TLRPC.TL_chatPhotoEmpty();
+            savedChat.date = parseDate(row.optString("last_message_time", ""));
+            controller.putChat(savedChat, false);
+            TLRPC.TL_peerChat savedPeer = new TLRPC.TL_peerChat();
+            savedPeer.chat_id = roomId;
+            peer = savedPeer;
+            dialogId = -roomId;
+        } else if (direct) {
+            long otherId = row.optLong("other_user_id", 0);
+            if (otherId <= 0) return;
+            TLRPC.User other = makeUser(otherId,
+                    row.optString("other_username", ""),
+                    row.optString("other_display_name", ""), false);
+            if (other == null) return;
+            controller.putUser(other, false, true);
+            TLRPC.TL_peerUser userPeer = new TLRPC.TL_peerUser();
+            userPeer.user_id = otherId;
+            peer = userPeer;
+            dialogId = otherId;
+        } else {
+            TLRPC.Chat chat;
+            if (channel) {
+                TLRPC.TL_channel channelChat = new TLRPC.TL_channel();
+                channelChat.broadcast = true;
+                channelChat.megagroup = false;
+                channelChat.flags |= 1 << 5;
+                chat = channelChat;
+            } else {
+                chat = new TLRPC.TL_chat();
+            }
+            chat.id = roomId;
+            chat.title = nonEmpty(row.optString("name", ""), " ");
+            chat.photo = new TLRPC.TL_chatPhotoEmpty();
+            chat.date = parseDate(row.optString("last_message_time", ""));
+            chat.participants_count = row.optInt("member_count", 0);
+            controller.putChat(chat, false);
+
+            if (channel) {
+                TLRPC.TL_peerChannel channelPeer = new TLRPC.TL_peerChannel();
+                channelPeer.channel_id = roomId;
+                peer = channelPeer;
+            } else {
+                TLRPC.TL_peerChat chatPeer = new TLRPC.TL_peerChat();
+                chatPeer.chat_id = roomId;
+                peer = chatPeer;
+            }
+            dialogId = -roomId;
+        }
+
+        int messageId = (int) Math.max(0, Math.min(Integer.MAX_VALUE, row.optLong("last_message_id", 0)));
+        int readId = (int) Math.max(0, Math.min(Integer.MAX_VALUE, row.optLong("last_read_id", 0)));
+        int date = parseDate(row.optString("last_message_time", ""));
+        TLRPC.TL_dialog dialog = new TLRPC.TL_dialog();
+        dialog.id = dialogId;
+        dialog.peer = peer;
+        dialog.top_message = messageId;
+        dialog.read_inbox_max_id = readId;
+        dialog.unread_count = Math.max(0, row.optInt("unread_count", 0));
+        dialog.unread_mark = row.optInt("is_marked_unread", 0) == 1;
+        dialog.pinned = row.optInt("is_pinned", 0) == 1;
+        dialog.pinnedNum = 100000 - Math.max(0, row.optInt("pin_order", 0));
+        dialog.folder_id = 0;
+        dialog.last_message_date = date;
+        dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
+
+        controller.dialogs_dict.put(dialogId, dialog);
+        controller.allDialogs.add(dialog);
+
+        if (messageId > 0) {
+            TLRPC.TL_message message = new TLRPC.TL_message();
+            message.id = messageId;
+            message.date = date;
+            message.peer_id = peer;
+            message.dialog_id = dialogId;
+            message.message = messagePreview(row);
+            message.media = new TLRPC.TL_messageMediaEmpty();
+            String sender = row.optString("last_message_sender_username", "");
+            message.out = !TextUtils.isEmpty(self.username) && self.username.equalsIgnoreCase(sender);
+            if (message.out) {
+                message.flags |= 1 << 1;
+                TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
+                fromPeer.user_id = self.id;
+                message.from_id = fromPeer;
+                message.flags |= 1 << 8;
+            } else if (direct) {
+                TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
+                fromPeer.user_id = row.optLong("other_user_id", 0);
+                message.from_id = fromPeer;
+                message.flags |= 1 << 8;
+            }
+
+            MessageObject object = new MessageObject(account, message,
+                    controller.getUsers(), controller.getChats(), false, false);
+            ArrayList<MessageObject> messages = new ArrayList<>();
+            messages.add(object);
+            controller.dialogMessage.put(dialogId, messages);
+        }
+    }
+
+    private static TLRPC.User makeUser(long id, String username, String displayName, boolean self) {
+        if (id <= 0) return null;
+        TLRPC.TL_user user = new TLRPC.TL_user();
+        user.id = id;
+        user.self = self;
+        user.username = username == null ? "" : username;
+        user.first_name = nonEmpty(displayName, nonEmpty(user.username, "ZenoraChat"));
+        user.last_name = "";
+        user.phone = "";
+        user.photo = new TLRPC.TL_userProfilePhotoEmpty();
+        user.status = new TLRPC.TL_userStatusEmpty();
+        user.flags |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        if (self) user.flags |= 1 << 10;
+        return user;
+    }
+
+    private static String messagePreview(JSONObject row) {
+        String body = row.optString("last_message_body", "");
+        if (!TextUtils.isEmpty(body)) return body;
+        switch (row.optString("last_message_media_kind", "")) {
+            case "photo": return "Photo";
+            case "video": return "Video";
+            case "video_note": return "Video message";
+            case "voice": return "Voice message";
+            case "music": return "Music";
+            case "gif": return "GIF";
+            case "file": return "File";
+            default: return "";
+        }
+    }
+
+    private static String nonEmpty(String value, String fallback) {
+        String text = value == null ? "" : value.trim();
+        return text.isEmpty() ? fallback : text;
+    }
+
+    private static int parseDate(String value) {
+        if (TextUtils.isEmpty(value)) return (int) (System.currentTimeMillis() / 1000L);
+        try {
+            long numeric = Long.parseLong(value);
+            if (numeric > 100000000000L) numeric /= 1000L;
+            if (numeric > 0) return (int) Math.min(Integer.MAX_VALUE, numeric);
+        } catch (NumberFormatException ignored) {
+        }
+        String[] formats = {"yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss"};
+        for (String format : formats) {
+            try {
+                SimpleDateFormat parser = new SimpleDateFormat(format, Locale.US);
+                parser.setLenient(false);
+                Date parsed = parser.parse(value);
+                if (parsed != null) return (int) Math.min(Integer.MAX_VALUE, parsed.getTime() / 1000L);
+            } catch (ParseException ignored) {
+            }
+        }
+        return (int) (System.currentTimeMillis() / 1000L);
+    }
+}

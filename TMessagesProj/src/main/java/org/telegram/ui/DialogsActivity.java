@@ -121,6 +121,7 @@ import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
@@ -2906,6 +2907,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     public static void loadDialogs(AccountInstance accountInstance) {
         int currentAccount = accountInstance.getCurrentAccount();
         if (!dialogsLoaded[currentAccount]) {
+            if (ZenoraChatController.isZenoraEnabled()) {
+                ZenoraChatController.loadDialogs(accountInstance);
+                dialogsLoaded[currentAccount] = true;
+                return;
+            }
             MessagesController messagesController = accountInstance.getMessagesController();
             messagesController.loadGlobalNotificationsSettings();
             messagesController.loadDialogs(0, 0, 100, true);
