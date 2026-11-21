@@ -112,11 +112,10 @@ jobs:
         run: |
           set -o pipefail
           ./gradlew \
-            --no-daemon \
             --stacktrace \
             --build-cache \
             --parallel \
-            --max-workers=2 \
+            --max-workers=4 \
             -PAPP_PACKAGE="$APP_PACKAGE" \
             -PRELEASE_STORE_PASSWORD="$ZENORA_RELEASE_STORE_PASSWORD" \
             -PRELEASE_KEY_ALIAS="$ZENORA_RELEASE_KEY_ALIAS" \

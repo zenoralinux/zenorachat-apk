@@ -32,6 +32,19 @@ printf '%s\n' "$BADGING" | grep -F "application-label:'ZenoraChat" >/dev/null ||
 }
 
 unzip -t "$APK" >/dev/null
+
+if [[ -n "${EXPECTED_ABIS:-}" ]]; then
+  EXPECTED_ABIS_SORTED="$(printf '%s' "$EXPECTED_ABIS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort -u)"
+  ACTUAL_ABIS_SORTED="$(unzip -Z1 "$APK" | awk -F/ '$1 == "lib" && NF >= 3 && $3 ~ /\.so$/ { print $2 }' | sort -u)"
+  if [[ -z "$ACTUAL_ABIS_SORTED" ]]; then echo "::error::No native shared libraries were found in the APK."; exit 1; fi
+  if [[ "$ACTUAL_ABIS_SORTED" != "$EXPECTED_ABIS_SORTED" ]]; then
+    echo "::error::APK ABI list does not match the requested target."
+    echo "Expected ABIs:"; printf '%s\n' "$EXPECTED_ABIS_SORTED"
+    echo "Actual ABIs:"; printf '%s\n' "$ACTUAL_ABIS_SORTED"
+    exit 1
+  fi
+  echo "ABIs: $(printf '%s' "$ACTUAL_ABIS_SORTED" | paste -sd, -)"
+fi
 "$APKSIGNER" verify --verbose "$APK"
 
 echo "APK validation passed."

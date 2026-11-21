@@ -1,6 +1,16 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.telegram.build-app-plugin'
 
+def zenoraDefaultAbis = 'armeabi-v7a,arm64-v8a,x86,x86_64'
+def zenoraTargetAbis = (rootProject.findProperty('ZENORA_ABIS') ?: zenoraDefaultAbis)
+        .toString().split(',').collect { it.trim() }.findAll { !it.isEmpty() }
+def zenoraSupportedAbis = ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64']
+def zenoraInvalidAbis = zenoraTargetAbis.findAll { !zenoraSupportedAbis.contains(it) }
+if (zenoraTargetAbis.isEmpty() || !zenoraInvalidAbis.isEmpty()) {
+    throw new GradleException("Invalid ZENORA_ABIS. Supported values: ${zenoraSupportedAbis.join(', ')}")
+}
+
+
 repositories {
     mavenCentral()
     google()
@@ -122,7 +132,7 @@ android {
     productFlavors {
         bundleAfat {
             ndk {
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                abiFilters(*zenoraTargetAbis)
             }
             ext {
                 abiVersionCode = 1
@@ -131,7 +141,7 @@ android {
         }
         afat {
             ndk {
-                abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+                abiFilters(*zenoraTargetAbis)
             }
             sourceSets.debug {
                 manifest.srcFile '../TMessagesProj/config/debug/AndroidManifest_SDK23.xml'

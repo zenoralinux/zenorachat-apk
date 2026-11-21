@@ -4,6 +4,16 @@ apply plugin: 'com.android.library'
 apply plugin: 'org.telegram.build-plugin'
 apply plugin: 'idea'
 
+def zenoraDefaultAbis = 'armeabi-v7a,arm64-v8a,x86,x86_64'
+def zenoraTargetAbis = (rootProject.findProperty('ZENORA_ABIS') ?: zenoraDefaultAbis)
+        .toString().split(',').collect { it.trim() }.findAll { !it.isEmpty() }
+def zenoraSupportedAbis = ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64']
+def zenoraInvalidAbis = zenoraTargetAbis.findAll { !zenoraSupportedAbis.contains(it) }
+if (zenoraTargetAbis.isEmpty() || !zenoraInvalidAbis.isEmpty()) {
+    throw new GradleException("Invalid ZENORA_ABIS. Supported values: ${zenoraSupportedAbis.join(', ')}")
+}
+
+
 idea {
     module {
         excludeDirs += [
@@ -147,6 +157,10 @@ android {
     defaultConfig {
         minSdkVersion 23
         targetSdkVersion 36
+
+        ndk {
+            abiFilters(*zenoraTargetAbis)
+        }
 
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
