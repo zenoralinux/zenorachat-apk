@@ -139,7 +139,7 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
             item.avatarPath = row.optString("other_avatar_path", "");
             item.verified = row.optInt("other_is_verified", 0) == 1;
         } else {
-            item.name = firstNonEmpty(row.optString("name", ""), "گفتگو");
+            item.name = firstNonEmpty(row.optString("name", ""), "", "گفتگو");
             item.avatarPath = row.optString("avatar_path", "");
             item.verified = row.optInt("is_verified", 0) == 1;
         }
@@ -327,7 +327,7 @@ public final class ZenoraDialogsAdapter extends RecyclerView.Adapter<ZenoraDialo
                 int current = holder.getAdapterPosition();
                 if (current == RecyclerView.NO_POSITION || current != expectedPosition || current >= items.size()) return;
                 if (items.get(current).stableId != stableId) return;
-                holder.cell.avatarImage.setImageDrawable(new BitmapDrawable(context.getResources(), result));
+                holder.cell.avatarImage.setImageBitmap(new BitmapDrawable(context.getResources(), result));
             });
         });
     }
