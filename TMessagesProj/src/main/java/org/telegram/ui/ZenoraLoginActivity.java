@@ -13,6 +13,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.os.Bundle;
 
 import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
@@ -30,6 +31,14 @@ import org.telegram.ui.Components.LayoutHelper;
  * are taken from Telegram's current theme; Telegram phone/SMS auth is bypassed.
  */
 public class ZenoraLoginActivity extends BaseFragment {
+    public ZenoraLoginActivity() {
+        super();
+    }
+
+    public ZenoraLoginActivity(Bundle args) {
+        super(args);
+    }
+
     private EditText usernameField;
     private EditText passwordField;
     private TextView submitButton;
@@ -150,7 +159,11 @@ public class ZenoraLoginActivity extends BaseFragment {
                         return;
                     }
                     ZenoraSessionStore.applyCachedUser(getParentActivity(), currentAccount);
-                    presentFragment(new MainTabsActivity(), true);
+                    if (arguments != null && arguments.getBoolean("resumeExistingTabs", false)) {
+                        finishFragment();
+                    } else {
+                        presentFragment(new MainTabsActivity(), true);
+                    }
                 }));
     }
 
