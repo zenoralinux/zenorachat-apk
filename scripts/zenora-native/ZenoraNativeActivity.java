@@ -344,6 +344,13 @@ public final class ZenoraNativeActivity extends Activity {
             return Long.compare(right.time, left.time);
         });
 
+        int shown = 0;
+        for (ChatItem item : items) {
+            if (item.archived) continue;
+            addChatRow(item);
+            shown++;
+        }
+
         boolean hasArchived = false;
         for (ChatItem item : items) if (item.archived) hasArchived = true;
         if (hasArchived) {
@@ -353,16 +360,16 @@ public final class ZenoraNativeActivity extends Activity {
             View divider = new View(this);
             divider.setBackgroundColor(0xffedf0f2);
             chatRows.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+            for (ChatItem item : items) {
+                if (item.archived) {
+                    addChatRow(item);
+                    shown++;
+                }
+            }
         }
 
-        int shown = 0;
-        for (ChatItem item : items) {
-            if (item.archived) continue;
-            addChatRow(item);
-            shown++;
-        }
         if (shown == 0) {
-            TextView empty = text(items.isEmpty() ? "هنوز گفتگویی ندارید" : "همه گفتگوها در بایگانی هستند", 14, MUTED, false);
+            TextView empty = text("هنوز گفتگویی ندارید", 14, MUTED, false);
             empty.setGravity(Gravity.CENTER);
             chatRows.addView(empty, new LinearLayout.LayoutParams(-1, dp(180)));
         }
@@ -492,11 +499,16 @@ public final class ZenoraNativeActivity extends Activity {
             if (refresh == null || refresh.isEmpty()) throw e;
             JSONObject refreshBody = new JSONObject();
             refreshBody.put("refresh_token", refresh);
-            JSONObject response = requestRaw("refresh.php", "POST", refreshBody, null);
-            JSONObject tokens = response.optJSONObject("tokens");
-            if (tokens == null) throw new ApiException(401, "نشست کاربری منقضی شده است.");
-            SessionStore.save(this, tokens.optString("access_token"), tokens.optString("refresh_token"));
-            return requestRaw(path, method, body, SessionStore.access(this));
+            try {
+                JSONObject response = requestRaw("refresh.php", "POST", refreshBody, null);
+                JSONObject tokens = response.optJSONObject("tokens");
+                if (tokens == null) throw new ApiException(401, "نشست کاربری منقضی شده است.");
+                SessionStore.save(this, tokens.optString("access_token"), tokens.optString("refresh_token"));
+                return requestRaw(path, method, body, SessionStore.access(this));
+            } catch (ApiException refreshError) {
+                if (refreshError.status == 401) SessionStore.clear(this);
+                throw refreshError;
+            }
         }
     }
 
@@ -607,7 +619,7 @@ public final class ZenoraNativeActivity extends Activity {
         int avatarColor() {
             int[] colors = new int[] {0xff5e97d1, 0xff8e85c2, 0xffd17d74, 0xff5da99b, 0xffc18a55, 0xff7199a5};
             int hash = Math.abs((title == null ? 0 : title.hashCode()));
-            return colors[hash % colors.length];
+            return colors[Math.floorMod(hash, colors.length)];
         }
 
         String preview() {
