@@ -10,6 +10,9 @@ if (zenoraTargetAbis.isEmpty() || !zenoraInvalidAbis.isEmpty()) {
     throw new GradleException("Invalid ZENORA_ABIS. Supported values: ${zenoraSupportedAbis.join(', ')}")
 }
 
+def zenoraFastDebug = rootProject.findProperty('ZENORA_FAST_DEBUG')?.toString() == 'true'
+def zenoraDebugSymbolLevel = zenoraFastDebug ? 'SYMBOL_TABLE' : 'FULL'
+
 
 repositories {
     mavenCentral()
@@ -88,7 +91,7 @@ android {
             shrinkResources false
             multiDexEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), '../TMessagesProj/proguard-rules.pro'
-            ndk.debugSymbolLevel = 'FULL'
+            ndk.debugSymbolLevel = zenoraDebugSymbolLevel
         }
 
         standalone {

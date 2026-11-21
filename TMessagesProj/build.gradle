@@ -13,6 +13,9 @@ if (zenoraTargetAbis.isEmpty() || !zenoraInvalidAbis.isEmpty()) {
     throw new GradleException("Invalid ZENORA_ABIS. Supported values: ${zenoraSupportedAbis.join(', ')}")
 }
 
+def zenoraFastDebug = rootProject.findProperty('ZENORA_FAST_DEBUG')?.toString() == 'true'
+def zenoraDebugSymbolLevel = zenoraFastDebug ? 'SYMBOL_TABLE' : 'FULL'
+
 
 idea {
     module {
@@ -169,7 +172,18 @@ android {
         externalNativeBuild {
             cmake {
                 version '3.22.1'
-                arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-23' //, '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
+                def zenoraCmakeArguments = [
+                    '-DANDROID_STL=c++_static',
+                    '-DANDROID_PLATFORM=android-23'
+                ]
+                if (rootProject.findProperty('ZENORA_USE_CCACHE')?.toString() == 'true') {
+                    zenoraCmakeArguments.add('-DCMAKE_C_COMPILER_LAUNCHER=ccache')
+                    zenoraCmakeArguments.add('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache')
+                }
+                if (zenoraFastDebug) {
+                    zenoraCmakeArguments.add('-DZENORA_FAST_DEBUG=ON')
+                }
+                arguments zenoraCmakeArguments
                 targets 'tmessages.49', 'twidget'
             }
         }
@@ -180,7 +194,7 @@ android {
             jniDebuggable true
             shrinkResources false
             multiDexEnabled true
-            ndk.debugSymbolLevel = 'FULL'
+            ndk.debugSymbolLevel = zenoraDebugSymbolLevel
             buildConfigField "String", "BUILD_VERSION_STRING", "\"" + APP_VERSION_NAME + "\""
             buildConfigField "String", "BETA_URL", "\"" + getProps("BETA_PRIVATE_URL") + "\""
             buildConfigField "boolean", "DEBUG_VERSION", "true"

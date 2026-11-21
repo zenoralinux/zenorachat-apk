@@ -16,6 +16,7 @@ on:
       - 'TMessagesProj_Modules/**'
       - 'UPSTREAM_COMMIT.txt'
       - 'scripts/**'
+      - '.github/scripts/**'
       - '.github/workflows/build-debug.yml'
   pull_request:
     branches: [main]
@@ -31,6 +32,7 @@ on:
       - 'TMessagesProj_Modules/**'
       - 'UPSTREAM_COMMIT.txt'
       - 'scripts/**'
+      - '.github/scripts/**'
   workflow_dispatch:
     inputs:
       build_mode:
@@ -43,7 +45,7 @@ on:
         default: fast
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: zenorachat-debug-${{ github.ref }}
@@ -60,6 +62,7 @@ jobs:
       ANDROID_BUILD_TOOLS: '36.0.0'
       ANDROID_NDK_VERSION: '27.2.12479018'
       ANDROID_CMAKE_VERSION: '3.22.1'
+      ZENORA_FAST_DEBUG: ${{ github.event_name != 'workflow_dispatch' || inputs.build_mode != 'universal' }}
       ZENORA_BUILD_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mode == 'universal' && 'universal' || 'fast' }}
       ZENORA_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mode == 'universal' && 'armeabi-v7a,arm64-v8a,x86,x86_64' || 'arm64-v8a' }}
     steps:
@@ -67,8 +70,18 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
-          submodules: recursive
+          submodules: false
           lfs: true
+
+      - name: Fetch pinned submodules in parallel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git -c protocol.version=2 submodule update --init --recursive --depth=1 --jobs=8
+
+      - name: Apply Zenora build optimizations
+        run: python3 .github/scripts/apply-build-optimizations.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v6
@@ -101,6 +114,32 @@ jobs:
           java -version
           sdkmanager --version
 
+      - name: Install and configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ccache
+          fi
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          mkdir -p "$CCACHE_DIR"
+          ccache --max-size=3G
+          ccache --version
+          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+
+      - name: Restore native compiler cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: zenora-ccache-v1-${{ runner.os }}-ndk-${{ env.ANDROID_NDK_VERSION }}-cmake-${{ env.ANDROID_CMAKE_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            zenora-ccache-v1-${{ runner.os }}-ndk-${{ env.ANDROID_NDK_VERSION }}-cmake-${{ env.ANDROID_CMAKE_VERSION }}-
+
+      - name: Reset ccache statistics
+        run: ccache --zero-stats
+
       - name: Set up Gradle and dependency cache
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -131,7 +170,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           BUILD_STARTED=$(date +%s)
-          /usr/bin/time -v -o dist/build-resource-usage.txt ./gradlew \
+          set +e
+          ./gradlew \
             --stacktrace \
             --console=plain \
             --build-cache \
@@ -140,9 +180,15 @@ jobs:
             --profile \
             -PAPP_PACKAGE="$APP_PACKAGE" \
             -PZENORA_ABIS="$ZENORA_ABIS" \
+            -PZENORA_USE_CCACHE=true \
+            -PZENORA_FAST_DEBUG="$ZENORA_FAST_DEBUG" \
             :TMessagesProj_App:assembleAfatDebug
+          BUILD_STATUS=$?
+          set -e
           BUILD_DURATION=$(( $(date +%s) - BUILD_STARTED ))
           echo "Build duration: ${BUILD_DURATION}s" | tee dist/build-duration.txt
+          ccache --show-stats --verbose | tee dist/ccache-stats.txt
+          if [[ "$BUILD_STATUS" -ne 0 ]]; then exit "$BUILD_STATUS"; fi
 
       - name: Validate and package Debug APK
         shell: bash
@@ -156,7 +202,12 @@ jobs:
           OUTPUT="dist/ZenoraChat-${VERSION_NAME}-${VERSION_CODE}-debug-${ZENORA_BUILD_MODE}.apk"
           cp "$APK_SOURCE" "$OUTPUT"
           APP_PACKAGE="$APP_PACKAGE" EXPECTED_ABIS="$ZENORA_ABIS" bash scripts/validate-apk.sh debug "$OUTPUT"
-          sha256sum "$OUTPUT" > dist/SHA256SUMS
+          if [[ "$ZENORA_BUILD_MODE" == "fast" ]]; then
+            cp "$OUTPUT" dist/ZenoraChat-debug-arm64.apk
+            sha256sum "$OUTPUT" dist/ZenoraChat-debug-arm64.apk > dist/SHA256SUMS
+          else
+            sha256sum "$OUTPUT" > dist/SHA256SUMS
+          fi
           PROFILE_SOURCE="$(find build/reports/profile -maxdepth 1 -type f -name 'profile-*.html' -print -quit 2>/dev/null || true)"
           if [[ -n "$PROFILE_SOURCE" ]]; then cp "$PROFILE_SOURCE" dist/GRADLE-BUILD-PROFILE.html; fi
           {
@@ -170,6 +221,41 @@ jobs:
             echo "Repository commit: $(git rev-parse HEAD)"
           } > dist/BUILD-INFO.txt
 
+      - name: Prepare rolling Debug Preview release notes
+        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          set -euo pipefail
+          VERSION_NAME="$(awk -F= '$1=="APP_VERSION_NAME" {print $2}' gradle.properties | tail -n1)"
+          VERSION_CODE="$(awk -F= '$1=="APP_VERSION_CODE" {print $2}' gradle.properties | tail -n1)"
+          UPSTREAM_SHA="$(cat UPSTREAM_COMMIT.txt 2>/dev/null || echo unknown)"
+          REPO_SHA="$(git rev-parse HEAD)"
+          if [[ -n "$TELEGRAM_API_ID" && -n "$TELEGRAM_API_HASH" ]]; then
+            LOGIN_STATUS="Configured: Telegram API credentials are present."
+          else
+            LOGIN_STATUS="WARNING: this preview was built with placeholder Telegram API credentials. Telegram sign-in and API requests will not work until TELEGRAM_API_ID and TELEGRAM_API_HASH are configured as repository secrets."
+          fi
+          {
+            echo "# ZenoraChat Debug Preview"
+            echo
+            echo "This rolling pre-release is replaced after each successful Fast ARM64 Debug build on main. It is a test build, not a stable release."
+            echo
+            echo "## Build information"
+            echo "- App version: ${VERSION_NAME} (${VERSION_CODE})"
+            echo "- Application ID: ${APP_PACKAGE}.beta"
+            echo "- ABI: arm64-v8a"
+            echo "- Upstream commit: ${UPSTREAM_SHA}"
+            echo "- Repository commit: ${REPO_SHA}"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "## Important"
+            echo "$LOGIN_STATUS"
+            echo "The app uses the Debug signing configuration and package suffix .beta. It is not a production-signed build."
+          } > dist/debug-preview-notes.md
+
       - name: Upload Debug APK and build diagnostics
         uses: actions/upload-artifact@v7
         with:
@@ -178,3 +264,36 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: Update rolling Debug Preview tag
+        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="zenora-debug-latest"
+          API="repos/${GITHUB_REPOSITORY}/git"
+          if gh api "${API}/ref/tags/${TAG}" >/dev/null 2>&1; then
+            gh api --method PATCH "${API}/refs/tags/${TAG}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+          else
+            gh api --method POST "${API}/refs" -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" >/dev/null
+          fi
+
+      - name: Publish rolling Debug Preview to GitHub Releases
+        if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: softprops/action-gh-release@v3.0.4
+        with:
+          tag_name: zenora-debug-latest
+          target_commitish: ${{ github.sha }}
+          name: ZenoraChat Debug Preview (latest ARM64)
+          body_path: dist/debug-preview-notes.md
+          files: |
+            dist/ZenoraChat-debug-arm64.apk
+            dist/SHA256SUMS
+            dist/BUILD-INFO.txt
+          draft: false
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true

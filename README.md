@@ -10,6 +10,7 @@ A reproducible GitHub Actions build pipeline for the Android client derived from
 - Builds a fast **ARM64 Debug APK** by default on source updates and pull requests.
 - Can build a full four-ABI **Universal Debug APK** on demand.
 - Builds a signed universal **Release APK** on demand and publishes it to GitHub Releases.
+- Publishes a rolling **Debug Preview** GitHub Pre-release after each successful Fast ARM64 build on `main`.
 - Rebrands the app at build time as ZenoraChat, including a non-Telegram launcher icon.
 - Validates APK structure, package ID, version metadata and signing before publishing.
 
@@ -23,7 +24,7 @@ A reproducible GitHub Actions build pipeline for the Android client derived from
 
 The Debug workflow uses **Fast ARM64** for pushes, pull requests and the default manual run. It compiles native code for `arm64-v8a` only, avoiding builds for three unused architectures during routine testing. To build all architectures, open **Actions → Build Debug APK → Run workflow** and choose `universal`. The Universal APK includes `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64`; `fast` produces ARM64 only. The validator checks native ABI directories inside the APK before upload.
 
-The Debug artifact is not a public Release. This avoids presenting a test-signed build as a production download.
+The Debug Preview uses the fixed tag `zenora-debug-latest`; its APK, checksum and build metadata are overwritten after each successful Fast ARM64 build on `main`. It is always a pre-release, never GitHub's Latest stable release. Release notes warn clearly when Telegram API credentials are missing.
 
 ## First run
 
@@ -39,6 +40,10 @@ The Debug artifact is not a public Release. This avoids presenting a test-signed
 | `ZENORA_APPLICATION_ID` | `ir.zenora.zenorachat` | Stable Android application ID. Choose the final value before the first public release. |
 
 The default fallback is `ir.zenora.zenorachat`. Verify that this package ID is available and owned by your project before publishing.
+
+## Debug Preview release
+
+The `zenora-debug-latest` pre-release is updated after a successful Fast ARM64 Debug build on `main`. It contains a stable asset name, `ZenoraChat-debug-arm64.apk`, plus `SHA256SUMS` and `BUILD-INFO.txt`. It is a test-signed `.beta` package, not a stable production build. If `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are absent, its release notes warn that Telegram sign-in and API calls will not work.
 
 ## Required GitHub Actions secrets for Release
 
@@ -84,7 +89,10 @@ Do not commit keystores, passwords, API hashes or Firebase configuration to Git.
 - Gradle uses four workers on the standard four-vCPU GitHub-hosted runner.
 - Gradle build caching is enabled, while the Gradle setup action persists reusable Gradle caches between runs.
 - ABI filters are applied in both the app module and Telegram native library module, so ARM64 mode avoids compiling other architectures instead of merely excluding them at packaging time.
-- Debug artifacts include Gradle profiling and GNU `time` resource diagnostics.
+- Debug artifacts include Gradle profiling and ccache hit/miss statistics.
+- ccache stores native compiler outputs between workflow runs. Its cache key is scoped to OS, NDK and CMake versions; compiler flags and source content are still checked by ccache.
+- Fast Debug disables Full LTO and uses `SYMBOL_TABLE` native symbols; Universal Debug and signed Release retain Full LTO and `FULL` symbols.
+- Git submodules are fetched recursively with eight parallel fetch jobs.
 - The scheduled Telegram source-sync workflow reapplies these Gradle overlays after importing upstream, so the fast-build configuration survives future source updates.
 - Gradle Configuration Cache is not forced until compatibility with the upstream custom plugins is verified.
 
@@ -92,11 +100,12 @@ Do not commit keystores, passwords, API hashes or Firebase configuration to Git.
 
 Requires JDK 17, Android SDK 36, Build Tools 36.0.0, NDK 27.2.12479018 and CMake 3.22.1.
 
-Fast ARM64 Debug:
+Fast ARM64 Debug (requires `ccache` installed locally):
 
 ```bash
 python3 scripts/configure-fork.py --mode debug --application-id ir.zenora.zenorachat
-./gradlew :TMessagesProj_App:assembleAfatDebug --build-cache --parallel --max-workers=4 -PZENORA_ABIS=arm64-v8a
+python3 .github/scripts/apply-build-optimizations.py
+CCACHE_DIR="$HOME/.cache/ccache" ./gradlew :TMessagesProj_App:assembleAfatDebug --build-cache --parallel --max-workers=4 -PZENORA_ABIS=arm64-v8a -PZENORA_USE_CCACHE=true -PZENORA_FAST_DEBUG=true
 ```
 
 Universal Debug:
