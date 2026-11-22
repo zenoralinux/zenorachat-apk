@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -26,6 +27,7 @@ public final class ZenoraApiClient {
     private static final String API_BASE = "https://miladalizadw.ir/telegram/api/";
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
+    private static final String CSRF_KEY = "csrf";
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Object cookieLock = new Object();
@@ -70,17 +72,63 @@ public final class ZenoraApiClient {
         return false;
     }
 
-    public static void enableSession(JSONObject profile) {
-        if (profile == null) return;
+    public static void enableSession(JSONObject profile, String csrf) {
+        if (profile == null || profile.optLong("id", 0) <= 0) return;
         prefs().edit()
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
                 .putLong("user_id", profile.optLong("id", 0))
+                .putString(CSRF_KEY, csrf == null ? "" : csrf)
                 .apply();
     }
 
     public static void clearSession() {
-        prefs().edit().clear().apply();
+        if (ApplicationLoader.applicationContext != null) {
+            prefs().edit().clear().commit();
+        }
+    }
+
+    private static String csrfToken() {
+        return ApplicationLoader.applicationContext == null ? "" : prefs().getString(CSRF_KEY, "");
+    }
+
+    public static void performChatBulkAction(String action, long[] roomIds, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (!isZenoraSessionEnabled()) throw new IllegalStateException("ZenoraChat session is not active");
+                String csrf = csrfToken();
+                if (csrf.isEmpty()) throw new IllegalStateException("ZenoraChat CSRF token is missing");
+                JSONArray ids = new JSONArray();
+                if (roomIds != null) {
+                    for (long roomId : roomIds) {
+                        if (roomId > 0) ids.put(roomId);
+                    }
+                }
+                if (ids.length() == 0) throw new IllegalArgumentException("No valid chat identifiers");
+                String form = "action=" + encode(action)
+                        + "&room_ids=" + encode(ids.toString())
+                        + "&csrf=" + encode(csrf);
+                dispatch(callback, request("chat_bulk_action.php", "POST", form), null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    public static void markRoomRead(long roomId, long lastReadId, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (!isZenoraSessionEnabled()) throw new IllegalStateException("ZenoraChat session is not active");
+                String csrf = csrfToken();
+                if (csrf.isEmpty()) throw new IllegalStateException("ZenoraChat CSRF token is missing");
+                String form = "room_id=" + encode(Long.toString(roomId))
+                        + "&last_read_id=" + encode(Long.toString(Math.max(0, lastReadId)))
+                        + "&csrf=" + encode(csrf);
+                dispatch(callback, request("room_read.php", "POST", form), null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
     }
 
     public static void login(String username, String password, Callback callback) {
@@ -100,7 +148,7 @@ public final class ZenoraApiClient {
                 if (!hasAuthCookie()) {
                     throw new IllegalStateException("The server did not issue a ZenoraChat session cookie.");
                 }
-                enableSession(me);
+                enableSession(me, result.optString("csrf", ""));
                 dispatch(callback, result, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
