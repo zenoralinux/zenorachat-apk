@@ -1294,10 +1294,10 @@ public class MessagesStorage extends BaseController {
     public void setDialogFlags(long did, long flags) {
         storageQueue.postRunnable(() -> {
             try {
-                int oldFlags = 0;
+                long oldFlags = 0;
                 SQLiteCursor cursor = database.queryFinalized("SELECT flags FROM dialog_settings WHERE did = " + did);
                 if (cursor.next()) {
-                    oldFlags = cursor.intValue(0);
+                    oldFlags = cursor.longValue(0);
                 }
                 cursor.dispose();
                 if (flags == oldFlags) {
