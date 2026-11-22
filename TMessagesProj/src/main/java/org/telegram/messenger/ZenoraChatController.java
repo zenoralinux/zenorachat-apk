@@ -1281,11 +1281,10 @@ public final class ZenoraChatController {
             Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
             previousSignature = signatures == null ? null : signatures.get(dialogId);
             if (signature.equals(previousSignature)) {
-                if (postNotification) {
-                    NotificationCenter.getInstance(account)
-                            .postNotificationName(NotificationCenter.notificationsSettingsUpdated);
-                }
-                return true;
+                // This hook also sees sound and preview changes. When mute state
+                // did not change, let those unrelated settings continue through
+                // Telegram's normal update path.
+                return false;
             }
             Map<Long, String> signaturesMutable = signatures;
             if (signaturesMutable == null) {
