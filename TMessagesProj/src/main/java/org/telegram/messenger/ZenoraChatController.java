@@ -43,6 +43,7 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> requestGenerations = new HashMap<>();
     private static final Map<Integer, Integer> retryAttempts = new HashMap<>();
     private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
+    private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
     private static final Map<Integer, AccountInstance> accountInstances = new HashMap<>();
     private static final Map<Integer, Integer> visibleDialogsScreens = new HashMap<>();
@@ -131,6 +132,21 @@ public final class ZenoraChatController {
                 profile.optString("display_name", ""), true);
         if (self == null) return;
         UserConfig config = UserConfig.getInstance(account);
+        TLRPC.User previousUser = config.getCurrentUser();
+        if (previousUser != null && previousUser.id != self.id) {
+            synchronized (loadLock) {
+                snapshotAvailable.remove(account);
+                cacheRestoreStarted.remove(account);
+                lastSuccessfulLoad.remove(account);
+                retryAttempts.remove(account);
+                snapshotUserIds.remove(account);
+                dialogRoomIds.remove(account);
+                long generation = requestGenerations.containsKey(account)
+                        ? requestGenerations.get(account) + 1L : 1L;
+                requestGenerations.put(account, generation);
+            }
+            cacheExecutor.execute(() -> ZenoraDialogCache.delete(account));
+        }
         config.setCurrentUser(self);
         config.saveConfig(true);
         MessagesController.getInstance(account).putUser(self, false, true);
@@ -241,7 +257,10 @@ public final class ZenoraChatController {
                 loadingAccounts.remove(account);
                 rerun = pendingRefresh.remove(account) != null;
                 Long currentGeneration = requestGenerations.get(account);
-                if (currentGeneration == null || currentGeneration != generation) return;
+                if (currentGeneration == null || currentGeneration != generation) {
+                    if (rerun) retryHandler.postDelayed(() -> requestRooms(accountInstance, true), 200L);
+                    return;
+                }
             }
 
             if (error != null) {
@@ -303,7 +322,12 @@ public final class ZenoraChatController {
             retryAttempts.put(account, Math.min(retryIndex + 1, 6));
         }
         long delay = Math.min(60_000L, 2_000L << Math.min(retryIndex, 5));
-        retryHandler.postDelayed(() -> requestRooms(accountInstance, true), delay);
+        retryHandler.postDelayed(() -> {
+            synchronized (loadLock) {
+                if (!appForeground) return;
+            }
+            requestRooms(accountInstance, true);
+        }, delay);
     }
 
     private static void validateRows(JSONArray rows, boolean directList) {
@@ -337,6 +361,12 @@ public final class ZenoraChatController {
             throw new IllegalStateException("Rooms API did not return success");
         }
         JSONObject meJson = response.optJSONObject("me");
+        JSONObject storedProfile = ZenoraApiClient.getStoredProfile();
+        if (meJson != null && storedProfile != null
+                && storedProfile.optLong("id", 0) > 0
+                && storedProfile.optLong("id", 0) != meJson.optLong("id", 0)) {
+            throw new IllegalStateException("Rooms response belongs to a different authenticated user");
+        }
         JSONArray rooms = response.optJSONArray("rooms");
         JSONArray directRooms = response.optJSONArray("dm_rooms");
         if (meJson == null || meJson.optLong("id", 0) <= 0 || rooms == null || directRooms == null) {
@@ -412,6 +442,7 @@ public final class ZenoraChatController {
 
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
+            snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
         for (Map.Entry<Long, Integer> mute : snapshot.muteUntil.entrySet()) {
