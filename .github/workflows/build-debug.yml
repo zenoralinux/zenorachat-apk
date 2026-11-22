@@ -3,7 +3,7 @@ run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'fix/zenora-dialogs-stability-20261122']
     paths:
       - 'settings.gradle'
       - 'build.gradle'
