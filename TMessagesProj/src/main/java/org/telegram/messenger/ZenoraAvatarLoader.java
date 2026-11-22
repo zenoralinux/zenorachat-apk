@@ -151,13 +151,13 @@ public final class ZenoraAvatarLoader {
 
                     MessagesController controller = MessagesController.getInstance(item.account);
                     if ("u".equals(item.kind)) {
-                        TLRPC.User current = controller.getUsers().get((int) item.id);
+                        TLRPC.User current = controller.getUsers().get(item.id);
                         if (current == null) return;
                         current.photo = makeUserPhoto(item.location);
                         ensureUserAccessHash(current, item.location);
                         controller.putUser(current, false, true);
                     } else {
-                        TLRPC.Chat current = controller.getChats().get((int) item.id);
+                        TLRPC.Chat current = controller.getChats().get(item.id);
                         if (current == null) return;
                         current.photo = makeChatPhoto(item.location);
                         ensureChatAccessHash(current, item.location);
