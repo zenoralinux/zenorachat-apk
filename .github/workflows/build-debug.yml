@@ -245,7 +245,7 @@ jobs:
               echo "Stage A native dialog completion: public Zenora avatars cached through Telegram's native image path, verified/bot/presence metadata, numeric senders, mute state, and per-user preview/unread handling."
               echo
               echo "- Companion API branch: https://github.com/zenoralinux/zenorachat/tree/feat/zenora-dialogs-api-stage-a-20261122"
-              echo "- Companion API release: https://github.com/zenoralinux/zenorachat/releases/tag/zenora-dialogs-api-stage-a-20261122-r2"
+              echo "- Companion API release: https://github.com/zenoralinux/zenorachat/releases/tag/zenora-dialogs-api-stage-a-20261122"
             elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-session-rooms-stability-20261122" ]]; then
               echo "Follow-up stability release: persistent Zenora login, room-list retry, legacy group membership repair, and complete native dialog sorting."
               echo
