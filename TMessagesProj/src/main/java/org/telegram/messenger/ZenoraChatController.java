@@ -1,5 +1,8 @@
 package org.telegram.messenger;
 
+import android.app.Activity;
+import android.app.Application;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -22,6 +25,9 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Converts ZenoraChat API rooms into Telegram's native TL dialog model.
@@ -30,13 +36,88 @@ import java.util.Set;
 public final class ZenoraChatController {
     private static final Object loadLock = new Object();
     private static final Set<Integer> loadingAccounts = new HashSet<>();
+    private static final Set<Integer> cacheRestoreStarted = new HashSet<>();
+    private static final Set<Integer> snapshotAvailable = new HashSet<>();
+    private static final Map<Integer, Boolean> pendingRefresh = new HashMap<>();
+    private static final Map<Integer, Long> requestGenerations = new HashMap<>();
     private static final Map<Integer, Integer> retryAttempts = new HashMap<>();
     private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
+    private static final Map<Integer, AccountInstance> accountInstances = new HashMap<>();
+    private static final Map<Integer, Integer> visibleDialogsScreens = new HashMap<>();
     private static final Handler retryHandler = new Handler(Looper.getMainLooper());
-    private static final int MAX_AUTOMATIC_RETRIES = 3;
+    private static final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
+    private static final ExecutorService cacheExecutor = Executors.newSingleThreadExecutor();
+    private static boolean lifecycleRegistered;
+    private static int startedActivities;
+    private static boolean appForeground;
+
+    private static final Runnable foregroundPoll = new Runnable() {
+        @Override
+        public void run() {
+            ArrayList<AccountInstance> instances = new ArrayList<>();
+            synchronized (loadLock) {
+                if (!appForeground) return;
+                instances.addAll(accountInstances.values());
+            }
+            for (AccountInstance instance : instances) {
+                if (instance != null && ZenoraApiClient.isZenoraSessionEnabled()) {
+                    refreshDialogs(instance);
+                }
+            }
+            lifecycleHandler.postDelayed(this, 15_000L);
+        }
+    };
 
     private ZenoraChatController() {
+    }
+
+    public static void initializeLifecycleTracking() {
+        synchronized (loadLock) {
+            if (lifecycleRegistered || ApplicationLoader.applicationContext == null) return;
+            Context context = ApplicationLoader.applicationContext.getApplicationContext();
+            if (!(context instanceof Application)) return;
+            ((Application) context).registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+                @Override
+                public void onActivityCreated(Activity activity, Bundle savedInstanceState) { }
+
+                @Override
+                public void onActivityStarted(Activity activity) {
+                    synchronized (loadLock) {
+                        startedActivities++;
+                        if (!appForeground) {
+                            appForeground = true;
+                            lifecycleHandler.removeCallbacks(foregroundPoll);
+                            lifecycleHandler.postDelayed(foregroundPoll, 15_000L);
+                        }
+                    }
+                }
+
+                @Override
+                public void onActivityResumed(Activity activity) { }
+
+                @Override
+                public void onActivityPaused(Activity activity) { }
+
+                @Override
+                public void onActivityStopped(Activity activity) {
+                    synchronized (loadLock) {
+                        startedActivities = Math.max(0, startedActivities - 1);
+                        if (startedActivities == 0) {
+                            appForeground = false;
+                            lifecycleHandler.removeCallbacks(foregroundPoll);
+                        }
+                    }
+                }
+
+                @Override
+                public void onActivitySaveInstanceState(Activity activity, Bundle outState) { }
+
+                @Override
+                public void onActivityDestroyed(Activity activity) { }
+            });
+            lifecycleRegistered = true;
+        }
     }
 
     public static boolean isZenoraEnabled() {
@@ -56,64 +137,161 @@ public final class ZenoraChatController {
 
     public static void loadDialogs(AccountInstance accountInstance) {
         if (accountInstance == null) return;
+        initializeLifecycleTracking();
+        synchronized (loadLock) {
+            accountInstances.put(accountInstance.getCurrentAccount(), accountInstance);
+        }
+        restoreCachedSnapshot(accountInstance);
+        requestRooms(accountInstance, true);
+    }
+
+    public static void refreshDialogs(AccountInstance accountInstance) {
+        if (accountInstance == null || !ZenoraApiClient.isZenoraSessionEnabled()) return;
+        int account = accountInstance.getCurrentAccount();
+        synchronized (loadLock) {
+            accountInstances.put(account, accountInstance);
+            Long lastLoaded = lastSuccessfulLoad.get(account);
+            long minimumInterval = visibleDialogsScreens.containsKey(account)
+                    && visibleDialogsScreens.get(account) > 0 ? 15_000L : 30_000L;
+            if (lastLoaded != null
+                    && SystemClock.elapsedRealtime() - lastLoaded < minimumInterval) {
+                return;
+            }
+        }
+        requestRooms(accountInstance, false);
+    }
+
+    public static void setDialogsScreenVisible(int account, boolean visible) {
+        if (account < 0) return;
+        AccountInstance instance = AccountInstance.getInstance(account);
+        synchronized (loadLock) {
+            accountInstances.put(account, instance);
+            int count = visibleDialogsScreens.containsKey(account) ? visibleDialogsScreens.get(account) : 0;
+            if (visible) {
+                visibleDialogsScreens.put(account, count + 1);
+            } else if (count <= 1) {
+                visibleDialogsScreens.remove(account);
+            } else {
+                visibleDialogsScreens.put(account, count - 1);
+            }
+        }
+        if (visible && ZenoraApiClient.isZenoraSessionEnabled()) {
+            refreshDialogs(instance);
+        }
+    }
+
+    private static void restoreCachedSnapshot(AccountInstance accountInstance) {
         final int account = accountInstance.getCurrentAccount();
         synchronized (loadLock) {
-            if (!loadingAccounts.add(account)) return;
+            if (!cacheRestoreStarted.add(account)) return;
         }
+        JSONObject profile = ZenoraApiClient.getStoredProfile();
+        final long expectedUserId = profile == null ? 0 : profile.optLong("id", 0);
+        if (expectedUserId <= 0) return;
+        cacheExecutor.execute(() -> {
+            JSONObject cached = ZenoraDialogCache.read(account, expectedUserId);
+            if (cached == null) return;
+            retryHandler.post(() -> {
+                synchronized (loadLock) {
+                    if (snapshotAvailable.contains(account)) return;
+                }
+                try {
+                    applyRooms(accountInstance, cached);
+                    synchronized (loadLock) {
+                        snapshotAvailable.add(account);
+                    }
+                    DialogsActivity.markZenoraLoadComplete(account);
+                    FileLog.d("[ZenoraChat] restored cached dialog snapshot for account " + account);
+                } catch (Exception e) {
+                    FileLog.e("[ZenoraChat] cached dialog snapshot was rejected", e);
+                    ZenoraDialogCache.delete(account);
+                }
+            });
+        });
+    }
+
+    private static void requestRooms(AccountInstance accountInstance, boolean force) {
+        final int account = accountInstance.getCurrentAccount();
+        final long generation;
+        synchronized (loadLock) {
+            accountInstances.put(account, accountInstance);
+            if (loadingAccounts.contains(account)) {
+                pendingRefresh.put(account, true);
+                return;
+            }
+            if (!force) {
+                Long lastLoaded = lastSuccessfulLoad.get(account);
+                long minimumInterval = visibleDialogsScreens.containsKey(account)
+                        && visibleDialogsScreens.get(account) > 0 ? 15_000L : 30_000L;
+                if (lastLoaded != null
+                        && SystemClock.elapsedRealtime() - lastLoaded < minimumInterval) {
+                    return;
+                }
+            }
+            loadingAccounts.add(account);
+            generation = requestGenerations.containsKey(account)
+                    ? requestGenerations.get(account) + 1L : 1L;
+            requestGenerations.put(account, generation);
+        }
+
         ZenoraApiClient.fetchRooms((response, error) -> {
+            boolean rerun;
             synchronized (loadLock) {
                 loadingAccounts.remove(account);
+                rerun = pendingRefresh.remove(account) != null;
+                Long currentGeneration = requestGenerations.get(account);
+                if (currentGeneration == null || currentGeneration != generation) return;
             }
+
             if (error != null) {
                 if (error instanceof ZenoraApiClient.ApiException
                         && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
                     synchronized (loadLock) {
                         retryAttempts.remove(account);
                         lastSuccessfulLoad.remove(account);
+                        snapshotAvailable.remove(account);
                     }
-                    FileLog.e("[ZenoraChat] rooms.php rejected the saved session after the one-time retry: "
-                            + error.getMessage());
+                    FileLog.e("[ZenoraChat] rooms.php rejected the saved session after retry: " + error.getMessage());
                     DialogsActivity.resetZenoraLoadState(account);
                     ZenoraApiClient.clearSession();
                     LaunchActivity.requestZenoraLogin();
                     return;
                 }
-                DialogsActivity.resetZenoraLoadState(account);
-                Toast.makeText(ApplicationLoader.applicationContext,
-                        "اتصال به زنوراچت ناموفق بود. فهرست قبلی حفظ شد و تلاش مجدد انجام می‌شود.",
-                        Toast.LENGTH_LONG).show();
-                scheduleRetry(accountInstance);
-                return;
-            }
-            try {
-                applyRooms(accountInstance, response);
-                synchronized (loadLock) {
-                    retryAttempts.remove(account);
-                    lastSuccessfulLoad.put(account, SystemClock.elapsedRealtime());
+                if (!hasSnapshot(account)) {
+                    DialogsActivity.resetZenoraLoadState(account);
                 }
-                DialogsActivity.markZenoraLoadComplete(account);
-            } catch (Exception e) {
-                FileLog.e(e);
-                DialogsActivity.resetZenoraLoadState(account);
-                Toast.makeText(ApplicationLoader.applicationContext,
-                        "پاسخ فهرست گفتگوها معتبر نبود؛ فهرست قبلی حفظ شد.",
-                        Toast.LENGTH_LONG).show();
-                scheduleRetry(accountInstance);
+                FileLog.e("[ZenoraChat] rooms refresh failed; current snapshot remains visible", error);
+                if (!rerun) scheduleRetry(accountInstance);
+            } else {
+                try {
+                    applyRooms(accountInstance, response);
+                    synchronized (loadLock) {
+                        retryAttempts.remove(account);
+                        lastSuccessfulLoad.put(account, SystemClock.elapsedRealtime());
+                        snapshotAvailable.add(account);
+                    }
+                    DialogsActivity.markZenoraLoadComplete(account);
+                    final JSONObject cachePayload = new JSONObject(response.toString());
+                    cacheExecutor.execute(() -> ZenoraDialogCache.write(account,
+                            response.optJSONObject("me") == null ? 0 : response.optJSONObject("me").optLong("id", 0),
+                            cachePayload));
+                } catch (Exception e) {
+                    FileLog.e("[ZenoraChat] rejected an incomplete dialog snapshot; keeping previous data", e);
+                    if (!hasSnapshot(account)) DialogsActivity.resetZenoraLoadState(account);
+                    if (!rerun) scheduleRetry(accountInstance);
+                }
+            }
+
+            if (rerun) {
+                retryHandler.postDelayed(() -> requestRooms(accountInstance, true), 200L);
             }
         });
     }
 
-    public static void refreshDialogs(AccountInstance accountInstance) {
-        if (accountInstance == null) return;
-        int account = accountInstance.getCurrentAccount();
+    private static boolean hasSnapshot(int account) {
         synchronized (loadLock) {
-            Long lastLoaded = lastSuccessfulLoad.get(account);
-            if (lastLoaded != null
-                    && SystemClock.elapsedRealtime() - lastLoaded < 30_000L) {
-                return;
-            }
+            return snapshotAvailable.contains(account);
         }
-        loadDialogs(accountInstance);
     }
 
     private static void scheduleRetry(AccountInstance accountInstance) {
@@ -121,10 +299,10 @@ public final class ZenoraChatController {
         final int retryIndex;
         synchronized (loadLock) {
             retryIndex = retryAttempts.containsKey(account) ? retryAttempts.get(account) : 0;
-            if (retryIndex >= MAX_AUTOMATIC_RETRIES) return;
-            retryAttempts.put(account, retryIndex + 1);
+            retryAttempts.put(account, Math.min(retryIndex + 1, 6));
         }
-        retryHandler.postDelayed(() -> loadDialogs(accountInstance), 2_000L << retryIndex);
+        long delay = Math.min(60_000L, 2_000L << Math.min(retryIndex, 5));
+        retryHandler.postDelayed(() -> requestRooms(accountInstance, true), delay);
     }
 
     private static void validateRows(JSONArray rows, boolean directList) {
@@ -140,6 +318,19 @@ public final class ZenoraChatController {
         }
     }
 
+    private static final class DialogSnapshot {
+        final ConcurrentHashMap<Long, TLRPC.User> users = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Long, TLRPC.Chat> chats = new ConcurrentHashMap<>();
+        final HashMap<Long, TLRPC.Dialog> dialogs = new HashMap<>();
+        final HashMap<Long, ArrayList<MessageObject>> messages = new HashMap<>();
+        final HashMap<Long, Long> roomIds = new HashMap<>();
+        final HashMap<Long, Integer> muteUntil = new HashMap<>();
+        final HashMap<String, String> avatars = new HashMap<>();
+        final ArrayList<TLRPC.Dialog> allDialogs = new ArrayList<>();
+        final ArrayList<TLRPC.Dialog> mainDialogs = new ArrayList<>();
+        final ArrayList<TLRPC.Dialog> archivedDialogs = new ArrayList<>();
+    }
+
     private static void applyRooms(AccountInstance accountInstance, JSONObject response) throws Exception {
         if (response == null || !response.optBoolean("ok", false)) {
             throw new IllegalStateException("Rooms API did not return success");
@@ -150,83 +341,89 @@ public final class ZenoraChatController {
         if (meJson == null || meJson.optLong("id", 0) <= 0 || rooms == null || directRooms == null) {
             throw new IllegalStateException("Incomplete rooms API payload");
         }
-        // Validate every row before clearing the currently displayed dialogs.
         validateRows(rooms, false);
         validateRows(directRooms, true);
 
         int account = accountInstance.getCurrentAccount();
-        // Keep the local profile metadata synchronized with the authenticated
-        // server response so the account shell can be rebuilt after process death.
-        ZenoraApiClient.enableSession(meJson);
         UserConfig userConfig = accountInstance.getUserConfig();
         MessagesController controller = accountInstance.getMessagesController();
         TLRPC.User self = userConfig.getCurrentUser();
-
-        if (meJson != null && meJson.optLong("id", 0) > 0
-                && (self == null || self.id != meJson.optLong("id", 0))) {
+        if (self == null || self.id != meJson.optLong("id", 0)) {
             self = makeUser(meJson.optLong("id", 0), meJson.optString("username", ""),
                     meJson.optString("display_name", ""), true);
-            if (self != null) {
-                userConfig.setCurrentUser(self);
-                userConfig.saveConfig(true);
-            }
         }
         if (self == null) throw new IllegalStateException("ZenoraChat profile is missing");
 
-        synchronized (loadLock) {
-            dialogRoomIds.put(account, new HashMap<>());
+        // Build every model in isolated collections. No currently displayed map,
+        // avatar registry, or notification state is touched until the full snapshot
+        // has been mapped and sorted successfully.
+        DialogSnapshot snapshot = new DialogSnapshot();
+        snapshot.users.put(self.id, self);
+        for (int i = 0; i < rooms.length(); i++) {
+            addDialog(account, snapshot, self, rooms.getJSONObject(i), false);
         }
-        ZenoraAvatarRegistry.beginSnapshot(account);
+        for (int i = 0; i < directRooms.length(); i++) {
+            addDialog(account, snapshot, self, directRooms.getJSONObject(i), true);
+        }
+
+        java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
+            if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
+            if (left.pinned) {
+                int pinOrder = Integer.compare(right.pinnedNum, left.pinnedNum);
+                if (pinOrder != 0) return pinOrder;
+            }
+            return Integer.compare(right.last_message_date, left.last_message_date);
+        };
+        for (TLRPC.Dialog dialog : snapshot.allDialogs) {
+            if (dialog.folder_id == 1) snapshot.archivedDialogs.add(dialog);
+            else snapshot.mainDialogs.add(dialog);
+        }
+        Collections.sort(snapshot.mainDialogs, order);
+        Collections.sort(snapshot.archivedDialogs, order);
+
+        // Persist the authenticated profile only after the candidate is complete.
+        ZenoraApiClient.enableSession(meJson);
+        if (userConfig.getCurrentUser() == null || userConfig.getCurrentUser().id != self.id) {
+            userConfig.setCurrentUser(self);
+            userConfig.saveConfig(true);
+        }
+
+        // Commit is deliberately one synchronous main-thread section. Consumers
+        // receive dialogsNeedReload only after all related maps have been replaced.
         controller.dialogs_dict.clear();
         controller.dialogMessage.clear();
         controller.dialogsByFolder.clear();
         controller.allDialogs.clear();
         controller.getUsers().clear();
         controller.getChats().clear();
-        controller.putUser(self, false, true);
-
-        for (int i = 0; i < rooms.length(); i++) {
-            addDialog(account, controller, self, rooms.getJSONObject(i), false);
+        controller.getUsers().putAll(snapshot.users);
+        controller.getChats().putAll(snapshot.chats);
+        for (Map.Entry<Long, TLRPC.Dialog> entry : snapshot.dialogs.entrySet()) {
+            controller.dialogs_dict.put(entry.getKey(), entry.getValue());
         }
-        for (int i = 0; i < directRooms.length(); i++) {
-            addDialog(account, controller, self, directRooms.getJSONObject(i), true);
+        for (Map.Entry<Long, ArrayList<MessageObject>> entry : snapshot.messages.entrySet()) {
+            controller.dialogMessage.put(entry.getKey(), entry.getValue());
         }
-
-        // Zenora dialogs arrive as a complete API snapshot, not through
-        // Telegram's paginated loadDialogs pipeline. Remove the native paging
-        // cutoff so old-but-valid rooms are not filtered out during sorting.
+        controller.allDialogs.addAll(snapshot.allDialogs);
+        controller.dialogsByFolder.put(0, snapshot.mainDialogs);
+        controller.dialogsByFolder.put(1, snapshot.archivedDialogs);
         controller.resetDialogsLoadedTillDate();
-        controller.sortDialogs(null);
-        ArrayList<TLRPC.Dialog> visible = controller.dialogsByFolder.get(0);
-        if (visible == null) {
-            visible = new ArrayList<>();
-            controller.dialogsByFolder.put(0, visible);
+
+        synchronized (loadLock) {
+            dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
         }
-        if (visible.isEmpty() && !controller.allDialogs.isEmpty()) {
-            ArrayList<TLRPC.Dialog> archived = controller.dialogsByFolder.get(1);
-            if (archived == null) {
-                archived = new ArrayList<>();
-                controller.dialogsByFolder.put(1, archived);
-            }
-            for (TLRPC.Dialog dialog : controller.allDialogs) {
-                if (dialog.folder_id == 1) archived.add(dialog);
-                else visible.add(dialog);
-            }
-            java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
-                if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
-                if (left.pinned) return Integer.compare(right.pinnedNum, left.pinnedNum);
-                return Integer.compare(right.last_message_date, left.last_message_date);
-            };
-            Collections.sort(visible, order);
-            Collections.sort(archived, order);
+        ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
+        for (Map.Entry<Long, Integer> mute : snapshot.muteUntil.entrySet()) {
+            NotificationsController.getInstance(account).getNotificationsSettingsFacade()
+                    .applyZenoraMuteState(mute.getKey(), mute.getValue());
         }
-        FileLog.d("[ZenoraChat] applied room snapshot: groups=" + rooms.length()
-                + ", direct=" + directRooms.length()
-                + ", nativeDialogs=" + controller.allDialogs.size());
+        FileLog.d("[ZenoraChat] atomically published dialog snapshot: groups=" + rooms.length()
+                + ", direct=" + directRooms.length() + ", main=" + snapshot.mainDialogs.size()
+                + ", archived=" + snapshot.archivedDialogs.size());
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
 
-    private static void addDialog(int account, MessagesController controller, TLRPC.User self,
+    private static void addDialog(int account, DialogSnapshot snapshot, TLRPC.User self,
                                   JSONObject row, boolean fromDmList) throws Exception {
         String type = row.optString("type", fromDmList ? "dm" : "group");
         boolean saved = "saved".equals(type);
@@ -243,7 +440,7 @@ public final class ZenoraChatController {
             savedChat.title = nonEmpty(row.optString("name", ""), "پیام‌های ذخیره‌شده");
             savedChat.photo = new TLRPC.TL_chatPhotoEmpty();
             savedChat.date = parseDate(row.optString("last_message_time", ""));
-            controller.putChat(savedChat, false);
+            snapshot.chats.put(savedChat.id, savedChat);
             TLRPC.TL_peerChat savedPeer = new TLRPC.TL_peerChat();
             savedPeer.chat_id = roomId;
             peer = savedPeer;
@@ -251,13 +448,13 @@ public final class ZenoraChatController {
         } else if (direct) {
             long otherId = row.optLong("other_user_id", 0);
             if (otherId <= 0) return;
-            ZenoraAvatarRegistry.setUserAvatar(account, otherId,
+            putAvatar(snapshot, "u:" + otherId,
                     ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
             TLRPC.User other = makeUser(otherId,
                     row.optString("other_username", ""),
                     row.optString("other_display_name", ""), false);
             if (other == null) return;
-            controller.putUser(other, false, true);
+            snapshot.users.put(other.id, other);
             TLRPC.TL_peerUser userPeer = new TLRPC.TL_peerUser();
             userPeer.user_id = otherId;
             peer = userPeer;
@@ -276,11 +473,11 @@ public final class ZenoraChatController {
             chat.id = roomId;
             chat.title = nonEmpty(row.optString("name", ""), " ");
             chat.photo = new TLRPC.TL_chatPhotoEmpty();
-            ZenoraAvatarRegistry.setChatAvatar(account, roomId,
+            putAvatar(snapshot, "c:" + roomId,
                     ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
             chat.date = parseDate(row.optString("last_message_time", ""));
             chat.participants_count = row.optInt("member_count", 0);
-            controller.putChat(chat, false);
+            snapshot.chats.put(chat.id, chat);
 
             if (channel) {
                 TLRPC.TL_peerChannel channelPeer = new TLRPC.TL_peerChannel();
@@ -311,12 +508,11 @@ public final class ZenoraChatController {
         dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
 
         synchronized (loadLock) {
-            Map<Long, Long> mappings = dialogRoomIds.computeIfAbsent(account, ignored -> new HashMap<>());
-            mappings.put(dialogId, roomId);
+            snapshot.roomIds.put(dialogId, roomId);
         }
-        controller.dialogs_dict.put(dialogId, dialog);
-        controller.allDialogs.add(dialog);
-        applyDialogMuteSnapshot(account, dialogId, row);
+        snapshot.dialogs.put(dialogId, dialog);
+        snapshot.allDialogs.add(dialog);
+        applyDialogMuteSnapshot(snapshot, dialogId, row);
 
         if (messageId > 0) {
             TLRPC.TL_message message = new TLRPC.TL_message();
@@ -339,14 +535,14 @@ public final class ZenoraChatController {
             }
             if (senderId > 0) {
                 if (senderId == self.id) {
-                    controller.putUser(self, false, true);
+                    snapshot.users.put(self.id, self);
                 } else {
                     String senderName = row.optString("last_message_sender_display_name", "");
                     String senderAvatar = row.optString("last_message_sender_avatar_url", "");
-                    ZenoraAvatarRegistry.setUserAvatar(account, senderId,
+                    putAvatar(snapshot, "u:" + senderId,
                             ZenoraApiClient.resolvePublicUrl(senderAvatar));
                     TLRPC.User senderUser = makeUser(senderId, senderUsername, senderName, false);
-                    if (senderUser != null) controller.putUser(senderUser, false, true);
+                    if (senderUser != null) snapshot.users.put(senderUser.id, senderUser);
                 }
                 TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
                 fromPeer.user_id = senderId;
@@ -355,22 +551,24 @@ public final class ZenoraChatController {
             }
 
             MessageObject object = new MessageObject(account, message,
-                    controller.getUsers(), controller.getChats(), false, false);
+                    snapshot.users, snapshot.chats, false, false);
             ArrayList<MessageObject> messages = new ArrayList<>();
             messages.add(object);
-            controller.dialogMessage.put(dialogId, messages);
+            snapshot.messages.put(dialogId, messages);
         }
     }
 
-    private static void applyDialogMuteSnapshot(int account, long dialogId, JSONObject row) {
+    private static void applyDialogMuteSnapshot(DialogSnapshot snapshot, long dialogId, JSONObject row) {
         boolean muted = row.optInt("is_muted", 0) == 1;
         long until = row.optLong("mute_until", 0);
-        TLRPC.TL_peerNotifySettings settings = new TLRPC.TL_peerNotifySettings();
-        settings.flags |= 1 << 2;
-        settings.mute_until = !muted ? 0 : until <= 0
+        int muteUntil = !muted ? 0 : until <= 0
                 ? Integer.MAX_VALUE : (int) Math.min(Integer.MAX_VALUE, until);
-        NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                .applyZenoraMuteState(dialogId, settings.mute_until);
+        snapshot.muteUntil.put(dialogId, muteUntil);
+    }
+
+    private static void putAvatar(DialogSnapshot snapshot, String key, String url) {
+        if (url == null || url.trim().isEmpty()) snapshot.avatars.remove(key);
+        else snapshot.avatars.put(key, url.trim());
     }
 
     /** Intercept native Telegram mute-duration actions while Zenora is the active backend. */
