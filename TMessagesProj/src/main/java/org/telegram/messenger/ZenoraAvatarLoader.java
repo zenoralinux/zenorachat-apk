@@ -8,6 +8,7 @@ import org.telegram.tgnet.TLRPC;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -42,15 +43,20 @@ public final class ZenoraAvatarLoader {
         final String kind;
         final long id;
         final String key;
-        final TLRPC.TL_fileLocationToBeDeprecated location;
+        final long photoId;
+        final TLRPC.TL_fileLocationToBeDeprecated smallLocation;
+        final TLRPC.TL_fileLocationToBeDeprecated bigLocation;
 
-        PendingAvatar(int account, String kind, long id, String key,
-                      TLRPC.TL_fileLocationToBeDeprecated location) {
+        PendingAvatar(int account, String kind, long id, String key, long photoId,
+                      TLRPC.TL_fileLocationToBeDeprecated smallLocation,
+                      TLRPC.TL_fileLocationToBeDeprecated bigLocation) {
             this.account = account;
             this.kind = kind;
             this.id = id;
             this.key = key;
-            this.location = location;
+            this.photoId = photoId;
+            this.smallLocation = smallLocation;
+            this.bigLocation = bigLocation;
         }
     }
 
@@ -73,16 +79,20 @@ public final class ZenoraAvatarLoader {
             activeUrls.put(key, url);
         }
 
-        TLRPC.TL_fileLocationToBeDeprecated location = makeLocation(url);
-        File cached = FileLoader.getInstance(account).getPathToAttach(location, true);
+        long photoId = makePhotoId(url);
+        TLRPC.TL_fileLocationToBeDeprecated smallLocation = makeLocation(photoId, false);
+        TLRPC.TL_fileLocationToBeDeprecated bigLocation = makeLocation(photoId, true);
+        File cached = FileLoader.getInstance(account).getPathToAttach(smallLocation, true);
+        File cachedBig = FileLoader.getInstance(account).getPathToAttach(bigLocation, true);
         if (isValidCachedImage(cached)) {
-            user.photo = makeUserPhoto(location);
-            ensureUserAccessHash(user, location);
+            if (!isValidCachedImage(cachedBig)) copyCacheFile(cached, cachedBig);
+            user.photo = makeUserPhoto(photoId, smallLocation, bigLocation);
+            ensureUserAccessHash(user, photoId);
             return;
         }
 
         user.photo = new TLRPC.TL_userProfilePhotoEmpty();
-        enqueueDownload(account, "u", user.id, key, url, location);
+        enqueueDownload(account, "u", user.id, key, url, photoId, smallLocation, bigLocation);
     }
 
     public static void applyChatAvatar(int account, TLRPC.Chat chat, String avatarPath) {
@@ -101,20 +111,26 @@ public final class ZenoraAvatarLoader {
             activeUrls.put(key, url);
         }
 
-        TLRPC.TL_fileLocationToBeDeprecated location = makeLocation(url);
-        File cached = FileLoader.getInstance(account).getPathToAttach(location, true);
+        long photoId = makePhotoId(url);
+        TLRPC.TL_fileLocationToBeDeprecated smallLocation = makeLocation(photoId, false);
+        TLRPC.TL_fileLocationToBeDeprecated bigLocation = makeLocation(photoId, true);
+        File cached = FileLoader.getInstance(account).getPathToAttach(smallLocation, true);
+        File cachedBig = FileLoader.getInstance(account).getPathToAttach(bigLocation, true);
         if (isValidCachedImage(cached)) {
-            chat.photo = makeChatPhoto(location);
-            ensureChatAccessHash(chat, location);
+            if (!isValidCachedImage(cachedBig)) copyCacheFile(cached, cachedBig);
+            chat.photo = makeChatPhoto(photoId, smallLocation, bigLocation);
+            ensureChatAccessHash(chat, photoId);
             return;
         }
 
         chat.photo = new TLRPC.TL_chatPhotoEmpty();
-        enqueueDownload(account, "c", chat.id, key, url, location);
+        enqueueDownload(account, "c", chat.id, key, url, photoId, smallLocation, bigLocation);
     }
 
     private static void enqueueDownload(int account, String kind, long id, String key,
-                                        String url, TLRPC.TL_fileLocationToBeDeprecated location) {
+                                        String url, long photoId,
+                                        TLRPC.TL_fileLocationToBeDeprecated smallLocation,
+                                        TLRPC.TL_fileLocationToBeDeprecated bigLocation) {
         boolean startDownload = false;
         synchronized (lock) {
             java.util.ArrayList<PendingAvatar> pending = pendingAvatars.get(url);
@@ -122,7 +138,7 @@ public final class ZenoraAvatarLoader {
                 pending = new java.util.ArrayList<>();
                 pendingAvatars.put(url, pending);
             }
-            pending.add(new PendingAvatar(account, kind, id, key, location));
+            pending.add(new PendingAvatar(account, kind, id, key, photoId, smallLocation, bigLocation));
             if (inFlight.add(url)) startDownload = true;
         }
         if (!startDownload) return;
@@ -130,8 +146,10 @@ public final class ZenoraAvatarLoader {
         executor.execute(() -> {
             boolean downloaded = false;
             try {
-                File target = FileLoader.getInstance(account).getPathToAttach(location, true);
-                downloaded = isValidCachedImage(target) || downloadToCache(url, target);
+                File smallTarget = FileLoader.getInstance(account).getPathToAttach(smallLocation, true);
+                File bigTarget = FileLoader.getInstance(account).getPathToAttach(bigLocation, true);
+                downloaded = isValidCachedImage(smallTarget) || downloadToCache(url, smallTarget);
+                if (downloaded && !isValidCachedImage(bigTarget)) copyCacheFile(smallTarget, bigTarget);
             } catch (Throwable error) {
                 FileLog.w("[ZenoraChat] avatar cache failed (" + error.getClass().getSimpleName() + ")");
             }
@@ -153,14 +171,14 @@ public final class ZenoraAvatarLoader {
                     if ("u".equals(item.kind)) {
                         TLRPC.User current = controller.getUsers().get(item.id);
                         if (current == null) return;
-                        current.photo = makeUserPhoto(item.location);
-                        ensureUserAccessHash(current, item.location);
+                        current.photo = makeUserPhoto(item.photoId, item.smallLocation, item.bigLocation);
+                        ensureUserAccessHash(current, item.photoId);
                         controller.putUser(current, false, true);
                     } else {
                         TLRPC.Chat current = controller.getChats().get(item.id);
                         if (current == null) return;
-                        current.photo = makeChatPhoto(item.location);
-                        ensureChatAccessHash(current, item.location);
+                        current.photo = makeChatPhoto(item.photoId, item.smallLocation, item.bigLocation);
+                        ensureChatAccessHash(current, item.photoId);
                         controller.putChat(current, false);
                     }
                     NotificationCenter.getInstance(item.account)
@@ -239,57 +257,93 @@ public final class ZenoraAvatarLoader {
         return file != null && file.isFile() && file.length() > 0;
     }
 
-    private static TLRPC.TL_userProfilePhoto makeUserPhoto(TLRPC.TL_fileLocationToBeDeprecated location) {
+    private static TLRPC.TL_userProfilePhoto makeUserPhoto(long photoId,
+                                                            TLRPC.TL_fileLocationToBeDeprecated smallLocation,
+                                                            TLRPC.TL_fileLocationToBeDeprecated bigLocation) {
         TLRPC.TL_userProfilePhoto photo = new TLRPC.TL_userProfilePhoto();
-        photo.photo_id = location.volume_id;
-        photo.photo_small = location;
-        photo.photo_big = location;
-        photo.dc_id = location.dc_id;
+        photo.photo_id = photoId;
+        photo.photo_small = smallLocation;
+        photo.photo_big = bigLocation;
+        photo.dc_id = 0;
         return photo;
     }
 
-    private static TLRPC.TL_chatPhoto makeChatPhoto(TLRPC.TL_fileLocationToBeDeprecated location) {
+    private static TLRPC.TL_chatPhoto makeChatPhoto(long photoId,
+                                                     TLRPC.TL_fileLocationToBeDeprecated smallLocation,
+                                                     TLRPC.TL_fileLocationToBeDeprecated bigLocation) {
         TLRPC.TL_chatPhoto photo = new TLRPC.TL_chatPhoto();
-        photo.photo_id = location.volume_id;
-        photo.photo_small = location;
-        photo.photo_big = location;
-        photo.dc_id = location.dc_id;
+        photo.photo_id = photoId;
+        photo.photo_small = smallLocation;
+        photo.photo_big = bigLocation;
+        photo.dc_id = 0;
         return photo;
     }
 
-    private static void ensureUserAccessHash(TLRPC.User user,
-                                             TLRPC.TL_fileLocationToBeDeprecated location) {
+    private static void ensureUserAccessHash(TLRPC.User user, long photoId) {
         if (user.access_hash == 0) {
-            user.access_hash = location.volume_id != 0 ? location.volume_id : (user.id | 1L);
+            user.access_hash = photoId;
             user.flags |= 1;
         }
     }
 
-    private static void ensureChatAccessHash(TLRPC.Chat chat,
-                                             TLRPC.TL_fileLocationToBeDeprecated location) {
+    private static void ensureChatAccessHash(TLRPC.Chat chat, long photoId) {
         if (chat instanceof TLRPC.TL_channel && chat.access_hash == 0) {
-            chat.access_hash = location.volume_id != 0 ? location.volume_id : (chat.id | 1L);
+            chat.access_hash = photoId;
             chat.flags |= 1 << 13;
         }
     }
 
-    private static TLRPC.TL_fileLocationToBeDeprecated makeLocation(String url) {
-        TLRPC.TL_fileLocationToBeDeprecated location = new TLRPC.TL_fileLocationToBeDeprecated();
+    /**
+     * Telegram's current TL_userProfilePhoto/TL_chatPhoto serializers rebuild
+     * their locations from photo_id: volume_id=-photo_id, local_id='a' for
+     * small and 'c' for big. The cache paths must follow that exact contract
+     * or the avatar disappears after the model is restored from local storage.
+     */
+    private static long makePhotoId(String url) {
         try {
             byte[] digest = MessageDigest.getInstance("MD5").digest(url.getBytes(StandardCharsets.UTF_8));
-            ByteBuffer bytes = ByteBuffer.wrap(digest);
-            location.volume_id = bytes.getLong();
-            location.local_id = bytes.getInt();
-            if (location.volume_id == 0 || location.volume_id == Integer.MIN_VALUE) {
-                location.volume_id = 0x5a454e4f52414cL;
-            }
-            if (location.local_id == Integer.MIN_VALUE) location.local_id++;
+            long value = ByteBuffer.wrap(digest).getLong() & Long.MAX_VALUE;
+            return value == 0 ? 1L : value;
         } catch (Exception error) {
-            location.volume_id = (long) url.hashCode() | 1L;
-            location.local_id = url.hashCode() & 0x7fffffff;
+            long value = ((long) url.hashCode()) & 0xffffffffL;
+            return value == 0 ? 1L : value;
         }
+    }
+
+    private static TLRPC.TL_fileLocationToBeDeprecated makeLocation(long photoId, boolean big) {
+        TLRPC.TL_fileLocationToBeDeprecated location = new TLRPC.TL_fileLocationToBeDeprecated();
+        location.volume_id = -photoId;
+        location.local_id = big ? 'c' : 'a';
         location.dc_id = 0;
         return location;
+    }
+
+    private static boolean copyCacheFile(File source, File target) {
+        if (!isValidCachedImage(source)) return false;
+        if (isValidCachedImage(target)) return true;
+        File parent = target.getParentFile();
+        if (parent == null || (!parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())) {
+            return false;
+        }
+        File temporary = new File(parent, target.getName() + ".zenora.tmp");
+        try (FileInputStream input = new FileInputStream(source);
+             FileOutputStream output = new FileOutputStream(temporary)) {
+            byte[] chunk = new byte[16 * 1024];
+            int read;
+            while ((read = input.read(chunk)) != -1) output.write(chunk, 0, read);
+            output.flush();
+            output.getFD().sync();
+            if (!temporary.renameTo(target)) {
+                if (target.exists()) target.delete();
+                if (!temporary.renameTo(target)) return false;
+            }
+            return isValidCachedImage(target);
+        } catch (Throwable error) {
+            FileLog.w("[ZenoraChat] avatar cache mirror failed (" + error.getClass().getSimpleName() + ")");
+            return false;
+        } finally {
+            if (temporary.exists()) temporary.delete();
+        }
     }
 
     private static String resolvePublicUrl(String value) {
