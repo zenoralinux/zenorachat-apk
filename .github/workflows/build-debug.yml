@@ -243,12 +243,10 @@ jobs:
             echo "# ZenoraChat Debug Preview"
             echo
             if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-verified-chat-mute-indicator-20261123" ]]; then
-            TAG="zenora-verified-chat-mute-indicator-android-20261123"
-          elif if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-verified-chat-mute-indicator-20261123" ]]; then
               echo "Verified chat mute indicator fix: verified badges and mute/unmute icons now have independent positions and reserved title width for RTL and LTR layouts."
               echo
               echo "- The change is isolated to DialogCell rendering; API-backed mute synchronization remains unchanged."
-            elif if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123" ]]; then
+            elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123" ]]; then
               echo "Zenora mute indicator refresh: dialog-list diff snapshots now include per-dialog mute state, DialogCell's layout cache invalidates on mute changes, and snapshot reload waits until all notification preferences are applied."
               echo
               echo "- Permanent Zenora mute/unmute remains API-backed; timed choices stay hidden on Android and swipe mute remains on its original path."
@@ -347,7 +345,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-verified-chat-mute-indicator-20261123" ]]; then
+            TAG="zenora-verified-chat-mute-indicator-android-20261123"
+          elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123" ]]; then
             TAG="zenora-chat-list-mute-indicator-refresh-android-20261123"
           elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-permanent-mute-unmute-20261123" ]]; then
             TAG="zenora-permanent-mute-unmute-android-20261123"
