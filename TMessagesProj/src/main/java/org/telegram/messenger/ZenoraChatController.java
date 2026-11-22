@@ -1169,6 +1169,13 @@ public final class ZenoraChatController {
      */
     public static boolean handleMuteSetting(int account, long dialogId, long topicId, int setting) {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
+        if (setting != NotificationsController.SETTING_MUTE_UNMUTE
+                && setting != NotificationsController.SETTING_MUTE_HOUR
+                && setting != NotificationsController.SETTING_MUTE_8_HOURS
+                && setting != NotificationsController.SETTING_MUTE_2_DAYS
+                && setting != NotificationsController.SETTING_MUTE_FOREVER) {
+            return false;
+        }
         boolean muted = setting != NotificationsController.SETTING_MUTE_UNMUTE;
         return submitMuteAction(account, dialogId, topicId, muted, 0);
     }
