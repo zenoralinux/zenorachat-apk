@@ -122,6 +122,7 @@ import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
@@ -2551,6 +2552,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         getMessagesController().hidePromoDialog();
                         parentPage.dialogsItemAnimator.prepareForRemove();
                         parentPage.updateList(true);
+                    } else if (ZenoraChatController.isZenoraEnabled()) {
+                        ArrayList<Long> ids = new ArrayList<>();
+                        ids.add(dialog.id);
+                        String apiAction = folderId == 0 ? "archive" : "unarchive";
+                        ZenoraChatController.performBulkAction(apiAction, ids, (response, error) -> {
+                            if (error != null) {
+                                Toast.makeText(getParentActivity(), "تغییر آرشیو گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                            } else {
+                                ZenoraChatController.refreshDialogs(getAccountInstance());
+                            }
+                        });
                     } else {
                         int added = getMessagesController().addDialogToFolder(dialog.id, folderId == 0 ? 1 : 0, -1, 0);
                         if (added != 2 || position != 0) {
@@ -8709,7 +8721,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     if (filter != null) {
                         FilterCreateActivity.saveFilterToServer(filter, filter.flags, filter.name, filter.entities, filter.title_noanimate, filter.color, filter.alwaysShow, filter.neverShow, filter.pinnedDialogs, false, false, true, true, false, DialogsActivity.this, null);
                     }
-                    getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+                    if (!ZenoraChatController.isZenoraEnabled()) {
+                        getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+                    }
                     updateCounters(true);
                     if (viewPages != null) {
                         for (int a = 0; a < viewPages.length; a++) {
@@ -8732,13 +8746,26 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             muteItem.setMinimumWidth(160);
             muteItem.setOnClickListener(e -> {
-                boolean isMuted = getMessagesController().isDialogMuted(dialogId, 0);
-                if (!isMuted) {
+                boolean isMuted = ZenoraChatController.isZenoraEnabled()
+                        ? dialog.notify_settings != null && dialog.notify_settings.mute_until > (int) (System.currentTimeMillis() / 1000L)
+                        : getMessagesController().isDialogMuted(dialogId, 0);
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    ArrayList<Long> ids = new ArrayList<>();
+                    ids.add(dialogId);
+                    ZenoraChatController.performBulkAction(isMuted ? "unmute" : "mute", ids, (response, error) -> {
+                        if (error != null) {
+                            Toast.makeText(getParentActivity(), "تغییر اعلان گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                        } else {
+                            ZenoraChatController.refreshDialogs(getAccountInstance());
+                            BulletinFactory.createMuteBulletin(this, !isMuted, null).show();
+                        }
+                    });
+                } else if (!isMuted) {
                     getNotificationsController().setDialogNotificationsSettings(dialogId, 0, NotificationsController.SETTING_MUTE_FOREVER);
                 } else {
                     getNotificationsController().setDialogNotificationsSettings(dialogId, 0, NotificationsController.SETTING_MUTE_UNMUTE);
+                    BulletinFactory.createMuteBulletin(this, !isMuted, null).show();
                 }
-                BulletinFactory.createMuteBulletin(this, !isMuted, null).show();
                 finishPreviewFragment();
             });
             previewMenu[0].addView(muteItem);
@@ -9044,7 +9071,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             movingDialogFilters.clear();
         }
         if (movingWas) {
-            getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+            if (!ZenoraChatController.isZenoraEnabled()) {
+                getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+            }
             movingWas = false;
         }
         updateCounters(true);
@@ -10782,6 +10811,18 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
 
             Runnable deleteRunnable = () -> {
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    ArrayList<Long> ids = new ArrayList<>();
+                    ids.add(dialogId);
+                    ZenoraChatController.performBulkAction("delete", ids, (response, error) -> {
+                        if (error != null) {
+                            Toast.makeText(getParentActivity(), "حذف گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                        } else {
+                            ZenoraChatController.refreshDialogs(getAccountInstance());
+                        }
+                    });
+                    return;
+                }
                 if (chat != null) {
                     if (ChatObject.isNotInChat(chat)) {
                         getMessagesController().deleteDialog(dialogId, 0, revoke);
