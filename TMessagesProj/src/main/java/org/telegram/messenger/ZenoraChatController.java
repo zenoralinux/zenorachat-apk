@@ -133,7 +133,14 @@ public final class ZenoraChatController {
         if (self == null) return;
         UserConfig config = UserConfig.getInstance(account);
         TLRPC.User previousUser = config.getCurrentUser();
-        if (previousUser != null && previousUser.id != self.id) {
+        Long previousSnapshotUserId;
+        synchronized (loadLock) {
+            previousSnapshotUserId = snapshotUserIds.get(account);
+        }
+        boolean accountIdentityChanged = (previousUser != null && previousUser.id != self.id)
+                || (previousSnapshotUserId != null && previousSnapshotUserId > 0
+                && previousSnapshotUserId != self.id);
+        if (accountIdentityChanged) {
             synchronized (loadLock) {
                 snapshotAvailable.remove(account);
                 cacheRestoreStarted.remove(account);
@@ -145,6 +152,7 @@ public final class ZenoraChatController {
                         ? requestGenerations.get(account) + 1L : 1L;
                 requestGenerations.put(account, generation);
             }
+            DialogsActivity.resetZenoraLoadState(account);
             cacheExecutor.execute(() -> ZenoraDialogCache.delete(account));
         }
         config.setCurrentUser(self);
