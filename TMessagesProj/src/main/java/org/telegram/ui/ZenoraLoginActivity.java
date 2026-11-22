@@ -14,7 +14,7 @@ import android.widget.TextView;
 
 import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
-import org.telegram.messenger.TLRPC;
+import org.telegram.tgnet.TLRPC;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.ZenoraChatController;
