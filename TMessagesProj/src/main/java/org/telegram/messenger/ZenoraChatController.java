@@ -1351,7 +1351,8 @@ public final class ZenoraChatController {
                 return;
             }
             for (Long dialogId : batch.roomIdsByDialog.keySet()) {
-                applyMuteActionResponse(batch.account, dialogId, response, batch.mode);
+                applyMuteActionResponse(batch.account, dialogId,
+                        batch.roomIdsByDialog.get(dialogId), response, batch.mode);
             }
         });
     }
@@ -1439,25 +1440,32 @@ public final class ZenoraChatController {
             showMuteError("شناسه گفتگوی زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.");
             return true;
         }
-        rememberMuteSignature(account, dialogId,
-                "muted".equals(mode) ? "muted:pending" : mode);
+        String pendingSignature = mode + ":pending:" + SystemClock.elapsedRealtime();
+        rememberMuteSignature(account, dialogId, pendingSignature);
         ZenoraApiClient.setChatMuteMode(roomId, mode, muteSeconds, (response, error) -> {
             if (error != null) {
                 FileLog.e(error);
                 synchronized (loadLock) {
                     Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
-                    if (signatures != null) signatures.remove(dialogId);
+                    if (signatures != null && pendingSignature.equals(signatures.get(dialogId))) {
+                        signatures.remove(dialogId);
+                    }
                 }
                 showMuteError("ذخیره وضعیت بی‌صدا در زنوراچت ناموفق بود.");
                 return;
             }
-            applyMuteActionResponse(account, dialogId, response, mode);
+            applyMuteActionResponse(account, dialogId, roomId, response, mode);
         });
         return true;
     }
 
-    private static void applyMuteActionResponse(int account, long dialogId,
+    private static void applyMuteActionResponse(int account, long dialogId, Long expectedRoomId,
                                                 JSONObject response, String fallbackMode) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || expectedRoomId == null) return;
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            if (mappings == null || !expectedRoomId.equals(mappings.get(dialogId))) return;
+        }
         String mode = response.optString("mute_mode", fallbackMode);
         long until = response.optLong("mute_until", 0);
         long serverTime = response.optLong("server_time", 0);
