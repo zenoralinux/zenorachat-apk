@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -268,6 +269,109 @@ public final class ZenoraChatController {
             requestRooms(instance, true);
             if (callback != null) callback.onComplete(true, null);
         });
+    }
+
+
+    /**
+     * Commits native Delete/Leave operations to Zenora after Telegram's native
+     * Undo window has expired. Dialog IDs are resolved only from the latest
+     * complete room snapshot; unsupported or stale IDs fail closed.
+     */
+    public static void deleteDialogs(int account, ArrayList<Long> dialogIds,
+                                     Set<Long> revokeDialogIds, long blockPeerUserId,
+                                     OperationCallback callback) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) {
+            if (callback != null) callback.onComplete(false, "حساب زنورا فعال نیست.");
+            return;
+        }
+        if (dialogIds == null || dialogIds.isEmpty() || dialogIds.size() > 500) {
+            if (callback != null) callback.onComplete(false, "تعداد گفتگوهای انتخاب‌شده معتبر نیست.");
+            return;
+        }
+
+        final ArrayList<Long> roomIds = new ArrayList<>();
+        final Map<Long, String> scopes = new HashMap<>();
+        try {
+            synchronized (loadLock) {
+                Map<Long, Long> mappings = dialogRoomIds.get(account);
+                Set<Long> savedIds = savedDialogIds.get(account);
+                if (mappings == null) {
+                    throw new IllegalStateException("شناسه گفتگوهای زنورا در دسترس نیست؛ فهرست را تازه‌سازی کنید.");
+                }
+                HashSet<Long> seenDialogs = new HashSet<>();
+                HashSet<Long> seenRooms = new HashSet<>();
+                for (Long dialogId : dialogIds) {
+                    if (dialogId == null || !seenDialogs.add(dialogId)) continue;
+                    Long roomId = mappings.get(dialogId);
+                    if (roomId == null || roomId <= 0) {
+                        throw new IllegalStateException("شناسه یکی از گفتگوها در زنورا پیدا نشد؛ فهرست را تازه‌سازی کنید.");
+                    }
+                    if (!seenRooms.add(roomId)) {
+                        throw new IllegalStateException("دو گفتگوی انتخاب‌شده به یک اتاق زنورا اشاره می‌کنند.");
+                    }
+                    roomIds.add(roomId);
+                    boolean isSaved = savedIds != null && savedIds.contains(dialogId);
+                    boolean mayDeleteForBoth = !isSaved && dialogId > 0
+                            && revokeDialogIds != null && revokeDialogIds.contains(dialogId);
+                    scopes.put(roomId, mayDeleteForBoth ? "both" : "me");
+                }
+            }
+        } catch (Exception error) {
+            if (callback != null) callback.onComplete(false, error.getMessage());
+            return;
+        }
+
+        if (roomIds.isEmpty()) {
+            if (callback != null) callback.onComplete(false, "گفتگوی معتبری برای حذف انتخاب نشده است.");
+            return;
+        }
+
+        AccountInstance instance = AccountInstance.getInstance(account);
+        String operationId = UUID.randomUUID().toString();
+        ZenoraApiClient.deleteChats(roomIds, scopes, operationId, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                requestRooms(instance, true);
+                if (callback != null) callback.onComplete(false, deleteOperationError(error));
+                return;
+            }
+
+            if (blockPeerUserId > 0) {
+                ZenoraApiClient.setDmBlocked(blockPeerUserId, true, (blockResponse, blockError) -> {
+                    requestRooms(instance, true);
+                    if (blockError != null) {
+                        FileLog.e(blockError);
+                        if (callback != null) {
+                            callback.onComplete(false, "گفتگو حذف شد، اما مسدودسازی کاربر انجام نشد.");
+                        }
+                        return;
+                    }
+                    if (callback != null) callback.onComplete(true, null);
+                });
+            } else {
+                requestRooms(instance, true);
+                if (callback != null) callback.onComplete(true, null);
+            }
+        });
+    }
+
+    private static String deleteOperationError(Exception error) {
+        if (error instanceof ZenoraApiClient.ApiException) {
+            String code = ((ZenoraApiClient.ApiException) error).errorCode;
+            if ("ROOM_OWNER_CANNOT_LEAVE".equals(code)) {
+                return "مالک گروه یا کانال تا زمان انتقال مالکیت نمی‌تواند گفتگو را ترک کند.";
+            }
+            if ("CHAT_NOT_ACCESSIBLE".equals(code) || "FORBIDDEN".equals(code)) {
+                return "دسترسی به یکی از گفتگوها تغییر کرده است؛ فهرست دوباره همگام‌سازی شد.";
+            }
+            if ("INVALID_DELETE_SCOPE".equals(code)) {
+                return "دامنه حذف برای یکی از گفتگوها معتبر نیست.";
+            }
+            if ("ROOM_BLOCKED".equals(code)) {
+                return "این گفتگو مسدود شده و امکان ترک آن وجود ندارد.";
+            }
+        }
+        return error.getMessage() == null ? "عملیات حذف یا ترک گفتگو ناموفق بود." : error.getMessage();
     }
 
     /**
@@ -671,16 +775,14 @@ public final class ZenoraChatController {
         long dialogId;
         TLRPC.Peer peer;
         if (saved) {
-            TLRPC.TL_chat savedChat = new TLRPC.TL_chat();
-            savedChat.id = roomId;
-            savedChat.title = nonEmpty(row.optString("name", ""), "پیام‌های ذخیره‌شده");
-            savedChat.photo = new TLRPC.TL_chatPhotoEmpty();
-            savedChat.date = parseDate(row.optString("last_message_time", ""));
-            snapshot.chats.put(savedChat.id, savedChat);
-            TLRPC.TL_peerChat savedPeer = new TLRPC.TL_peerChat();
-            savedPeer.chat_id = roomId;
+            // Saved Messages is Telegram's native self-chat. Keep the Zenora
+            // room mapping separate from the peer identity so native dialogs,
+            // clear-history confirmation, and Saved Messages checks all use
+            // the authenticated self user just like the official client.
+            TLRPC.TL_peerUser savedPeer = new TLRPC.TL_peerUser();
+            savedPeer.user_id = self.id;
             peer = savedPeer;
-            dialogId = -roomId;
+            dialogId = self.id;
         } else if (direct) {
             long otherId = row.optLong("other_user_id", 0);
             if (otherId <= 0) return;

@@ -10,6 +10,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -223,6 +224,125 @@ public final class ZenoraApiClient {
                 if (response.optInt("processed_count", -1) != roomIds.size()) {
                     throw new IllegalStateException("ZenoraChat did not confirm every archive change");
                 }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+
+    /** Delete/hide chats in Zenora; each DM can carry its own delete-for-both scope. */
+    public static void deleteChats(List<Long> roomIds, Map<Long, String> deleteScopes, String operationId, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomIds == null || roomIds.isEmpty() || roomIds.size() > 500) {
+                    throw new IllegalArgumentException("Invalid delete operation size");
+                }
+                if (operationId == null || !operationId.matches("[A-Za-z0-9._:-]{8,64}")) {
+                    throw new IllegalArgumentException("Invalid delete operation id");
+                }
+                JSONArray ids = new JSONArray();
+                JSONObject scopes = new JSONObject();
+                java.util.HashSet<Long> uniqueIds = new java.util.HashSet<>();
+                for (Long roomId : roomIds) {
+                    if (roomId == null || roomId <= 0 || !uniqueIds.add(roomId)) {
+                        throw new IllegalArgumentException("Invalid or duplicate Zenora room id");
+                    }
+                    ids.put(roomId);
+                    String scope = deleteScopes == null ? "me" : deleteScopes.get(roomId);
+                    if (scope == null) scope = "me";
+                    if (!"me".equals(scope) && !"both".equals(scope)) {
+                        throw new IllegalArgumentException("Invalid per-chat delete scope");
+                    }
+                    scopes.put(String.valueOf(roomId), scope);
+                }
+
+                String csrf = prefs().getString("csrf", "");
+                if (csrf.isEmpty()) {
+                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
+                    csrf = challenge.optString("csrf", "");
+                    if (csrf.isEmpty()) {
+                        throw new IllegalStateException("Authenticated CSRF token missing");
+                    }
+                    prefs().edit().putString("csrf", csrf).commit();
+                }
+
+                String form = "room_ids=" + encode(ids.toString())
+                        + "&action=delete"
+                        + "&delete_scopes=" + encode(scopes.toString())
+                        + "&operation_id=" + encode(operationId)
+                        + "&csrf=" + encode(csrf);
+                JSONObject response = requestDeleteWithRetry(form);
+                if (response.optInt("processed_count", -1) != ids.length()) {
+                    throw new IllegalStateException("ZenoraChat did not confirm every delete/leave operation");
+                }
+                JSONArray items = response.optJSONArray("items");
+                if (items == null || items.length() != ids.length()) {
+                    throw new IllegalStateException("ZenoraChat returned an incomplete delete result");
+                }
+                java.util.HashSet<Long> expectedIds = new java.util.HashSet<>();
+                for (int i = 0; i < ids.length(); i++) expectedIds.add(ids.optLong(i, 0));
+                java.util.HashSet<Long> returnedIds = new java.util.HashSet<>();
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject item = items.optJSONObject(i);
+                    if (item == null) throw new IllegalStateException("ZenoraChat returned an invalid delete item");
+                    long returnedId = item.optLong("room_id", 0);
+                    if (!expectedIds.contains(returnedId) || !returnedIds.add(returnedId)) {
+                        throw new IllegalStateException("ZenoraChat returned mismatched delete items");
+                    }
+                }
+                if (!returnedIds.equals(expectedIds)) {
+                    throw new IllegalStateException("ZenoraChat did not confirm every selected chat");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /**
+     * Retry a possibly committed delete request once with the same operation id.
+     * The server caches the committed result by user + operation id.
+     */
+    private static JSONObject requestDeleteWithRetry(String form) throws Exception {
+        try {
+            return request("chat_bulk_action.php", "POST", form);
+        } catch (ApiException error) {
+            if (error.statusCode < 500) throw error;
+            FileLog.w("[ZenoraChat] delete API returned HTTP " + error.statusCode + "; retrying idempotently.");
+        } catch (IOException error) {
+            FileLog.w("[ZenoraChat] delete API connection failed; retrying with the same operation id.");
+        }
+
+        try {
+            Thread.sleep(400L);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Delete retry was interrupted", interrupted);
+        }
+        return request("chat_bulk_action.php", "POST", form);
+    }
+
+    /** Block/unblock a DM peer using Zenora's authenticated API, not MTProto. */
+    public static void setDmBlocked(long otherUserId, boolean blocked, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (otherUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
+                String csrf = prefs().getString("csrf", "");
+                if (csrf.isEmpty()) {
+                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
+                    csrf = challenge.optString("csrf", "");
+                    if (csrf.isEmpty()) {
+                        throw new IllegalStateException("Authenticated CSRF token missing");
+                    }
+                    prefs().edit().putString("csrf", csrf).commit();
+                }
+                String form = "other_user_id=" + encode(String.valueOf(otherUserId))
+                        + "&action=" + encode(blocked ? "block" : "unblock")
+                        + "&csrf=" + encode(csrf);
+                JSONObject response = request("dm_block_toggle.php", "POST", form);
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
