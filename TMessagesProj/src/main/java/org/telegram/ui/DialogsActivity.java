@@ -2231,7 +2231,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                         } else if (SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_DELETE) {
                                             ArrayList<Long> selectedDialogs = new ArrayList<>();
                                             selectedDialogs.add(dialogId);
-                                            performSelectedDialogsAction(selectedDialogs, delete, true, false);
+                                            performSelectedDialogsAction(selectedDialogs, delete, true, false, null, false);
                                         }
                                     }
                                 }
@@ -9190,10 +9190,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress) {
-        performSelectedDialogsAction(selectedDialogs, action, alert, longPress, null);
+        performSelectedDialogsAction(selectedDialogs, action, alert, longPress, null, true);
     }
 
     private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress, HashSet<Long> dialogsIdsToRevoke) {
+        performSelectedDialogsAction(selectedDialogs, action, alert, longPress, dialogsIdsToRevoke, true);
+    }
+
+    private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress, HashSet<Long> dialogsIdsToRevoke, boolean allowZenoraDelete) {
         if (getParentActivity() == null) {
             return;
         }
@@ -9205,6 +9209,22 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             filter = null;
         }
         int count = selectedDialogs.size();
+        // Multi-select delete is committed to Zenora only after the native
+        // UndoView callback re-enters this method with alert=false. The swipe
+        // gesture explicitly passes allowZenoraDelete=false.
+        if (action == delete && !alert && allowZenoraDelete
+                && count > 1 && ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> deleteIds = new ArrayList<>(selectedDialogs);
+            ZenoraChatController.deleteDialogs(currentAccount, deleteIds, dialogsIdsToRevoke, 0,
+                    (success, errorMessage) -> {
+                        if (!success && getParentActivity() != null) {
+                            android.widget.Toast.makeText(getParentActivity(),
+                                    errorMessage == null ? "حذف یا ترک گفتگو ناموفق بود." : errorMessage,
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
+                    });
+            return;
+        }
         if (ZenoraChatController.isZenoraEnabled() && (action == pin || action == pin2)) {
             if (filter != null || viewPages != null
                     && (viewPages[0].dialogsType == 7 || viewPages[0].dialogsType == 8)) {
@@ -9419,7 +9439,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         undoView.showWithAction(didsCopy, action == delete ? UndoView.ACTION_DELETE_FEW : UndoView.ACTION_CLEAR_FEW, null, null, () -> {
                             if (action == delete) {
                                 getMessagesController().setDialogsInTransaction(true);
-                                performSelectedDialogsAction(didsCopy, action, false, false, param ? dialogsIdsPossibleToRevoke : null);
+                                performSelectedDialogsAction(didsCopy, action, false, false, param ? dialogsIdsPossibleToRevoke : null, allowZenoraDelete);
                                 getMessagesController().setDialogsInTransaction(false);
                                 getMessagesController().checkIfFolderEmpty(folderId);
                                 if (folderId != 0 && getDialogsArray(currentAccount, viewPages[0].dialogsType, folderId, false).size() == 0) {
@@ -9566,7 +9586,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
                                 final UndoView undoView = getUndoView();
                                 if (undoView != null) {
-                                    undoView.showWithAction(selectedDialog, action == clear ? UndoView.ACTION_CLEAR : param ? UndoView.ACTION_DELETE : UndoView.ACTION_LEAVE, () -> performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, param));
+                                    undoView.showWithAction(selectedDialog, action == clear ? UndoView.ACTION_CLEAR : param ? UndoView.ACTION_DELETE : UndoView.ACTION_LEAVE, () -> performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, param, allowZenoraDelete));
                                 }
 
                                 ArrayList<TLRPC.Dialog> currentDialogs = new ArrayList<>(getDialogsArray(currentAccount, viewPages[0].dialogsType, folderId, false));
@@ -9599,7 +9619,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             getMessagesController().deleteDialog(selectedDialog, 2, false);
                         } else {
                             boolean revoke = dialogsIdsToRevoke != null && dialogsIdsToRevoke.contains(selectedDialog);
-                            performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, revoke);
+                            performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, revoke, allowZenoraDelete);
                         }
                     }
                 }
@@ -9726,6 +9746,34 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void performDeleteOrClearDialogAction(int action, long selectedDialog, TLRPC.Chat chat, boolean isBot, boolean revoke) {
+        performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, revoke, true);
+    }
+
+    private void performDeleteOrClearDialogAction(int action, long selectedDialog, TLRPC.Chat chat, boolean isBot, boolean revoke, boolean allowZenoraDelete) {
+        if (action == delete && allowZenoraDelete && ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> deleteIds = new ArrayList<>();
+            deleteIds.add(selectedDialog);
+            HashSet<Long> revokeIds = new HashSet<>();
+            if (revoke && selectedDialog > 0) {
+                revokeIds.add(selectedDialog);
+            }
+            long blockUserId = isBot && revoke && selectedDialog > 0 ? selectedDialog : 0;
+            ZenoraChatController.deleteDialogs(currentAccount, deleteIds, revokeIds, blockUserId,
+                    (success, errorMessage) -> {
+                        if (!success && getParentActivity() != null) {
+                            android.widget.Toast.makeText(getParentActivity(),
+                                    errorMessage == null ? "حذف یا ترک گفتگو ناموفق بود." : errorMessage,
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        if (success) {
+                            if (AndroidUtilities.isTablet()) {
+                                getNotificationCenter().postNotificationName(NotificationCenter.closeChats, selectedDialog);
+                            }
+                            getMessagesController().checkIfFolderEmpty(folderId);
+                        }
+                    });
+            return;
+        }
         if (action == clear) {
             getMessagesController().deleteDialog(selectedDialog, 1, revoke);
         } else {
@@ -10822,6 +10870,24 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
 
             Runnable deleteRunnable = () -> {
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    ArrayList<Long> deleteIds = new ArrayList<>();
+                    deleteIds.add(dialogId);
+                    HashSet<Long> revokeIds = new HashSet<>();
+                    if (revoke && user != null && !user.bot && dialogId > 0) {
+                        revokeIds.add(dialogId);
+                    }
+                    long blockUserId = user != null && user.bot && botBlock ? user.id : 0;
+                    ZenoraChatController.deleteDialogs(account, deleteIds, revokeIds, blockUserId,
+                            (success, errorMessage) -> {
+                                if (!success && getParentActivity() != null) {
+                                    android.widget.Toast.makeText(getParentActivity(),
+                                            errorMessage == null ? "حذف یا ترک گفتگو ناموفق بود." : errorMessage,
+                                            android.widget.Toast.LENGTH_LONG).show();
+                                }
+                            });
+                    return;
+                }
                 if (chat != null) {
                     if (ChatObject.isNotInChat(chat)) {
                         getMessagesController().deleteDialog(dialogId, 0, revoke);
