@@ -135,7 +135,7 @@ public final class ZenoraChatController {
         long delayMs = 1000L << attempt; // 1s, 2s, 4s
         mainHandler.postDelayed(() -> {
             if (isZenoraEnabled()) {
-                loadDialogs(accountInstance);
+                DialogsActivity.loadDialogs(accountInstance);
             }
         }, delayMs);
     }
@@ -214,6 +214,7 @@ public final class ZenoraChatController {
         chatAvatarUrls = Collections.unmodifiableMap(new HashMap<>(staged.chatAvatars));
 
         controller.sortDialogs(null);
+        DialogsActivity.markZenoraLoadSuccess(account);
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
 
