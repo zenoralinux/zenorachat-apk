@@ -2,6 +2,7 @@ package org.telegram.messenger;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -203,7 +204,7 @@ public final class ZenoraChatController {
                     DialogsActivity.markZenoraLoadComplete(account);
                     FileLog.d("[ZenoraChat] restored cached dialog snapshot for account " + account);
                 } catch (Exception e) {
-                    FileLog.e("[ZenoraChat] cached dialog snapshot was rejected", e);
+                    FileLog.e(e);
                     ZenoraDialogCache.delete(account);
                 }
             });
@@ -260,7 +261,7 @@ public final class ZenoraChatController {
                 if (!hasSnapshot(account)) {
                     DialogsActivity.resetZenoraLoadState(account);
                 }
-                FileLog.e("[ZenoraChat] rooms refresh failed; current snapshot remains visible", error);
+                FileLog.e(error);
                 if (!rerun) scheduleRetry(accountInstance);
             } else {
                 try {
@@ -276,7 +277,7 @@ public final class ZenoraChatController {
                             response.optJSONObject("me") == null ? 0 : response.optJSONObject("me").optLong("id", 0),
                             cachePayload));
                 } catch (Exception e) {
-                    FileLog.e("[ZenoraChat] rejected an incomplete dialog snapshot; keeping previous data", e);
+                    FileLog.e(e);
                     if (!hasSnapshot(account)) DialogsActivity.resetZenoraLoadState(account);
                     if (!rerun) scheduleRetry(accountInstance);
                 }
