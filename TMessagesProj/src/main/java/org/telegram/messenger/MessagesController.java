@@ -21928,10 +21928,10 @@ public class MessagesController extends BaseController implements NotificationCe
      */
     public void applyZenoraTypingSnapshot(HashMap<Long, ArrayList<Long>> typingByDialog) {
         AndroidUtilities.runOnUIThread(() -> {
-            for (HashMap.Entry<Long, ConcurrentHashMap<Integer, ArrayList<PrintingUser>>> dialogEntry : printingUsers.entrySet()) {
+            for (Map.Entry<Long, ConcurrentHashMap<Integer, ArrayList<PrintingUser>>> dialogEntry : printingUsers.entrySet()) {
                 ConcurrentHashMap<Integer, ArrayList<PrintingUser>> threads = dialogEntry.getValue();
                 if (threads == null) continue;
-                for (HashMap.Entry<Integer, ArrayList<PrintingUser>> threadEntry : threads.entrySet()) {
+                for (Map.Entry<Integer, ArrayList<PrintingUser>> threadEntry : threads.entrySet()) {
                     ArrayList<PrintingUser> users = threadEntry.getValue();
                     if (users == null) continue;
                     synchronized (users) {
@@ -21949,7 +21949,7 @@ public class MessagesController extends BaseController implements NotificationCe
             }
 
             if (typingByDialog != null) {
-                for (HashMap.Entry<Long, ArrayList<Long>> dialogEntry : typingByDialog.entrySet()) {
+                for (Map.Entry<Long, ArrayList<Long>> dialogEntry : typingByDialog.entrySet()) {
                     Long dialogId = dialogEntry.getKey();
                     ArrayList<Long> userIds = dialogEntry.getValue();
                     if (dialogId == null || userIds == null || userIds.isEmpty()) continue;
