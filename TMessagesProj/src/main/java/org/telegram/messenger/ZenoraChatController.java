@@ -4,7 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.widget.Toast;
-import android.util.LongSparseArray;
+import androidx.collection.LongSparseArray;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
