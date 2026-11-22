@@ -47,6 +47,7 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
     private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
+    private static final Map<Integer, Set<Long>> typingDialogIdsByAccount = new HashMap<>();
     private static final Map<Integer, Set<Long>> presenceUserIdsByAccount = new HashMap<>();
     private static final Map<Integer, Map<Long, Integer>> attentionReadMessageIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Integer>> attentionReadPending = new HashMap<>();
@@ -179,6 +180,7 @@ public final class ZenoraChatController {
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
                 savedDialogIds.remove(account);
+                typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
@@ -213,6 +215,7 @@ public final class ZenoraChatController {
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
                 savedDialogIds.remove(account);
+                typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
@@ -259,8 +262,8 @@ public final class ZenoraChatController {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return;
         final Long roomId;
         synchronized (loadLock) {
-            Set<Long> saved = savedDialogIds.get(account);
-            if (saved != null && saved.contains(dialogId)) return;
+            Set<Long> supportedTypingDialogs = typingDialogIdsByAccount.get(account);
+            if (supportedTypingDialogs == null || !supportedTypingDialogs.contains(dialogId)) return;
             Map<Long, Long> mappings = dialogRoomIds.get(account);
             roomId = mappings == null ? null : mappings.get(dialogId);
         }
@@ -779,6 +782,7 @@ public final class ZenoraChatController {
         final HashMap<Long, Long> roomIds = new HashMap<>();
         final HashMap<Long, Integer> muteUntil = new HashMap<>();
         final HashMap<Long, ArrayList<Long>> typingUsers = new HashMap<>();
+        final Set<Long> typingDialogIds = new HashSet<>();
         final Set<Long> presenceUserIds = new HashSet<>();
         long serverTime;
         boolean applyEphemeralState;
@@ -915,6 +919,7 @@ public final class ZenoraChatController {
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
             savedDialogIds.put(account, new HashSet<>(snapshot.savedDialogs));
+            typingDialogIdsByAccount.put(account, new HashSet<>(snapshot.typingDialogIds));
             presenceUserIdsByAccount.put(account, new HashSet<>(snapshot.presenceUserIds));
             snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
@@ -1075,7 +1080,9 @@ public final class ZenoraChatController {
             messages.add(message);
             snapshot.messages.put(dialogId, messages);
         }
-        addTypingUsers(snapshot, row, dialogId, !saved && !channel && (direct || "group".equals(type)));
+        boolean typingSupported = !saved && !channel && (direct || "group".equals(type));
+        if (typingSupported) snapshot.typingDialogIds.add(dialogId);
+        addTypingUsers(snapshot, row, dialogId, typingSupported);
     }
 
     private static void addTypingUsers(DialogSnapshot snapshot, JSONObject row,
