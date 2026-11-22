@@ -152,6 +152,43 @@ public final class ZenoraChatController {
                 NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_STATUS);
     }
 
+    /**
+     * Remove all Zenora-only transient state when the API session is explicitly
+     * cleared. In-flight room snapshots are invalidated so an old callback
+     * cannot republish a previous account's dialogs after logout.
+     */
+    public static void clearSessionEphemeralState() {
+        HashSet<Integer> accounts;
+        synchronized (loadLock) {
+            accounts = new HashSet<>(accountInstances.keySet());
+            accounts.addAll(presenceUserIdsByAccount.keySet());
+        }
+        for (Integer accountValue : accounts) {
+            if (accountValue == null || accountValue < 0) continue;
+            int account = accountValue;
+            clearEphemeralState(account);
+            synchronized (loadLock) {
+                long generation = requestGenerations.containsKey(account)
+                        ? requestGenerations.get(account) + 1L : 1L;
+                requestGenerations.put(account, generation);
+                pendingRefresh.remove(account);
+                snapshotAvailable.remove(account);
+                cacheRestoreStarted.remove(account);
+                lastSuccessfulLoad.remove(account);
+                retryAttempts.remove(account);
+                snapshotUserIds.remove(account);
+                dialogRoomIds.remove(account);
+                savedDialogIds.remove(account);
+                presenceUserIdsByAccount.remove(account);
+                attentionReadMessageIds.remove(account);
+                attentionReadPending.remove(account);
+            }
+            cacheExecutor.execute(() -> ZenoraDialogCache.delete(account));
+            DialogsActivity.resetZenoraLoadState(account);
+            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+        }
+    }
+
     public static void activateAccount(int account, JSONObject profile) {
         TLRPC.User self = makeUser(profile.optLong("id", 0),
                 profile.optString("username", ""),
@@ -601,6 +638,7 @@ public final class ZenoraChatController {
                 synchronized (loadLock) {
                     if (snapshotAvailable.contains(account)) return;
                 }
+                if (!ZenoraApiClient.isZenoraSessionEnabled()) return;
                 try {
                     applyRooms(accountInstance, cached);
                     synchronized (loadLock) {

@@ -129,6 +129,8 @@ public final class ZenoraApiClient {
 
     public static void clearSession() {
         prefs().edit().clear().commit();
+        executor.execute(lastTypingUpdateMs::clear);
+        ZenoraChatController.clearSessionEphemeralState();
     }
 
     public static void login(String username, String password, Callback callback) {
