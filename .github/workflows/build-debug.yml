@@ -3,7 +3,7 @@ run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
   push:
-    branches: [main, fix/zenora-login-dialogs-stability-20261122, fix/zenora-session-rooms-stability-20261122, fix/zenora-dialog-avatars-mute-sender-20261122, fix/zenora-dialog-sync-cache-20261122, fix/zenora-dialog-sync-fast-refresh-20261122, fix/zenora-archive-sync-20261122]
+    branches: [main, fix/zenora-login-dialogs-stability-20261122, fix/zenora-session-rooms-stability-20261122, fix/zenora-dialog-avatars-mute-sender-20261122, fix/zenora-dialog-sync-cache-20261122, fix/zenora-dialog-sync-fast-refresh-20261122, fix/zenora-archive-sync-20261122, fix/zenora-pin-operations-20261122]
     paths:
       - 'settings.gradle'
       - 'build.gradle'
@@ -222,7 +222,7 @@ jobs:
           } > dist/BUILD-INFO.txt
 
       - name: Prepare rolling Debug Preview release notes
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122')
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' || github.ref == 'refs/heads/fix/zenora-pin-operations-20261122')
         shell: bash
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -241,7 +241,12 @@ jobs:
           {
             echo "# ZenoraChat Debug Preview"
             echo
-            if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-archive-sync-20261122" ]]; then
+            if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-pin-operations-20261122" ]]; then
+              echo "Native Pin synchronization: Pin, Unpin, multi-select and drag ordering are persisted through Zenora PHP and restored from the server snapshot."
+              echo
+              echo "- Companion API branch: https://github.com/zenoralinux/zenorachat/tree/fix/zenora-pin-operations-api-20261122"
+              echo "- Main-list three-pin limit and independent Archive pin ordering are enforced server-side."
+            elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-archive-sync-20261122" ]]; then
               echo "Native archive synchronization: Telegram swipe, multi-select, and Undo use Zenora PHP; Archive folder row is rebuilt from each validated snapshot."
               echo
               echo "- API branch: https://github.com/zenoralinux/zenorachat/tree/fix/zenora-archive-sync-20261122"
@@ -294,13 +299,15 @@ jobs:
           retention-days: 14
 
       - name: Update rolling Debug Preview tag
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122')
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' || github.ref == 'refs/heads/fix/zenora-pin-operations-20261122')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-archive-sync-20261122" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/fix/zenora-pin-operations-20261122" ]]; then
+            TAG="zenora-pin-operations-20261122"
+          elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-archive-sync-20261122" ]]; then
             TAG="zenora-archive-sync-20261122"
           elif [[ "$GITHUB_REF" == "refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122" ]]; then
             TAG="zenora-dialog-sync-fast-refresh-20261122"
@@ -323,12 +330,12 @@ jobs:
           fi
 
       - name: Publish rolling Debug Preview to GitHub Releases
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122')
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' || github.ref == 'refs/heads/fix/zenora-pin-operations-20261122')
         uses: softprops/action-gh-release@v3.0.4
         with:
-          tag_name: ${{ github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' && 'zenora-archive-sync-20261122' || (github.ref == 'refs/heads/main' && 'zenora-debug-latest' || (github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' && 'zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' && 'zenora-dialog-sync-cache-20261122' || (github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' && 'zenora-dialog-avatars-mute-sender-20261122' || (github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' && 'zenora-session-rooms-stability-20261122' || 'zenora-login-dialogs-stability-20261122')))) }}
+          tag_name: ${{ github.ref == 'refs/heads/fix/zenora-pin-operations-20261122' && 'zenora-pin-operations-20261122' || (github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' && 'zenora-archive-sync-20261122' || (github.ref == 'refs/heads/main' && 'zenora-debug-latest' || (github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' && 'zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' && 'zenora-dialog-sync-cache-20261122' || (github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' && 'zenora-dialog-avatars-mute-sender-20261122' || (github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' && 'zenora-session-rooms-stability-20261122' || 'zenora-login-dialogs-stability-20261122')))) }}
           target_commitish: ${{ github.sha }}
-          name: ${{ github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' && 'ZenoraChat Archive Synchronization (ARM64)' || (github.ref == 'refs/heads/main' && 'ZenoraChat Debug Preview (latest ARM64)' || (github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' && 'ZenoraChat Fast Dialog Refresh (ARM64)' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' && 'ZenoraChat Dialog Sync & Local Cache (ARM64)' || (github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' && 'ZenoraChat Dialog Avatars, Mute & Sender (ARM64)' || (github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' && 'ZenoraChat Session & Rooms Stability (ARM64)' || 'ZenoraChat Login & Dialog Stability (ARM64)')))) }}
+          name: ${{ github.ref == 'refs/heads/fix/zenora-pin-operations-20261122' && 'ZenoraChat Native Pin Synchronization (ARM64)' || (github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' && 'ZenoraChat Archive Synchronization (ARM64)' || (github.ref == 'refs/heads/main' && 'ZenoraChat Debug Preview (latest ARM64)' || (github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' && 'ZenoraChat Fast Dialog Refresh (ARM64)' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' && 'ZenoraChat Dialog Sync & Local Cache (ARM64)' || (github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' && 'ZenoraChat Dialog Avatars, Mute & Sender (ARM64)' || (github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' && 'ZenoraChat Session & Rooms Stability (ARM64)' || 'ZenoraChat Login & Dialog Stability (ARM64)')))) }}
           body_path: dist/debug-preview-notes.md
           files: |
             dist/ZenoraChat-debug-arm64.apk
