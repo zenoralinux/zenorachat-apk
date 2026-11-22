@@ -2905,6 +2905,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     public static void resetZenoraLoadState(int account) {
         if (account >= 0 && account < dialogsLoaded.length) {
             dialogsLoaded[account] = false;
+            ZenoraChatController.resetLoadState(account);
         }
     }
 
@@ -2912,8 +2913,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         int currentAccount = accountInstance.getCurrentAccount();
         if (!dialogsLoaded[currentAccount]) {
             if (ZenoraChatController.isZenoraEnabled()) {
+                // The Zenora controller marks this account loaded only after a
+                // complete, validated API response has been applied to the native model.
                 ZenoraChatController.loadDialogs(accountInstance);
-                dialogsLoaded[currentAccount] = true;
                 return;
             }
             MessagesController messagesController = accountInstance.getMessagesController();
@@ -7745,6 +7747,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void checkListLoad(ViewPage viewPage, int firstVisibleItem, int lastVisibleItem) {
+        // ZenoraChat delivers the complete room snapshot in one API response.
+        // Never fall through to Telegram's MTProto dialog pagination.
+        if (ZenoraChatController.isZenoraEnabled()) {
+            return;
+        }
         if (tabsAnimationInProgress || startedTracking || filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isAnimatingIndicator()) {
             return;
         }
