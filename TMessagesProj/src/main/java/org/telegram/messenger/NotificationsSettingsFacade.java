@@ -208,7 +208,8 @@ public class NotificationsSettingsFacade {
                     editor.putInt(PROPERTY_NOTIFY + key, 3);
                     editor.putInt(PROPERTY_NOTIFY_UNTIL + key, muteUntil);
                     effectiveMuteUntil = muteUntil;
-                    flags = ((long) (muteUntil - now) << 32) | 1;
+                    // MessagesStorage stores the absolute Unix mute deadline in the upper 32 bits.
+                    flags = ((long) muteUntil << 32) | 1L;
                 }
             } else {
                 editor.remove(PROPERTY_NOTIFY + key);
