@@ -335,7 +335,7 @@ public final class ZenoraChatController {
             }
             message.out = senderId > 0 && senderId == self.id;
             if (senderId > 0 && senderId != self.id
-                    && controller.getUsers().get((int) senderId) == null) {
+                    && controller.getUsers().get(senderId) == null) {
                 TLRPC.User senderUser = makeUser(senderId, senderUsername,
                         row.optString("last_message_sender_display_name", senderUsername), false);
                 if (senderUser != null) {
