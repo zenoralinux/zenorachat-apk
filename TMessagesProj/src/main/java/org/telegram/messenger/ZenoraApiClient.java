@@ -74,24 +74,35 @@ public final class ZenoraApiClient {
     }
 
     private static boolean hasAuthCookie() {
-        String stored = cookies();
+        return hasAuthCookie(cookies());
+    }
+
+    private static boolean hasAuthCookie(String stored) {
+        if (stored == null || stored.isEmpty()) return false;
         for (String part : stored.split(";")) {
             String item = part.trim();
-            if (item.startsWith("zenorachat_auth=") && item.length() > "zenorachat_auth=".length()) {
+            if (item.matches("zenorachat_auth=[a-fA-F0-9]{64}")) {
                 return true;
             }
         }
         return false;
     }
 
+    public static boolean hasSavedAuthCookie() {
+        return hasAuthCookie();
+    }
+
     public static void enableSession(JSONObject profile) {
         if (profile == null || profile.optLong("id", 0) <= 0) return;
-        prefs().edit()
+        boolean saved = prefs().edit()
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
                 .putString("display_name", profile.optString("display_name", ""))
                 .putLong("user_id", profile.optLong("id", 0))
                 .commit();
+        if (!saved) {
+            throw new IllegalStateException("Unable to persist the ZenoraChat account profile");
+        }
     }
 
     public static JSONObject getStoredProfile() {
@@ -142,7 +153,27 @@ public final class ZenoraApiClient {
     public static void fetchRooms(Callback callback) {
         executor.execute(() -> {
             try {
-                dispatch(callback, request("rooms.php", "GET", null), null);
+                JSONObject response;
+                try {
+                    // A short-lived edge/session race must not immediately log the
+                    // user out. Keep the saved Zenora token for one retry after 401.
+                    response = request("rooms.php", "GET", null, true);
+                } catch (ApiException firstError) {
+                    if (firstError.statusCode != 401 || !hasAuthCookie()) {
+                        throw firstError;
+                    }
+                    FileLog.w("[ZenoraChat] rooms.php returned HTTP 401; retrying once with the saved session.");
+                    try {
+                        Thread.sleep(500L);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("Room-list retry was interrupted", interrupted);
+                    }
+                    // The second response is authoritative and may clear a truly
+                    // expired/revoked token through its Set-Cookie header.
+                    response = request("rooms.php", "GET", null, false);
+                }
+                dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
             }
@@ -154,6 +185,11 @@ public final class ZenoraApiClient {
     }
 
     private static JSONObject request(String path, String method, String formBody) throws Exception {
+        return request(path, method, formBody, false);
+    }
+
+    private static JSONObject request(String path, String method, String formBody,
+                                      boolean preserveAuthCookieOnUnauthorized) throws Exception {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(API_BASE + path).openConnection();
@@ -179,7 +215,9 @@ public final class ZenoraApiClient {
             }
 
             int status = connection.getResponseCode();
-            saveCookies(connection);
+            saveCookies(connection, preserveAuthCookieOnUnauthorized && status == 401);
+            FileLog.d("[ZenoraChat] API " + path + " HTTP " + status
+                    + ", auth cookie sent=" + hasAuthCookie(cookie));
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             String raw = readBody(stream);
             JSONObject json;
@@ -213,7 +251,7 @@ public final class ZenoraApiClient {
         }
     }
 
-    private static void saveCookies(HttpURLConnection connection) {
+    private static void saveCookies(HttpURLConnection connection, boolean preserveAuthCookieOnClear) {
         synchronized (cookieLock) {
             Map<String, String> values = new LinkedHashMap<>();
             String current = prefs().getString(COOKIE_KEY, "");
@@ -231,8 +269,16 @@ public final class ZenoraApiClient {
                     if (equals <= 0) continue;
                     String name = pair.substring(0, equals).trim();
                     String value = pair.substring(equals + 1).trim();
-                    if (value.isEmpty()) values.remove(name);
-                    else values.put(name, value);
+                    if (value.isEmpty()) {
+                        // Do not discard the long-lived auth token on the first
+                        // unauthorized response; fetchRooms retries once before
+                        // accepting a server-side session revocation.
+                        if (!(preserveAuthCookieOnClear && "zenorachat_auth".equals(name))) {
+                            values.remove(name);
+                        }
+                    } else {
+                        values.put(name, value);
+                    }
                 }
             }
             StringBuilder joined = new StringBuilder();
