@@ -83,6 +83,31 @@ public final class ZenoraChatController {
         }
     }
 
+    /** Builds a lightweight local UserFull snapshot for the native profile UI. */
+    public static TLRPC.UserFull createLocalUserFull(TLRPC.User user) {
+        if (user == null) return null;
+        try {
+            Class<?> type = Class.forName("org.telegram.tgnet.TLRPC$TL_userFull");
+            Object instance = type.getDeclaredConstructor().newInstance();
+            if (!(instance instanceof TLRPC.UserFull)) return null;
+            TLRPC.UserFull full = (TLRPC.UserFull) instance;
+            full.id = user.id;
+            JSONObject profile = ZenoraApiClient.getSavedProfile();
+            full.about = profile == null ? "" : profile.optString("bio", "");
+            try {
+                java.lang.reflect.Field userField = type.getDeclaredField("user");
+                userField.setAccessible(true);
+                userField.set(full, user);
+            } catch (NoSuchFieldException ignored) {
+                // Current Telegram layers may carry the peer in a separate vector.
+            }
+            return full;
+        } catch (Exception e) {
+            FileLog.e(e);
+            return null;
+        }
+    }
+
     public static boolean restoreAccount(int account) {
         JSONObject profile = ZenoraApiClient.getSavedProfile();
         if (profile == null || profile.optLong("id", 0) <= 0) return false;

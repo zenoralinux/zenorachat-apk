@@ -167,6 +167,7 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
@@ -2132,7 +2133,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 // This user is authenticated by ZenoraChat, not Telegram MTProto.
                 // Keep the native ProfileActivity layout while avoiding Telegram-only
                 // full-user, bot, sticker, filter and user-info RPCs.
-                userInfo = null;
+                userInfo = ZenoraChatController.createLocalUserFull(user);
                 userBlocked = false;
                 isBot = false;
                 participantsMap = null;
