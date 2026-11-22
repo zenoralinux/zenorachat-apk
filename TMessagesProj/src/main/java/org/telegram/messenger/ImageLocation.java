@@ -168,7 +168,7 @@ public class ImageLocation {
         if (user == null) {
             return null;
         }
-        if (type == TYPE_SMALL || type == TYPE_BIG && ZenoraChatController.isZenoraEnabled()) {
+        if ((type == TYPE_SMALL || type == TYPE_BIG) && ZenoraChatController.isZenoraEnabled()) {
             String zenoraAvatar = ZenoraChatController.getUserAvatarUrl(user.id);
             if (!TextUtils.isEmpty(zenoraAvatar)) {
                 return getForPath(zenoraAvatar);
