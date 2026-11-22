@@ -6060,6 +6060,11 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void setDialogNotificationsSettings(long dialog_id, long topicId, int setting) {
+        // Zenora owns per-user chat notification state. Never write this action to
+        // Telegram's local-only preferences or send an MTProto notify-settings RPC.
+        if (ZenoraChatController.handleMuteSetting(UserConfig.selectedAccount, dialog_id, topicId, setting)) {
+            return;
+        }
         SharedPreferences preferences = getAccountInstance().getNotificationsSettings();
         SharedPreferences.Editor editor = preferences.edit();
         TLRPC.Dialog dialog = MessagesController.getInstance(UserConfig.selectedAccount).dialogs_dict.get(dialog_id);
