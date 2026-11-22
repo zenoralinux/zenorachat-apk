@@ -9872,6 +9872,14 @@ public class MessagesController extends BaseController implements NotificationCe
 
 
 
+    /**
+     * Resets Telegram's pagination cutoff before applying a complete external
+     * dialog snapshot (for example, the ZenoraChat rooms API response).
+     */
+    public void resetDialogsLoadedTillDate() {
+        dialogsLoadedTillDate = Integer.MIN_VALUE;
+    }
+
     public ArrayList<TLRPC.Dialog> getDialogs(int folderId) {
         ArrayList<TLRPC.Dialog> dialogs = dialogsByFolder.get(folderId);
         if (dialogs == null) {
