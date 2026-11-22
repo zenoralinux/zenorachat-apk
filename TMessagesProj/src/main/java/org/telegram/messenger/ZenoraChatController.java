@@ -929,9 +929,31 @@ public final class ZenoraChatController {
             snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
-        for (Map.Entry<Long, Integer> mute : snapshot.muteUntil.entrySet()) {
-            NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                    .applyZenoraMuteState(mute.getKey(), mute.getValue());
+        int pendingMuteStateCount = 0;
+        for (Long dialogId : snapshot.muteUntil.keySet()) {
+            if (dialogId != null && dialogId != 0L) {
+                pendingMuteStateCount++;
+            }
+        }
+        final int[] pendingMuteStates = {pendingMuteStateCount};
+        Runnable publishDialogsReload = () -> NotificationCenter.getInstance(account)
+                .postNotificationName(NotificationCenter.dialogsNeedReload);
+        if (pendingMuteStateCount == 0) {
+            publishDialogsReload.run();
+        } else {
+            for (Map.Entry<Long, Integer> mute : snapshot.muteUntil.entrySet()) {
+                if (mute.getKey() == null || mute.getKey() == 0L) {
+                    continue;
+                }
+                NotificationsController.getInstance(account).getNotificationsSettingsFacade()
+                        .applyZenoraMuteState(mute.getKey(), mute.getValue(), () -> {
+                            if (--pendingMuteStates[0] == 0) {
+                                // Publish the complete dialog list only after all
+                                // per-chat notification overrides are applied.
+                                publishDialogsReload.run();
+                            }
+                        });
+            }
         }
         FileLog.d("[ZenoraChat] atomically published dialog snapshot: groups=" + rooms.length()
                 + ", direct=" + directRooms.length() + ", main=" + snapshot.mainDialogs.size()
