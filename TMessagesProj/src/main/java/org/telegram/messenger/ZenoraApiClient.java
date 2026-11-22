@@ -170,24 +170,74 @@ public final class ZenoraApiClient {
         executor.execute(() -> {
             try {
                 if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
-                String csrf = prefs().getString("csrf", "");
-                if (csrf.isEmpty()) {
-                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
-                    csrf = challenge.optString("csrf", "");
-                    if (csrf.isEmpty()) throw new IllegalStateException("Authenticated CSRF token missing");
-                    prefs().edit().putString("csrf", csrf).commit();
+                if (muteSeconds < 0 || muteSeconds > 31536000) {
+                    throw new IllegalArgumentException("Invalid mute duration");
                 }
+
                 String action = muted ? "mute" : "unmute";
-                String form = "room_ids=" + encode("[" + roomId + "]")
-                        + "&action=" + encode(action)
-                        + "&mute_seconds=" + encode(String.valueOf(Math.max(0, muteSeconds)))
-                        + "&csrf=" + encode(csrf);
-                JSONObject response = request("chat_bulk_action.php", "POST", form);
+                String csrf = getMuteActionCsrfToken();
+                String form = buildMuteActionForm(roomId, action, muteSeconds, csrf);
+                JSONObject response;
+                try {
+                    response = request("chat_bulk_action.php", "POST", form);
+                } catch (ApiException error) {
+                    // The long-lived app session can outlive the PHP CSRF value.
+                    // Refresh only for an explicit CSRF rejection and retry once.
+                    if (!"CSRF_INVALID".equals(error.errorCode)) throw error;
+                    FileLog.w("[ZenoraChat] mute request rejected by CSRF; refreshing token once.");
+                    csrf = refreshMuteActionCsrfToken();
+                    form = buildMuteActionForm(roomId, action, muteSeconds, csrf);
+                    response = request("chat_bulk_action.php", "POST", form);
+                }
+
+                if (!action.equals(response.optString("action", ""))) {
+                    throw new IllegalStateException("ZenoraChat returned an unexpected mute action");
+                }
+                if (response.optInt("processed_count", -1) != 1) {
+                    throw new IllegalStateException("ZenoraChat did not confirm exactly one updated chat");
+                }
+                int expectedMuted = muted ? 1 : 0;
+                if (response.optInt("is_muted", -1) != expectedMuted) {
+                    throw new IllegalStateException("ZenoraChat returned an unexpected mute state");
+                }
+                long muteUntil = response.optLong("mute_until", -1);
+                long serverTime = response.optLong("server_time", 0);
+                if (muteUntil < 0 || serverTime <= 0
+                        || (!muted && muteUntil != 0)
+                        || (muted && muteSeconds == 0 && muteUntil != 0)
+                        || (muted && muteSeconds > 0 && muteUntil == 0)) {
+                    throw new IllegalStateException("ZenoraChat returned an invalid mute deadline");
+                }
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
             }
         });
+    }
+
+    private static String getMuteActionCsrfToken() throws Exception {
+        String csrf = prefs().getString("csrf", "");
+        return csrf.isEmpty() ? refreshMuteActionCsrfToken() : csrf;
+    }
+
+    private static String refreshMuteActionCsrfToken() throws Exception {
+        JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
+        String csrf = challenge.optString("csrf", "");
+        if (csrf.isEmpty()) {
+            throw new IllegalStateException("Authenticated CSRF token missing");
+        }
+        if (!prefs().edit().putString("csrf", csrf).commit()) {
+            throw new IllegalStateException("Unable to persist authenticated CSRF token");
+        }
+        return csrf;
+    }
+
+    private static String buildMuteActionForm(long roomId, String action,
+                                              int muteSeconds, String csrf) throws Exception {
+        return "room_ids=" + encode("[" + roomId + "]")
+                + "&action=" + encode(action)
+                + "&mute_seconds=" + encode(String.valueOf(muteSeconds))
+                + "&csrf=" + encode(csrf);
     }
 
     /** Archive or restore dialogs through Zenora PHP; never uses Telegram MTProto. */
