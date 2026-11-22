@@ -1558,6 +1558,12 @@ public class AlertsCreator {
                 did == 0 && parentFragment instanceof NotificationsCustomSettingsActivity ? null : LocaleController.getString(R.string.NotificationsCustomize),
                 LocaleController.getString(R.string.NotificationsTurnOff)
         };
+        // Zenora Android exposes permanent mute only; keep the existing Telegram
+        // duration choices for non-Zenora accounts and global notification settings.
+        if (did != 0 && ZenoraApiClient.isZenoraSessionEnabled()) {
+            descriptions[1] = null;
+            descriptions[2] = null;
+        }
 
         int[] icons = new int[]{
                 R.drawable.notifications_on,
@@ -1599,7 +1605,13 @@ public class AlertsCreator {
             textView.setOnClickListener(v -> {
                 int i = (Integer) v.getTag();
                 if (i == 0) {
-                    if (did != 0) {
+                    if (did != 0 && ZenoraApiClient.isZenoraSessionEnabled()) {
+                        NotificationsController.getInstance(currentAccount).setDialogNotificationsSettings(
+                                did, topicId, NotificationsController.SETTING_MUTE_UNMUTE);
+                        if (resultCallback != null) {
+                            resultCallback.run(defaultEnabled ? 0 : 1);
+                        }
+                    } else if (did != 0) {
                         SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
                         SharedPreferences.Editor editor = preferences.edit();
                         if (defaultEnabled) {
