@@ -370,7 +370,7 @@ public final class ZenoraChatController {
         settings.mute_until = !muted ? 0 : until <= 0
                 ? Integer.MAX_VALUE : (int) Math.min(Integer.MAX_VALUE, until);
         NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                .applyDialogNotificationsSettings(dialogId, 0, settings);
+                .applyZenoraMuteState(dialogId, settings.mute_until);
     }
 
     /** Intercept native Telegram mute-duration actions while Zenora is the active backend. */
@@ -416,7 +416,7 @@ public final class ZenoraChatController {
                     ? Integer.MAX_VALUE
                     : (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() / 1000L + muteSeconds);
             NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                    .applyDialogNotificationsSettings(dialogId, 0, settings);
+                    .applyZenoraMuteState(dialogId, settings.mute_until);
             NotificationCenter.getInstance(account)
                     .postNotificationName(NotificationCenter.dialogsNeedReload);
         });
