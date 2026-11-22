@@ -165,7 +165,16 @@ public class ImageLocation {
     }
 
     public static ImageLocation getForUser(int currentAccount, TLRPC.User user, int type) {
-        if (user == null || user.photo == null) {
+        if (user == null) {
+            return null;
+        }
+        if (type == TYPE_SMALL || type == TYPE_BIG && ZenoraChatController.isZenoraEnabled()) {
+            String zenoraAvatar = ZenoraChatController.getUserAvatarUrl(user.id);
+            if (!TextUtils.isEmpty(zenoraAvatar)) {
+                return getForPath(zenoraAvatar);
+            }
+        }
+        if (user.photo == null) {
             return null;
         }
         if (type == TYPE_VIDEO_BIG || type == TYPE_VIDEO_SMALL) {
@@ -247,7 +256,16 @@ public class ImageLocation {
         return getForChat(UserConfig.selectedAccount, chat, type);
     }
     public static ImageLocation getForChat(int currentAccount, TLRPC.Chat chat, int type) {
-        if (chat == null || chat.photo == null) {
+        if (chat == null) {
+            return null;
+        }
+        if ((type == TYPE_SMALL || type == TYPE_BIG) && ZenoraChatController.isZenoraEnabled()) {
+            String zenoraAvatar = ZenoraChatController.getChatAvatarUrl(chat.id);
+            if (!TextUtils.isEmpty(zenoraAvatar)) {
+                return getForPath(zenoraAvatar);
+            }
+        }
+        if (chat.photo == null) {
             return null;
         }
         if (type == TYPE_STRIPPED) {
