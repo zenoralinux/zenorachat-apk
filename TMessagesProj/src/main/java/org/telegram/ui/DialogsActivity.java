@@ -2532,6 +2532,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     return;
                 }
 
+                boolean archiveSwipe = folderId != 0
+                        || SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_ARCHIVE;
+                if (archiveSwipe && ZenoraChatController.isZenoraEnabled()) {
+                    dialogCell.setSliding(false);
+                    ArrayList<Long> selectedDialogs = new ArrayList<>();
+                    selectedDialogs.add(dialogId);
+                    performZenoraArchiveAction(selectedDialogs, folderId == 0, folderId == 0);
+                    return;
+                }
+
                 slidingView = dialogCell;
                 int position = viewHolder.getAdapterPosition();
                 int count = parentPage.dialogsAdapter.getItemCount();
@@ -6959,8 +6969,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onResume() {
         super.onResume();
-        if (ZenoraChatController.isZenoraEnabled() && !onlySelect && folderId == 0 && communityId == 0) {
-            ZenoraChatController.refreshDialogs(AccountInstance.getInstance(currentAccount));
+        if (ZenoraChatController.isZenoraEnabled() && !onlySelect && communityId == 0) {
+            // Keep both the inbox (folder 0) and archive (folder 1) fresh while visible.
+            ZenoraChatController.startForegroundSync(AccountInstance.getInstance(currentAccount));
         }
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
@@ -7182,6 +7193,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onPause() {
         super.onPause();
+        ZenoraChatController.stopForegroundSync(currentAccount);
         if (storiesBulletin != null) {
             storiesBulletin.hide();
             storiesBulletin = null;
@@ -9101,6 +9113,43 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         return dialog.pinned;
     }
 
+    private void performZenoraArchiveAction(ArrayList<Long> selectedDialogs, boolean archived, boolean showUndo) {
+        final ArrayList<Long> copy = new ArrayList<>(selectedDialogs);
+        ZenoraChatController.archiveDialogs(AccountInstance.getInstance(currentAccount), copy, archived, (response, error) -> {
+            if (error != null) {
+                Activity activity = getParentActivity();
+                if (activity != null) {
+                    Toast.makeText(activity, "عملیات بایگانی انجام نشد؛ وضعیت گفتگو تغییر نکرد.", Toast.LENGTH_LONG).show();
+                }
+                if (viewPages != null) {
+                    for (int i = 0; i < viewPages.length; i++) {
+                        if (viewPages[i] != null && viewPages[i].dialogsAdapter != null) {
+                            viewPages[i].dialogsAdapter.notifyDataSetChanged();
+                        }
+                    }
+                }
+                return;
+            }
+            if (archived && showUndo) {
+                SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+                boolean hintShowed = preferences.getBoolean("archivehint_l", false) || SharedConfig.archiveHidden;
+                if (!hintShowed) {
+                    preferences.edit().putBoolean("archivehint_l", true).commit();
+                }
+                int undoAction;
+                if (hintShowed) {
+                    undoAction = copy.size() > 1 ? UndoView.ACTION_ARCHIVE_FEW : UndoView.ACTION_ARCHIVE;
+                } else {
+                    undoAction = copy.size() > 1 ? UndoView.ACTION_ARCHIVE_FEW_HINT : UndoView.ACTION_ARCHIVE_HINT;
+                }
+                final UndoView undoView = getUndoView();
+                if (undoView != null) {
+                    undoView.showWithAction(0, undoAction, null, () -> performZenoraArchiveAction(copy, false, false));
+                }
+            }
+        });
+    }
+
     private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress) {
         performSelectedDialogsAction(selectedDialogs, action, alert, longPress, null);
     }
@@ -9120,6 +9169,12 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         int pinnedActionCount = 0;
         if (action == archive || action == archive2) {
             ArrayList<Long> copy = new ArrayList<>(selectedDialogs);
+            if (ZenoraChatController.isZenoraEnabled()) {
+                boolean archived = canUnarchiveCount == 0;
+                performZenoraArchiveAction(copy, archived, archived);
+                hideActionMode(false);
+                return;
+            }
             getMessagesController().addDialogToFolder(copy, canUnarchiveCount == 0 ? 1 : 0, -1, null, 0);
             if (canUnarchiveCount == 0) {
                 SharedPreferences preferences = MessagesController.getGlobalMainSettings();

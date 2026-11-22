@@ -151,29 +151,76 @@ public final class ZenoraApiClient {
     }
 
     public static void fetchRooms(Callback callback) {
+        fetchRoomsPath("rooms.php", callback);
+    }
+
+    /** Compact snapshot used by the foreground room-list synchronizer. */
+    public static void fetchRoomsForSync(Callback callback) {
+        fetchRoomsPath("rooms.php?mobile_sync=1", callback);
+    }
+
+    private static void fetchRoomsPath(String path, Callback callback) {
         executor.execute(() -> {
             try {
                 JSONObject response;
                 try {
                     // A short-lived edge/session race must not immediately log the
                     // user out. Keep the saved Zenora token for one retry after 401.
-                    response = request("rooms.php", "GET", null, true);
+                    response = request(path, "GET", null, true);
                 } catch (ApiException firstError) {
                     if (firstError.statusCode != 401 || !hasAuthCookie()) {
                         throw firstError;
                     }
-                    FileLog.w("[ZenoraChat] rooms.php returned HTTP 401; retrying once with the saved session.");
+                    FileLog.w("[ZenoraChat] " + path + " returned HTTP 401; retrying once with the saved session.");
                     try {
                         Thread.sleep(500L);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new IllegalStateException("Room-list retry was interrupted", interrupted);
                     }
-                    // The second response is authoritative and may clear a truly
-                    // expired/revoked token through its Set-Cookie header.
-                    response = request("rooms.php", "GET", null, false);
+                    response = request(path, "GET", null, false);
                 }
                 dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Applies archive state to the authenticated user's PHP-backed chat preferences. */
+    public static void updateArchive(List<Long> roomIds, boolean archived, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomIds == null || roomIds.isEmpty() || roomIds.size() > 200) {
+                    throw new IllegalArgumentException("Invalid archive room selection");
+                }
+                JSONObject csrfResponse = request("csrf_token.php", "GET", null);
+                String csrf = csrfResponse.optString("csrf", "");
+                if (csrf.isEmpty()) {
+                    throw new IllegalStateException("CSRF token missing for archive action");
+                }
+
+                StringBuilder ids = new StringBuilder("[");
+                for (int i = 0; i < roomIds.size(); i++) {
+                    Long roomId = roomIds.get(i);
+                    if (roomId == null || roomId <= 0) {
+                        throw new IllegalArgumentException("Invalid room ID for archive action");
+                    }
+                    if (i > 0) ids.append(',');
+                    ids.append(roomId);
+                }
+                ids.append(']');
+
+                String form = "action=" + encode(archived ? "archive" : "unarchive")
+                        + "&room_ids=" + encode(ids.toString())
+                        + "&csrf=" + encode(csrf);
+                JSONObject result = request("chat_bulk_action.php", "POST", form);
+                int expectedState = archived ? 1 : 0;
+                if (result.optInt("processed_count", -1) != roomIds.size()
+                        || result.optInt("is_archived", -1) != expectedState) {
+                    throw new IllegalStateException("The server did not confirm the requested archive state");
+                }
+                dispatch(callback, result, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
             }

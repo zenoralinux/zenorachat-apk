@@ -32,7 +32,12 @@ public final class ZenoraChatController {
     private static final Set<Integer> loadingAccounts = new HashSet<>();
     private static final Map<Integer, Integer> retryAttempts = new HashMap<>();
     private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
+    private static final Map<Integer, String> lastSnapshotFingerprints = new HashMap<>();
+    private static final Map<Integer, Map<Long, Long>> roomIdsByDialog = new HashMap<>();
+    private static final Set<Integer> foregroundSyncAccounts = new HashSet<>();
+    private static final Map<Integer, Runnable> foregroundSyncRunnables = new HashMap<>();
     private static final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private static final long FOREGROUND_SYNC_INTERVAL_MS = 5_000L;
     private static final int MAX_AUTOMATIC_RETRIES = 3;
 
     private ZenoraChatController() {
@@ -86,9 +91,11 @@ public final class ZenoraChatController {
             }
             try {
                 applyRooms(accountInstance, response);
+                String fingerprint = snapshotFingerprint(response);
                 synchronized (loadLock) {
                     retryAttempts.remove(account);
                     lastSuccessfulLoad.put(account, SystemClock.elapsedRealtime());
+                    lastSnapshotFingerprints.put(account, fingerprint);
                 }
                 DialogsActivity.markZenoraLoadComplete(account);
             } catch (Exception e) {
@@ -103,16 +110,148 @@ public final class ZenoraChatController {
     }
 
     public static void refreshDialogs(AccountInstance accountInstance) {
+        syncDialogsNow(accountInstance);
+    }
+
+    /** Start account-scoped polling only while a chats or archive list is visible. */
+    public static void startForegroundSync(AccountInstance accountInstance) {
         if (accountInstance == null) return;
-        int account = accountInstance.getCurrentAccount();
+        final int account = accountInstance.getCurrentAccount();
+        boolean created = false;
+        Runnable runnable;
         synchronized (loadLock) {
-            Long lastLoaded = lastSuccessfulLoad.get(account);
-            if (lastLoaded != null
-                    && SystemClock.elapsedRealtime() - lastLoaded < 30_000L) {
+            foregroundSyncAccounts.add(account);
+            runnable = foregroundSyncRunnables.get(account);
+            if (runnable == null) {
+                runnable = new Runnable() {
+                    @Override
+                    public void run() {
+                        synchronized (loadLock) {
+                            if (!foregroundSyncAccounts.contains(account)) {
+                                foregroundSyncRunnables.remove(account);
+                                return;
+                            }
+                        }
+                        syncDialogsNow(accountInstance);
+                        retryHandler.postDelayed(this, FOREGROUND_SYNC_INTERVAL_MS);
+                    }
+                };
+                foregroundSyncRunnables.put(account, runnable);
+                created = true;
+            }
+        }
+        // Reconcile immediately on foreground entry, then continue every five seconds.
+        syncDialogsNow(accountInstance);
+        if (created) retryHandler.postDelayed(runnable, FOREGROUND_SYNC_INTERVAL_MS);
+    }
+
+    public static void stopForegroundSync(int account) {
+        Runnable runnable;
+        synchronized (loadLock) {
+            foregroundSyncAccounts.remove(account);
+            runnable = foregroundSyncRunnables.remove(account);
+        }
+        if (runnable != null) retryHandler.removeCallbacks(runnable);
+    }
+
+    private static void syncDialogsNow(AccountInstance accountInstance) {
+        if (accountInstance == null || !ZenoraApiClient.isZenoraSessionEnabled()) return;
+        final int account = accountInstance.getCurrentAccount();
+        synchronized (loadLock) {
+            if (!loadingAccounts.add(account)) return;
+        }
+        ZenoraApiClient.fetchRoomsForSync((response, error) -> {
+            synchronized (loadLock) {
+                loadingAccounts.remove(account);
+            }
+            if (error != null) {
+                if (error instanceof ZenoraApiClient.ApiException
+                        && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
+                    FileLog.e(error);
+                    DialogsActivity.resetZenoraLoadState(account);
+                    stopForegroundSync(account);
+                    ZenoraApiClient.clearSession();
+                    LaunchActivity.requestZenoraLogin();
+                } else {
+                    // A transient poll failure must never clear a working room list or end the session.
+                    FileLog.w("[ZenoraChat] foreground room sync failed: " + error.getMessage());
+                }
+                return;
+            }
+            try {
+                String fingerprint = snapshotFingerprint(response);
+                String previous;
+                synchronized (loadLock) {
+                    previous = lastSnapshotFingerprints.get(account);
+                }
+                if (!fingerprint.equals(previous)) {
+                    applyRooms(accountInstance, response);
+                    synchronized (loadLock) {
+                        lastSnapshotFingerprints.put(account, fingerprint);
+                        lastSuccessfulLoad.put(account, SystemClock.elapsedRealtime());
+                        retryAttempts.remove(account);
+                    }
+                    DialogsActivity.markZenoraLoadComplete(account);
+                }
+            } catch (Exception e) {
+                // Keep the last known-good list if a compact poll returns a malformed payload.
+                FileLog.e(e);
+            }
+        });
+    }
+
+    private static String snapshotFingerprint(JSONObject response) {
+        JSONArray rooms = response == null ? null : response.optJSONArray("rooms");
+        JSONArray directRooms = response == null ? null : response.optJSONArray("dm_rooms");
+        if (rooms == null || directRooms == null) return "";
+        String payload = rooms.toString() + "\n" + directRooms.toString();
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(payload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder value = new StringBuilder(digest.length * 2);
+            for (byte item : digest) value.append(String.format(Locale.US, "%02x", item & 0xff));
+            return value.toString();
+        } catch (Exception ignored) {
+            return Integer.toHexString(payload.hashCode()) + ":" + payload.length();
+        }
+    }
+
+    /** Resolves Telegram dialog IDs to Zenora room IDs before calling the PHP archive API. */
+    public static void archiveDialogs(AccountInstance accountInstance, ArrayList<Long> dialogIds,
+                                      boolean archived, ZenoraApiClient.Callback callback) {
+        if (accountInstance == null || dialogIds == null || dialogIds.isEmpty()) {
+            if (callback != null) callback.onComplete(null, new IllegalArgumentException("No chats selected"));
+            return;
+        }
+        final int account = accountInstance.getCurrentAccount();
+        final ArrayList<Long> roomIds = new ArrayList<>();
+        synchronized (loadLock) {
+            Map<Long, Long> mapping = roomIdsByDialog.get(account);
+            if (mapping != null) {
+                for (Long dialogId : dialogIds) {
+                    Long roomId = dialogId == null ? null : mapping.get(dialogId);
+                    if (roomId == null || roomId <= 0) {
+                        if (callback != null) callback.onComplete(null,
+                                new IllegalStateException("Unable to resolve a selected chat to its Zenora room"));
+                        return;
+                    }
+                    if (!roomIds.contains(roomId)) roomIds.add(roomId);
+                }
+            } else {
+                if (callback != null) callback.onComplete(null,
+                        new IllegalStateException("The Zenora chat list has not finished loading"));
                 return;
             }
         }
-        loadDialogs(accountInstance);
+        ZenoraApiClient.updateArchive(roomIds, archived, (response, error) -> {
+            if (error == null) {
+                synchronized (loadLock) {
+                    lastSnapshotFingerprints.remove(account);
+                }
+                syncDialogsNow(accountInstance);
+            }
+            if (callback != null) callback.onComplete(response, error);
+        });
     }
 
     private static void scheduleRetry(AccountInstance accountInstance) {
@@ -172,6 +311,9 @@ public final class ZenoraChatController {
         }
         if (self == null) throw new IllegalStateException("ZenoraChat profile is missing");
 
+        synchronized (loadLock) {
+            roomIdsByDialog.put(account, new HashMap<>());
+        }
         controller.dialogs_dict.clear();
         controller.dialogMessage.clear();
         controller.dialogsByFolder.clear();
@@ -299,6 +441,14 @@ public final class ZenoraChatController {
         dialog.pinnedNum = 100000 - Math.max(0, row.optInt("pin_order", 0));
         dialog.folder_id = row.optInt("is_archived", 0) == 1 ? 1 : 0;
         dialog.last_message_date = date;
+        synchronized (loadLock) {
+            Map<Long, Long> mapping = roomIdsByDialog.get(account);
+            if (mapping == null) {
+                mapping = new HashMap<>();
+                roomIdsByDialog.put(account, mapping);
+            }
+            mapping.put(dialogId, roomId);
+        }
         dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
 
         controller.dialogs_dict.put(dialogId, dialog);
