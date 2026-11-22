@@ -6959,8 +6959,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onResume() {
         super.onResume();
-        if (ZenoraChatController.isZenoraEnabled() && !onlySelect && folderId == 0 && communityId == 0) {
-            ZenoraChatController.refreshDialogs(AccountInstance.getInstance(currentAccount));
+        if (ZenoraChatController.isZenoraEnabled() && !onlySelect && communityId == 0) {
+            // The main list and Archive are two views of the same account snapshot.
+            ZenoraChatController.setDialogsScreenVisible(currentAccount, true);
         }
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
@@ -7182,6 +7183,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onPause() {
         super.onPause();
+        if (ZenoraChatController.isZenoraEnabled() && !onlySelect && communityId == 0) {
+            ZenoraChatController.setDialogsScreenVisible(currentAccount, false);
+        }
         if (storiesBulletin != null) {
             storiesBulletin.hide();
             storiesBulletin = null;
