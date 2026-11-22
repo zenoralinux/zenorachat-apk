@@ -2532,6 +2532,39 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     return;
                 }
 
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    final boolean archiveNow = folderId == 0;
+                    ArrayList<Long> zenoraDialogIds = new ArrayList<>();
+                    zenoraDialogIds.add(dialogId);
+                    ZenoraChatController.setDialogsArchived(currentAccount, zenoraDialogIds,
+                            archiveNow, false, (success, errorMessage) -> {
+                                if (!success) {
+                                    parentPage.updateList(true);
+                                    if (getParentActivity() != null) {
+                                        android.widget.Toast.makeText(getParentActivity(),
+                                                errorMessage == null ? "تغییر وضعیت آرشیو ناموفق بود." : errorMessage,
+                                                android.widget.Toast.LENGTH_LONG).show();
+                                    }
+                                    return;
+                                }
+                                if (archiveNow) {
+                                    UndoView undo = getUndoView();
+                                    if (undo != null) {
+                                        undo.showWithAction(dialogId, UndoView.ACTION_ARCHIVE, null, () ->
+                                                ZenoraChatController.setDialogsArchived(currentAccount,
+                                                        zenoraDialogIds, false, true, (undoSuccess, undoError) -> {
+                                                            if (!undoSuccess && getParentActivity() != null) {
+                                                                android.widget.Toast.makeText(getParentActivity(),
+                                                                        undoError == null ? "بازگردانی گفتگو ناموفق بود." : undoError,
+                                                                        android.widget.Toast.LENGTH_LONG).show();
+                                                            }
+                                                        }));
+                                    }
+                                }
+                            });
+                    return;
+                }
+
                 slidingView = dialogCell;
                 int position = viewHolder.getAdapterPosition();
                 int count = parentPage.dialogsAdapter.getItemCount();
@@ -9124,6 +9157,38 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         int pinnedActionCount = 0;
         if (action == archive || action == archive2) {
             ArrayList<Long> copy = new ArrayList<>(selectedDialogs);
+            if (ZenoraChatController.isZenoraEnabled()) {
+                final boolean archiveNow = canUnarchiveCount == 0;
+                ZenoraChatController.setDialogsArchived(currentAccount, copy, archiveNow, false,
+                        (success, errorMessage) -> {
+                            if (!success) {
+                                if (getParentActivity() != null) {
+                                    android.widget.Toast.makeText(getParentActivity(),
+                                            errorMessage == null ? "تغییر وضعیت آرشیو ناموفق بود." : errorMessage,
+                                            android.widget.Toast.LENGTH_LONG).show();
+                                }
+                                return;
+                            }
+                            hideActionMode(false);
+                            if (archiveNow) {
+                                int undoAction = copy.size() > 1
+                                        ? UndoView.ACTION_ARCHIVE_FEW : UndoView.ACTION_ARCHIVE;
+                                UndoView undo = getUndoView();
+                                if (undo != null) {
+                                    undo.showWithAction(0, undoAction, null, () ->
+                                            ZenoraChatController.setDialogsArchived(currentAccount,
+                                                    copy, false, true, (undoSuccess, undoError) -> {
+                                                        if (!undoSuccess && getParentActivity() != null) {
+                                                            android.widget.Toast.makeText(getParentActivity(),
+                                                                    undoError == null ? "بازگردانی گفتگوها ناموفق بود." : undoError,
+                                                                    android.widget.Toast.LENGTH_LONG).show();
+                                                        }
+                                                    }));
+                                }
+                            }
+                        });
+                return;
+            }
             getMessagesController().addDialogToFolder(copy, canUnarchiveCount == 0 ? 1 : 0, -1, null, 0);
             if (canUnarchiveCount == 0) {
                 SharedPreferences preferences = MessagesController.getGlobalMainSettings();

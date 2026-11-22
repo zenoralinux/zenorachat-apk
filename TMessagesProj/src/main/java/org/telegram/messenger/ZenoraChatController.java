@@ -45,6 +45,7 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
     private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
+    private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
     private static final Map<Integer, AccountInstance> accountInstances = new HashMap<>();
     private static final Map<Integer, Integer> visibleDialogsScreens = new HashMap<>();
     private static final Handler retryHandler = new Handler(Looper.getMainLooper());
@@ -70,6 +71,10 @@ public final class ZenoraChatController {
             lifecycleHandler.postDelayed(this, 2_000L);
         }
     };
+
+    public interface OperationCallback {
+        void onComplete(boolean success, String errorMessage);
+    }
 
     private ZenoraChatController() {
     }
@@ -148,6 +153,7 @@ public final class ZenoraChatController {
                 retryAttempts.remove(account);
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
+                savedDialogIds.remove(account);
                 long generation = requestGenerations.containsKey(account)
                         ? requestGenerations.get(account) + 1L : 1L;
                 requestGenerations.put(account, generation);
@@ -203,6 +209,65 @@ public final class ZenoraChatController {
         if (visible && ZenoraApiClient.isZenoraSessionEnabled()) {
             refreshDialogs(instance);
         }
+    }
+
+    /**
+     * Archive/unarchive selected Telegram dialogs through Zenora's PHP API.
+     * dialogIds are native Telegram ids; room ids are resolved only from the
+     * latest authenticated snapshot to avoid sending mismatched peer ids.
+     */
+    public static void setDialogsArchived(int account, ArrayList<Long> dialogIds,
+                                          boolean archived, boolean restorePinnedOnUndo,
+                                          OperationCallback callback) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) {
+            if (callback != null) callback.onComplete(false, "حساب زنورا فعال نیست.");
+            return;
+        }
+        if (dialogIds == null || dialogIds.isEmpty() || dialogIds.size() > 500) {
+            if (callback != null) callback.onComplete(false, "تعداد گفتگوهای انتخاب‌شده معتبر نیست.");
+            return;
+        }
+
+        final ArrayList<Long> roomIds = new ArrayList<>();
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            Set<Long> savedIds = savedDialogIds.get(account);
+            if (mappings == null) {
+                if (callback != null) callback.onComplete(false, "شناسه گفتگوهای زنورا در دسترس نیست؛ فهرست را تازه‌سازی کنید.");
+                return;
+            }
+            HashSet<Long> seen = new HashSet<>();
+            for (Long dialogId : dialogIds) {
+                if (dialogId == null || !seen.add(dialogId)) continue;
+                if (archived && savedIds != null && savedIds.contains(dialogId)) {
+                    if (callback != null) callback.onComplete(false, "پیام‌های ذخیره‌شده قابل آرشیو کردن نیستند.");
+                    return;
+                }
+                Long roomId = mappings.get(dialogId);
+                if (roomId == null || roomId <= 0) {
+                    if (callback != null) callback.onComplete(false, "شناسه یکی از گفتگوها در زنورا پیدا نشد؛ دوباره فهرست را دریافت کنید.");
+                    return;
+                }
+                roomIds.add(roomId);
+            }
+        }
+        if (roomIds.isEmpty()) {
+            if (callback != null) callback.onComplete(false, "گفتگوی معتبری برای تغییر وضعیت انتخاب نشده است.");
+            return;
+        }
+
+        AccountInstance instance = AccountInstance.getInstance(account);
+        ZenoraApiClient.setChatArchive(roomIds, archived, restorePinnedOnUndo, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                if (callback != null) callback.onComplete(false, error.getMessage());
+                return;
+            }
+            // Bypass the normal 2-4s poll throttle. If a request is already active,
+            // requestRooms coalesces this into a guaranteed follow-up snapshot.
+            requestRooms(instance, true);
+            if (callback != null) callback.onComplete(true, null);
+        });
     }
 
     private static void restoreCachedSnapshot(AccountInstance accountInstance) {
@@ -362,6 +427,7 @@ public final class ZenoraChatController {
         final ArrayList<TLRPC.Dialog> allDialogs = new ArrayList<>();
         final ArrayList<TLRPC.Dialog> mainDialogs = new ArrayList<>();
         final ArrayList<TLRPC.Dialog> archivedDialogs = new ArrayList<>();
+        final Set<Long> savedDialogs = new HashSet<>();
     }
 
     private static void applyRooms(AccountInstance accountInstance, JSONObject response) throws Exception {
@@ -465,9 +531,13 @@ public final class ZenoraChatController {
         controller.dialogsByFolder.put(1, snapshot.archivedDialogs);
         controller.resetDialogsLoadedTillDate();
         controller.sortDialogs(null);
+        // Recreate Telegram's special Archive folder row after each complete
+        // Zenora snapshot; sortDialogs alone only populates folder contents.
+        controller.checkArchiveFolder();
 
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
+            savedDialogIds.put(account, new HashSet<>(snapshot.savedDialogs));
             snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
@@ -570,6 +640,7 @@ public final class ZenoraChatController {
         }
         snapshot.dialogs.put(dialogId, dialog);
         snapshot.allDialogs.add(dialog);
+        if (saved) snapshot.savedDialogs.add(dialogId);
         applyDialogMuteSnapshot(snapshot, dialogId, row);
 
         if (messageId > 0) {

@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -181,6 +182,47 @@ public final class ZenoraApiClient {
                         + "&mute_seconds=" + encode(String.valueOf(Math.max(0, muteSeconds)))
                         + "&csrf=" + encode(csrf);
                 JSONObject response = request("chat_bulk_action.php", "POST", form);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Archive or restore dialogs through Zenora PHP; never uses Telegram MTProto. */
+    public static void setChatArchive(List<Long> roomIds, boolean archived,
+                                      boolean restorePinnedOnUndo, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomIds == null || roomIds.isEmpty() || roomIds.size() > 500) {
+                    throw new IllegalArgumentException("Invalid archive operation size");
+                }
+                JSONArray ids = new JSONArray();
+                java.util.HashSet<Long> uniqueIds = new java.util.HashSet<>();
+                for (Long roomId : roomIds) {
+                    if (roomId == null || roomId <= 0 || !uniqueIds.add(roomId)) {
+                        throw new IllegalArgumentException("Invalid or duplicate Zenora room id");
+                    }
+                    ids.put(roomId);
+                }
+                String action = archived ? "archive"
+                        : (restorePinnedOnUndo ? "unarchive_restore" : "unarchive");
+                String csrf = prefs().getString("csrf", "");
+                if (csrf.isEmpty()) {
+                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
+                    csrf = challenge.optString("csrf", "");
+                    if (csrf.isEmpty()) {
+                        throw new IllegalStateException("Authenticated CSRF token missing");
+                    }
+                    prefs().edit().putString("csrf", csrf).commit();
+                }
+                String form = "room_ids=" + encode(ids.toString())
+                        + "&action=" + encode(action)
+                        + "&csrf=" + encode(csrf);
+                JSONObject response = request("chat_bulk_action.php", "POST", form);
+                if (response.optInt("processed_count", -1) != roomIds.size()) {
+                    throw new IllegalStateException("ZenoraChat did not confirm every archive change");
+                }
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
