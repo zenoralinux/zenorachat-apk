@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -48,6 +49,7 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
     private static final Map<Integer, Map<Long, String>> muteStateSignaturesByAccount = new HashMap<>();
+    private static final Map<Integer, PendingMuteBatch> pendingMuteBatchesByAccount = new HashMap<>();
     private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
     private static final Map<Integer, Set<Long>> typingDialogIdsByAccount = new HashMap<>();
     private static final Map<Integer, Set<Long>> presenceUserIdsByAccount = new HashMap<>();
@@ -182,6 +184,10 @@ public final class ZenoraChatController {
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
                 muteStateSignaturesByAccount.remove(account);
+                PendingMuteBatch pendingMuteBatch = pendingMuteBatchesByAccount.remove(account);
+                if (pendingMuteBatch != null && pendingMuteBatch.flushRunnable != null) {
+                    retryHandler.removeCallbacks(pendingMuteBatch.flushRunnable);
+                }
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
@@ -218,6 +224,10 @@ public final class ZenoraChatController {
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
                 muteStateSignaturesByAccount.remove(account);
+                PendingMuteBatch pendingMuteBatch = pendingMuteBatchesByAccount.remove(account);
+                if (pendingMuteBatch != null && pendingMuteBatch.flushRunnable != null) {
+                    retryHandler.removeCallbacks(pendingMuteBatch.flushRunnable);
+                }
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
@@ -778,6 +788,22 @@ public final class ZenoraChatController {
         }
     }
 
+    private static final class PendingMuteBatch {
+        final int account;
+        final String mode;
+        int muteSeconds;
+        final LinkedHashMap<Long, Long> roomIdsByDialog = new LinkedHashMap<>();
+        final HashMap<Long, String> previousSignatures = new HashMap<>();
+        final HashMap<Long, String> desiredSignatures = new HashMap<>();
+        Runnable flushRunnable;
+
+        PendingMuteBatch(int account, String mode, int muteSeconds) {
+            this.account = account;
+            this.mode = mode;
+            this.muteSeconds = muteSeconds;
+        }
+    }
+
     private static final class DialogSnapshot {
         final ConcurrentHashMap<Long, TLRPC.User> users = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Long, TLRPC.Chat> chats = new ConcurrentHashMap<>();
@@ -1235,6 +1261,101 @@ public final class ZenoraChatController {
      * call updateServerNotificationsSettings(). It prevents MTProto writes for
      * Zenora dialogs and sends only actual mute-mode changes to the PHP API.
      */
+    private static boolean canMergeMuteBatch(PendingMuteBatch batch, String mode, int muteSeconds) {
+        if (!batch.mode.equals(mode)) return false;
+        if (!"muted".equals(mode)) return batch.muteSeconds == 0 && muteSeconds == 0;
+        if (batch.muteSeconds == 0 || muteSeconds == 0) return batch.muteSeconds == muteSeconds;
+        return Math.abs((long) batch.muteSeconds - muteSeconds) <= 1L;
+    }
+
+    /** Coalesce synchronous native multi-select mute calls into one PHP bulk operation. */
+    private static void enqueueMuteBatch(int account, long dialogId, long roomId,
+                                         String mode, int muteSeconds,
+                                         String previousSignature, String desiredSignature) {
+        PendingMuteBatch flushNow = null;
+        synchronized (loadLock) {
+            PendingMuteBatch batch = pendingMuteBatchesByAccount.get(account);
+            if (batch != null && (!canMergeMuteBatch(batch, mode, muteSeconds)
+                    || batch.roomIdsByDialog.size() >= 500)) {
+                pendingMuteBatchesByAccount.remove(account);
+                if (batch.flushRunnable != null) retryHandler.removeCallbacks(batch.flushRunnable);
+                flushNow = batch;
+                batch = null;
+            }
+            if (batch == null) {
+                batch = new PendingMuteBatch(account, mode, muteSeconds);
+                pendingMuteBatchesByAccount.put(account, batch);
+                final PendingMuteBatch scheduledBatch = batch;
+                batch.flushRunnable = () -> flushPendingMuteBatch(scheduledBatch);
+            } else if (batch.flushRunnable != null) {
+                retryHandler.removeCallbacks(batch.flushRunnable);
+            }
+
+            if (!batch.roomIdsByDialog.containsKey(dialogId)) {
+                batch.previousSignatures.put(dialogId, previousSignature);
+            }
+            batch.roomIdsByDialog.put(dialogId, roomId);
+            batch.desiredSignatures.put(dialogId, desiredSignature);
+            if ("muted".equals(mode) && batch.muteSeconds > 0 && muteSeconds > 0) {
+                // When a multi-select operation crosses a one-second boundary,
+                // use the shorter remaining period for every selected dialog.
+                batch.muteSeconds = Math.min(batch.muteSeconds, muteSeconds);
+            }
+
+            if (batch.roomIdsByDialog.size() >= 500) {
+                pendingMuteBatchesByAccount.remove(account);
+                if (batch.flushRunnable != null) retryHandler.removeCallbacks(batch.flushRunnable);
+                flushNow = batch;
+            } else {
+                retryHandler.postDelayed(batch.flushRunnable, 100L);
+            }
+        }
+        if (flushNow != null) flushPendingMuteBatch(flushNow);
+    }
+
+    private static void flushPendingMuteBatchForAccount(int account) {
+        PendingMuteBatch batch;
+        synchronized (loadLock) {
+            batch = pendingMuteBatchesByAccount.remove(account);
+            if (batch != null && batch.flushRunnable != null) {
+                retryHandler.removeCallbacks(batch.flushRunnable);
+            }
+        }
+        if (batch != null) flushPendingMuteBatch(batch);
+    }
+
+    private static void flushPendingMuteBatch(PendingMuteBatch batch) {
+        if (batch == null || batch.roomIdsByDialog.isEmpty()) return;
+        synchronized (loadLock) {
+            if (pendingMuteBatchesByAccount.get(batch.account) == batch) {
+                pendingMuteBatchesByAccount.remove(batch.account);
+            }
+            if (batch.flushRunnable != null) retryHandler.removeCallbacks(batch.flushRunnable);
+        }
+        ArrayList<Long> roomIds = new ArrayList<>(batch.roomIdsByDialog.values());
+        ZenoraApiClient.setChatMuteModes(roomIds, batch.mode, batch.muteSeconds, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                synchronized (loadLock) {
+                    Map<Long, String> signatures = muteStateSignaturesByAccount.get(batch.account);
+                    for (Map.Entry<Long, String> entry : batch.desiredSignatures.entrySet()) {
+                        String current = signatures == null ? null : signatures.get(entry.getKey());
+                        if (entry.getValue().equals(current) && signatures != null) {
+                            String previous = batch.previousSignatures.get(entry.getKey());
+                            if (previous == null) signatures.remove(entry.getKey());
+                            else signatures.put(entry.getKey(), previous);
+                        }
+                    }
+                }
+                showMuteError("ذخیره وضعیت اعلان گفتگوهای انتخاب‌شده در زنوراچت ناموفق بود.");
+                return;
+            }
+            for (Long dialogId : batch.roomIdsByDialog.keySet()) {
+                applyMuteActionResponse(batch.account, dialogId, response, batch.mode);
+            }
+        });
+    }
+
     public static boolean handleLocalMuteSettings(int account, long dialogId, long topicId,
                                                    boolean postNotification) {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
@@ -1297,28 +1418,14 @@ public final class ZenoraChatController {
             NotificationCenter.getInstance(account)
                     .postNotificationName(NotificationCenter.notificationsSettingsUpdated);
         }
-        final String desiredMode = mode;
-        final String desiredSignature = signature;
-        ZenoraApiClient.setChatMuteMode(roomId, desiredMode, muteSeconds, (response, error) -> {
-            if (error != null) {
-                FileLog.e(error);
-                synchronized (loadLock) {
-                    Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
-                    if (signatures != null && desiredSignature.equals(signatures.get(dialogId))) {
-                        if (previousSignature == null) signatures.remove(dialogId);
-                        else signatures.put(dialogId, previousSignature);
-                    }
-                }
-                showMuteError("ذخیره وضعیت اعلان در زنوراچت ناموفق بود.");
-                return;
-            }
-            applyMuteActionResponse(account, dialogId, response, desiredMode);
-        });
+        enqueueMuteBatch(account, dialogId, roomId, mode, muteSeconds,
+                previousSignature, signature);
         return true;
     }
 
     private static boolean submitMuteMode(int account, long dialogId, long topicId,
                                           String mode, int muteSeconds) {
+        flushPendingMuteBatchForAccount(account);
         if (topicId != 0) {
             showMuteError("تنظیم اعلان موضوع‌ها هنوز در زنوراچت پشتیبانی نمی‌شود.");
             return true;
