@@ -47,6 +47,7 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
     private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
+    private static final Map<Integer, Map<Long, String>> muteStateSignaturesByAccount = new HashMap<>();
     private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
     private static final Map<Integer, Set<Long>> typingDialogIdsByAccount = new HashMap<>();
     private static final Map<Integer, Set<Long>> presenceUserIdsByAccount = new HashMap<>();
@@ -180,6 +181,7 @@ public final class ZenoraChatController {
                 retryAttempts.remove(account);
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
+                muteStateSignaturesByAccount.remove(account);
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
@@ -782,9 +784,12 @@ public final class ZenoraChatController {
         final HashMap<Long, ArrayList<TLRPC.Message>> messages = new HashMap<>();
         final HashMap<Long, Long> roomIds = new HashMap<>();
         final HashMap<Long, Integer> muteUntil = new HashMap<>();
+        final HashMap<Long, String> muteMode = new HashMap<>();
+        final HashMap<Long, String> muteSignatures = new HashMap<>();
         final HashMap<Long, ArrayList<Long>> typingUsers = new HashMap<>();
         final Set<Long> typingDialogIds = new HashSet<>();
         final Set<Long> presenceUserIds = new HashSet<>();
+        int account;
         long serverTime;
         boolean applyEphemeralState;
         boolean typingDmEnabled = true;
@@ -829,6 +834,7 @@ public final class ZenoraChatController {
         // avatar registry, or notification state is touched until the full snapshot
         // has been mapped and sorted successfully.
         DialogSnapshot snapshot = new DialogSnapshot();
+        snapshot.account = account;
         snapshot.serverTime = response.optLong("server_time", 0);
         snapshot.applyEphemeralState = !response.optBoolean("_zenora_cache_restore", false);
         snapshot.typingDmEnabled = response.optBoolean("typing_dm_enabled", true);
@@ -923,6 +929,7 @@ public final class ZenoraChatController {
 
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
+            muteStateSignaturesByAccount.put(account, new HashMap<>(snapshot.muteSignatures));
             savedDialogIds.put(account, new HashSet<>(snapshot.savedDialogs));
             typingDialogIdsByAccount.put(account, new HashSet<>(snapshot.typingDialogIds));
             presenceUserIdsByAccount.put(account, new HashSet<>(snapshot.presenceUserIds));
@@ -931,7 +938,8 @@ public final class ZenoraChatController {
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
         for (Map.Entry<Long, Integer> mute : snapshot.muteUntil.entrySet()) {
             NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                    .applyZenoraMuteState(mute.getKey(), mute.getValue());
+                    .applyZenoraMuteState(mute.getKey(), mute.getValue(),
+                            snapshot.muteMode.getOrDefault(mute.getKey(), "inherit"));
         }
         FileLog.d("[ZenoraChat] atomically published dialog snapshot: groups=" + rooms.length()
                 + ", direct=" + directRooms.length() + ", main=" + snapshot.mainDialogs.size()
@@ -1138,7 +1146,14 @@ public final class ZenoraChatController {
     private static void applyDialogMuteSnapshot(DialogSnapshot snapshot, long dialogId, JSONObject row) {
         boolean muted = row.optInt("is_muted", 0) == 1;
         long until = row.optLong("mute_until", 0);
-        snapshot.muteUntil.put(dialogId, toLocalMuteUntil(muted, until, snapshot.serverTime));
+        String mode = row.optString("mute_mode", muted ? "muted" : "inherit");
+        if (!"muted".equals(mode) && !"unmuted".equals(mode) && !"inherit".equals(mode)) {
+            mode = muted ? "muted" : "inherit";
+        }
+        snapshot.muteMode.put(dialogId, mode);
+        snapshot.muteUntil.put(dialogId, toLocalMuteUntil("muted".equals(mode), until,
+                snapshot.serverTime, snapshot.account));
+        snapshot.muteSignatures.put(dialogId, muteSignature(mode, until));
     }
 
     /**
@@ -1147,14 +1162,30 @@ public final class ZenoraChatController {
      * timed mutes shorter/longer when the phone and PHP server clocks differ.
      * A zero server deadline represents a permanent mute only when muted=true.
      */
-    private static int toLocalMuteUntil(boolean muted, long serverMuteUntil, long serverTime) {
+    private static int toLocalMuteUntil(boolean muted, long serverMuteUntil, long serverTime,
+                                         int account) {
         if (!muted) return 0;
         if (serverMuteUntil <= 0) return Integer.MAX_VALUE;
-        long localNow = System.currentTimeMillis() / 1000L;
+        int localNow = ConnectionsManager.getInstance(account).getCurrentTime();
         long serverNow = serverTime > 0 ? serverTime : localNow;
         long remaining = serverMuteUntil - serverNow;
         if (remaining <= 0) return 0;
-        return (int) Math.min(Integer.MAX_VALUE, localNow + remaining);
+        return (int) Math.min(Integer.MAX_VALUE, (long) localNow + remaining);
+    }
+
+    private static String muteSignature(String mode, long muteUntil) {
+        return "muted".equals(mode) ? "muted:" + Math.max(0, muteUntil) : mode;
+    }
+
+    private static void rememberMuteSignature(int account, long dialogId, String signature) {
+        synchronized (loadLock) {
+            Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
+            if (signatures == null) {
+                signatures = new HashMap<>();
+                muteStateSignaturesByAccount.put(account, signatures);
+            }
+            signatures.put(dialogId, signature);
+        }
     }
 
     private static void putAvatar(DialogSnapshot snapshot, String key, String url) {
@@ -1163,53 +1194,171 @@ public final class ZenoraChatController {
     }
 
     /** Intercept native Telegram mute-duration actions while Zenora is the active backend. */
-    public static boolean handleMuteUntil(int account, long dialogId, long topicId, int seconds) {
+    public static boolean handleMuteUntil(int account, long dialogId, long topicId, int selectedTime) {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
-        return submitMuteAction(account, dialogId, topicId, true,
-                seconds == Integer.MAX_VALUE ? 0 : Math.max(1, seconds));
+        if (selectedTime == Integer.MAX_VALUE) {
+            return submitMuteMode(account, dialogId, topicId, "muted", 0);
+        }
+        long duration = selectedTime;
+        // Telegram call sites are inconsistent: some pass a duration, others an
+        // absolute ConnectionsManager timestamp. Normalize both to a duration.
+        if (duration > 31536000L) {
+            int now = ConnectionsManager.getInstance(account).getCurrentTime();
+            duration -= now;
+            if (duration <= 0) {
+                return submitMuteMode(account, dialogId, topicId, "inherit", 0);
+            }
+        }
+        duration = Math.max(1L, Math.min(31536000L, duration));
+        return submitMuteMode(account, dialogId, topicId, "muted", (int) duration);
     }
 
     /** Intercept native Telegram mute/unmute toggles while Zenora is the active backend. */
     public static boolean handleMuteDialog(int account, long dialogId, long topicId, boolean mute) {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
-        return submitMuteAction(account, dialogId, topicId, mute, 0);
+        String mode = "muted";
+        if (!mute) {
+            boolean globalEnabled = NotificationsController.getInstance(account)
+                    .isGlobalNotificationsEnabled(dialogId, false, false);
+            mode = globalEnabled ? "inherit" : "unmuted";
+        }
+        return submitMuteMode(account, dialogId, topicId, mode, 0);
     }
 
-    private static boolean submitMuteAction(int account, long dialogId, long topicId,
-                                            boolean muted, int muteSeconds) {
+    /**
+     * Central adapter for legacy UI paths that edit notify2 preferences and then
+     * call updateServerNotificationsSettings(). It prevents MTProto writes for
+     * Zenora dialogs and sends only actual mute-mode changes to the PHP API.
+     */
+    public static boolean handleLocalMuteSettings(int account, long dialogId, long topicId,
+                                                   boolean postNotification) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
         if (topicId != 0) {
-            Toast.makeText(ApplicationLoader.applicationContext,
-                    "تنظیم اعلان موضوع‌ها هنوز در زنوراچت پشتیبانی نمی‌شود.", Toast.LENGTH_LONG).show();
+            showMuteError("تنظیم اعلان موضوع‌ها هنوز در زنوراچت پشتیبانی نمی‌شود.");
             return true;
         }
-        Long roomId = null;
+        Long roomId;
         synchronized (loadLock) {
             Map<Long, Long> mappings = dialogRoomIds.get(account);
-            if (mappings != null) roomId = mappings.get(dialogId);
+            roomId = mappings == null ? null : mappings.get(dialogId);
         }
         if (roomId == null || roomId <= 0) {
-            Toast.makeText(ApplicationLoader.applicationContext,
-                    "شناسه گفتگوی زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.", Toast.LENGTH_LONG).show();
+            showMuteError("شناسه گفتگوی زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.");
             return true;
         }
-        ZenoraApiClient.setChatMute(roomId, muted, muteSeconds, (response, error) -> {
+
+        android.content.SharedPreferences preferences = MessagesController.getNotificationsSettings(account);
+        String key = NotificationsController.getSharedPrefKey(dialogId, 0);
+        int muteType = preferences.getInt("notify2_" + key, -1);
+        String mode;
+        int muteSeconds = 0;
+        long absoluteUntil = 0;
+        if (muteType == 2) {
+            mode = "muted";
+        } else if (muteType == 3) {
+            absoluteUntil = preferences.getInt("notifyuntil_" + key, 0);
+            int now = ConnectionsManager.getInstance(account).getCurrentTime();
+            if (absoluteUntil > now) {
+                mode = "muted";
+                muteSeconds = (int) Math.min(31536000L, absoluteUntil - now);
+            } else {
+                mode = "inherit";
+                absoluteUntil = 0;
+            }
+        } else if (muteType == 0 || muteType == 1) {
+            mode = "unmuted";
+        } else {
+            mode = "inherit";
+        }
+        String signature = muteSignature(mode, absoluteUntil);
+        String previousSignature;
+        synchronized (loadLock) {
+            Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
+            previousSignature = signatures == null ? null : signatures.get(dialogId);
+            if (signature.equals(previousSignature)) {
+                if (postNotification) {
+                    NotificationCenter.getInstance(account)
+                            .postNotificationName(NotificationCenter.notificationsSettingsUpdated);
+                }
+                return true;
+            }
+            Map<Long, String> signaturesMutable = signatures;
+            if (signaturesMutable == null) {
+                signaturesMutable = new HashMap<>();
+                muteStateSignaturesByAccount.put(account, signaturesMutable);
+            }
+            signaturesMutable.put(dialogId, signature);
+        }
+        if (postNotification) {
+            NotificationCenter.getInstance(account)
+                    .postNotificationName(NotificationCenter.notificationsSettingsUpdated);
+        }
+        final String desiredMode = mode;
+        final String desiredSignature = signature;
+        ZenoraApiClient.setChatMuteMode(roomId, desiredMode, muteSeconds, (response, error) -> {
             if (error != null) {
                 FileLog.e(error);
-                Toast.makeText(ApplicationLoader.applicationContext,
-                        "ذخیره وضعیت بی‌صدا در زنوراچت ناموفق بود.", Toast.LENGTH_LONG).show();
+                synchronized (loadLock) {
+                    Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
+                    if (signatures != null && desiredSignature.equals(signatures.get(dialogId))) {
+                        if (previousSignature == null) signatures.remove(dialogId);
+                        else signatures.put(dialogId, previousSignature);
+                    }
+                }
+                showMuteError("ذخیره وضعیت اعلان در زنوراچت ناموفق بود.");
                 return;
             }
-            long serverMuteUntil = response.optLong("mute_until", 0);
-            long serverTime = response.optLong("server_time", 0);
-            TLRPC.TL_peerNotifySettings settings = new TLRPC.TL_peerNotifySettings();
-            settings.flags |= 1 << 2;
-            settings.mute_until = toLocalMuteUntil(muted, serverMuteUntil, serverTime);
-            NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                    .applyZenoraMuteState(dialogId, settings.mute_until);
-            NotificationCenter.getInstance(account)
-                    .postNotificationName(NotificationCenter.dialogsNeedReload);
+            applyMuteActionResponse(account, dialogId, response, desiredMode);
         });
         return true;
+    }
+
+    private static boolean submitMuteMode(int account, long dialogId, long topicId,
+                                          String mode, int muteSeconds) {
+        if (topicId != 0) {
+            showMuteError("تنظیم اعلان موضوع‌ها هنوز در زنوراچت پشتیبانی نمی‌شود.");
+            return true;
+        }
+        Long roomId;
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            roomId = mappings == null ? null : mappings.get(dialogId);
+        }
+        if (roomId == null || roomId <= 0) {
+            showMuteError("شناسه گفتگوی زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.");
+            return true;
+        }
+        rememberMuteSignature(account, dialogId,
+                "muted".equals(mode) ? "muted:pending" : mode);
+        ZenoraApiClient.setChatMuteMode(roomId, mode, muteSeconds, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                synchronized (loadLock) {
+                    Map<Long, String> signatures = muteStateSignaturesByAccount.get(account);
+                    if (signatures != null) signatures.remove(dialogId);
+                }
+                showMuteError("ذخیره وضعیت بی‌صدا در زنوراچت ناموفق بود.");
+                return;
+            }
+            applyMuteActionResponse(account, dialogId, response, mode);
+        });
+        return true;
+    }
+
+    private static void applyMuteActionResponse(int account, long dialogId,
+                                                JSONObject response, String fallbackMode) {
+        String mode = response.optString("mute_mode", fallbackMode);
+        long until = response.optLong("mute_until", 0);
+        long serverTime = response.optLong("server_time", 0);
+        int localUntil = toLocalMuteUntil("muted".equals(mode), until, serverTime, account);
+        rememberMuteSignature(account, dialogId, muteSignature(mode, until));
+        NotificationsController.getInstance(account).getNotificationsSettingsFacade()
+                .applyZenoraMuteState(dialogId, localUntil, mode);
+        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+    }
+
+    private static void showMuteError(String message) {
+        Toast.makeText(ApplicationLoader.applicationContext, message, Toast.LENGTH_LONG).show();
     }
 
     private static TLRPC.User makeUser(long id, String username, String displayName, boolean self) {
