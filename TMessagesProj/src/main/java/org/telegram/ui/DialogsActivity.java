@@ -2908,12 +2908,19 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+    public static void markZenoraLoadSuccess(int account) {
+        if (account >= 0 && account < dialogsLoaded.length) {
+            dialogsLoaded[account] = true;
+        }
+    }
+
     public static void loadDialogs(AccountInstance accountInstance) {
         int currentAccount = accountInstance.getCurrentAccount();
         if (!dialogsLoaded[currentAccount]) {
             if (ZenoraChatController.isZenoraEnabled()) {
+                // ZenoraChatController marks this account loaded only after a
+                // complete response has been staged and committed successfully.
                 ZenoraChatController.loadDialogs(accountInstance);
-                dialogsLoaded[currentAccount] = true;
                 return;
             }
             MessagesController messagesController = accountInstance.getMessagesController();
@@ -6954,6 +6961,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onResume() {
         super.onResume();
+        if (!onlySelect && ZenoraChatController.isZenoraEnabled()
+                && currentAccount >= 0 && currentAccount < dialogsLoaded.length
+                && !dialogsLoaded[currentAccount]) {
+            loadDialogs(getAccountInstance());
+        }
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
         }
