@@ -216,8 +216,11 @@ public final class ZenoraApiClient {
                         + "&csrf=" + encode(csrf);
                 JSONObject result = request("chat_bulk_action.php", "POST", form);
                 int expectedState = archived ? 1 : 0;
+                // Older deployed API versions may confirm only processed_count.
+                // When the new field is present, enforce it; otherwise accept the
+                // successful server-side archive action for backward compatibility.
                 if (result.optInt("processed_count", -1) != roomIds.size()
-                        || result.optInt("is_archived", -1) != expectedState) {
+                        || (result.has("is_archived") && result.optInt("is_archived", -1) != expectedState)) {
                     throw new IllegalStateException("The server did not confirm the requested archive state");
                 }
                 dispatch(callback, result, null);
