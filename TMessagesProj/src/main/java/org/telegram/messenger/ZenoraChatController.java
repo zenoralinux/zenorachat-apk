@@ -635,6 +635,7 @@ public final class ZenoraChatController {
         final HashMap<Long, ArrayList<TLRPC.Message>> messages = new HashMap<>();
         final HashMap<Long, Long> roomIds = new HashMap<>();
         final HashMap<Long, Integer> muteUntil = new HashMap<>();
+        long serverTime;
         final HashMap<String, String> avatars = new HashMap<>();
         final ArrayList<TLRPC.Dialog> allDialogs = new ArrayList<>();
         final ArrayList<TLRPC.Dialog> mainDialogs = new ArrayList<>();
@@ -675,6 +676,7 @@ public final class ZenoraChatController {
         // avatar registry, or notification state is touched until the full snapshot
         // has been mapped and sorted successfully.
         DialogSnapshot snapshot = new DialogSnapshot();
+        snapshot.serverTime = response.optLong("server_time", 0);
         snapshot.users.put(self.id, self);
         for (int i = 0; i < rooms.length(); i++) {
             addDialog(account, snapshot, self, rooms.getJSONObject(i), false);
@@ -788,9 +790,10 @@ public final class ZenoraChatController {
             if (otherId <= 0) return;
             putAvatar(snapshot, "u:" + otherId,
                     ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
+            boolean otherVerified = row.optInt("is_verified", 0) == 1;
             TLRPC.User other = makeUser(otherId,
                     row.optString("other_username", ""),
-                    row.optString("other_display_name", ""), false);
+                    row.optString("other_display_name", ""), false, otherVerified);
             if (other == null) return;
             snapshot.users.put(other.id, other);
             TLRPC.TL_peerUser userPeer = new TLRPC.TL_peerUser();
@@ -808,6 +811,12 @@ public final class ZenoraChatController {
             } else {
                 chat = new TLRPC.TL_chat();
             }
+            boolean roomVerified = row.optInt("is_verified", 0) == 1;
+            chat.verified = roomVerified;
+            // The native TL_channel schema carries verified in flag bit 7.
+            // TL_chat has no wire-level verified flag, but DialogCell reads the
+            // common Chat.verified property directly for this local Zenora model.
+            if (channel && roomVerified) chat.flags |= 1 << 7;
             chat.id = roomId;
             chat.title = nonEmpty(row.optString("name", ""), " ");
             chat.photo = new TLRPC.TL_chatPhotoEmpty();
@@ -880,7 +889,14 @@ public final class ZenoraChatController {
                     String senderAvatar = row.optString("last_message_sender_avatar_url", "");
                     putAvatar(snapshot, "u:" + senderId,
                             ZenoraApiClient.resolvePublicUrl(senderAvatar));
-                    TLRPC.User senderUser = makeUser(senderId, senderUsername, senderName, false);
+                    // A DM peer may also be the last-message sender. Preserve its
+                    // verification bit when this sender object replaces the peer
+                    // model in the snapshot's user map.
+                    boolean senderIsVerifiedPeer = direct
+                            && senderId == row.optLong("other_user_id", 0)
+                            && row.optInt("is_verified", 0) == 1;
+                    TLRPC.User senderUser = makeUser(
+                            senderId, senderUsername, senderName, false, senderIsVerifiedPeer);
                     if (senderUser != null) snapshot.users.put(senderUser.id, senderUser);
                 }
                 TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
@@ -898,9 +914,23 @@ public final class ZenoraChatController {
     private static void applyDialogMuteSnapshot(DialogSnapshot snapshot, long dialogId, JSONObject row) {
         boolean muted = row.optInt("is_muted", 0) == 1;
         long until = row.optLong("mute_until", 0);
-        int muteUntil = !muted ? 0 : until <= 0
-                ? Integer.MAX_VALUE : (int) Math.min(Integer.MAX_VALUE, until);
-        snapshot.muteUntil.put(dialogId, muteUntil);
+        snapshot.muteUntil.put(dialogId, toLocalMuteUntil(muted, until, snapshot.serverTime));
+    }
+
+    /**
+     * Convert an absolute server timestamp into the local wall-clock timestamp
+     * expected by Telegram's notification preferences. This avoids making
+     * timed mutes shorter/longer when the phone and PHP server clocks differ.
+     * A zero server deadline represents a permanent mute only when muted=true.
+     */
+    private static int toLocalMuteUntil(boolean muted, long serverMuteUntil, long serverTime) {
+        if (!muted) return 0;
+        if (serverMuteUntil <= 0) return Integer.MAX_VALUE;
+        long localNow = System.currentTimeMillis() / 1000L;
+        long serverNow = serverTime > 0 ? serverTime : localNow;
+        long remaining = serverMuteUntil - serverNow;
+        if (remaining <= 0) return 0;
+        return (int) Math.min(Integer.MAX_VALUE, localNow + remaining);
     }
 
     private static void putAvatar(DialogSnapshot snapshot, String key, String url) {
@@ -945,11 +975,11 @@ public final class ZenoraChatController {
                         "ذخیره وضعیت بی‌صدا در زنوراچت ناموفق بود.", Toast.LENGTH_LONG).show();
                 return;
             }
+            long serverMuteUntil = response.optLong("mute_until", 0);
+            long serverTime = response.optLong("server_time", 0);
             TLRPC.TL_peerNotifySettings settings = new TLRPC.TL_peerNotifySettings();
             settings.flags |= 1 << 2;
-            settings.mute_until = !muted ? 0 : muteSeconds <= 0
-                    ? Integer.MAX_VALUE
-                    : (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() / 1000L + muteSeconds);
+            settings.mute_until = toLocalMuteUntil(muted, serverMuteUntil, serverTime);
             NotificationsController.getInstance(account).getNotificationsSettingsFacade()
                     .applyZenoraMuteState(dialogId, settings.mute_until);
             NotificationCenter.getInstance(account)
@@ -959,6 +989,11 @@ public final class ZenoraChatController {
     }
 
     private static TLRPC.User makeUser(long id, String username, String displayName, boolean self) {
+        return makeUser(id, username, displayName, self, false);
+    }
+
+    private static TLRPC.User makeUser(long id, String username, String displayName,
+                                       boolean self, boolean verified) {
         if (id <= 0) return null;
         TLRPC.TL_user user = new TLRPC.TL_user();
         user.id = id;
@@ -971,6 +1006,8 @@ public final class ZenoraChatController {
         user.status = new TLRPC.TL_userStatusEmpty();
         user.flags |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
         if (self) user.flags |= 1 << 10;
+        user.verified = verified;
+        if (verified) user.flags |= 1 << 17;
         return user;
     }
 
