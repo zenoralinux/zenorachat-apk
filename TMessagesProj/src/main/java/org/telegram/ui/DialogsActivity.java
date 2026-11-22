@@ -2211,16 +2211,28 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                             canReadCount = dialog.unread_count > 0 || dialog.unread_mark ? 1 : 0;
                                             performSelectedDialogsAction(selectedDialogs, read, true, false);
                                         } else if (SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_MUTE) {
-                                            if (!getMessagesController().isDialogMuted(dialogId, 0)) {
+                                            boolean wasMuted = isDialogMutedForUi(dialogId);
+                                            ArrayList<Long> selectedDialogs = new ArrayList<>();
+                                            selectedDialogs.add(dialogId);
+                                            if (ZenoraChatController.isZenoraEnabled()) {
+                                                ZenoraChatController.performBulkAction(wasMuted ? "unmute" : "mute", selectedDialogs, (response, error) -> {
+                                                    if (error != null) {
+                                                        Toast.makeText(getParentActivity(), "تغییر اعلان گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                                                    } else {
+                                                        ZenoraChatController.refreshDialogs(getAccountInstance());
+                                                        if (BulletinFactory.canShowBulletin(DialogsActivity.this)) {
+                                                            BulletinFactory.createMuteBulletin(DialogsActivity.this, !wasMuted, null).show();
+                                                        }
+                                                    }
+                                                });
+                                            } else if (!wasMuted) {
                                                 NotificationsController.getInstance(UserConfig.selectedAccount).setDialogNotificationsSettings(dialogId, 0, NotificationsController.SETTING_MUTE_FOREVER);
                                                 if (BulletinFactory.canShowBulletin(DialogsActivity.this)) {
                                                     BulletinFactory.createMuteBulletin(DialogsActivity.this, NotificationsController.SETTING_MUTE_FOREVER).show();
                                                 }
                                             } else {
-                                                ArrayList<Long> selectedDialogs = new ArrayList<>();
-                                                selectedDialogs.add(dialogId);
-                                                canMuteCount = MessagesController.getInstance(currentAccount).isDialogMuted(dialogId, 0) ? 0 : 1;
-                                                canUnmuteCount = canMuteCount > 0 ? 0 : 1;
+                                                canMuteCount = 0;
+                                                canUnmuteCount = 1;
                                                 performSelectedDialogsAction(selectedDialogs, mute, true, false);
                                             }
                                         } else if (SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_PIN) {
@@ -3693,7 +3705,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             boolean allAreMuted = true;
                             for (int i = 0; i < dialogs.size(); ++i) {
                                 TLRPC.Dialog dialog = dialogs.get(i);
-                                if (!getMessagesController().isDialogMuted(dialog.id, 0)) {
+                                if (!isDialogMutedForUi(dialog.id)) {
                                     allAreMuted = false;
                                     break;
                                 }
@@ -8739,7 +8751,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
         if (!DialogObject.isUserDialog(dialogId) || !UserObject.isUserSelf(getMessagesController().getUser(dialogId))) {
             ActionBarMenuSubItem muteItem = new ActionBarMenuSubItem(getParentActivity(), false, false);
-            if (!getMessagesController().isDialogMuted(dialogId, 0)) {
+            if (!isDialogMutedForUi(dialogId)) {
                 muteItem.setTextAndIcon(LocaleController.getString(R.string.Mute), R.drawable.msg_mute);
             } else {
                 muteItem.setTextAndIcon(LocaleController.getString(R.string.Unmute), R.drawable.msg_unmute);
@@ -8748,7 +8760,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             muteItem.setOnClickListener(e -> {
                 boolean isMuted = ZenoraChatController.isZenoraEnabled()
                         ? dialog.notify_settings != null && dialog.notify_settings.mute_until > (int) (System.currentTimeMillis() / 1000L)
-                        : getMessagesController().isDialogMuted(dialogId, 0);
+                        : isDialogMutedForUi(dialogId);
                 if (ZenoraChatController.isZenoraEnabled()) {
                     ArrayList<Long> ids = new ArrayList<>();
                     ids.add(dialogId);
@@ -9106,6 +9118,15 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
         }
         return pinnedCount;
+    }
+
+    private boolean isDialogMutedForUi(long dialogId) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(dialogId);
+            return dialog != null && dialog.notify_settings != null
+                    && dialog.notify_settings.mute_until > (int) (System.currentTimeMillis() / 1000L);
+        }
+        return getMessagesController().isDialogMuted(dialogId, 0);
     }
 
     private boolean isDialogPinned(TLRPC.Dialog dialog) {
@@ -9476,7 +9497,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     return;
                 } else {
                     if (canUnmuteCount != 0) {
-                        if (!getMessagesController().isDialogMuted(selectedDialog, 0)) {
+                        if (!isDialogMutedForUi(selectedDialog)) {
                             continue;
                         }
                         getNotificationsController().setDialogNotificationsSettings(selectedDialog, 0, NotificationsController.SETTING_MUTE_UNMUTE);
@@ -9484,7 +9505,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         showDialog(AlertsCreator.createMuteAlert(this, selectedDialogs, 0, null), dialog12 -> hideActionMode(true));
                         return;
                     } else {
-                        if (getMessagesController().isDialogMuted(selectedDialog, 0)) {
+                        if (isDialogMutedForUi(selectedDialog)) {
                             continue;
                         }
                         getNotificationsController().setDialogNotificationsSettings(selectedDialog, 0, NotificationsController.SETTING_MUTE_FOREVER);
@@ -9882,7 +9903,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             if (getMessagesController().isForum(selectedDialog)) {
                 forumCount++;
             }
-            if (getMessagesController().isDialogMuted(selectedDialog, 0)) {
+            if (isDialogMutedForUi(selectedDialog)) {
                 canUnmuteCount++;
             } else {
                 canMuteCount++;
