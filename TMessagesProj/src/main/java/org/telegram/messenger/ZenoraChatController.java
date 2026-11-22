@@ -70,6 +70,8 @@ public final class ZenoraChatController {
                         retryAttempts.remove(account);
                         lastSuccessfulLoad.remove(account);
                     }
+                    FileLog.e("[ZenoraChat] rooms.php rejected the saved session after the one-time retry: "
+                            + error.getMessage());
                     DialogsActivity.resetZenoraLoadState(account);
                     ZenoraApiClient.clearSession();
                     LaunchActivity.requestZenoraLogin();
@@ -152,6 +154,9 @@ public final class ZenoraChatController {
         validateRows(directRooms, true);
 
         int account = accountInstance.getCurrentAccount();
+        // Keep the local profile metadata synchronized with the authenticated
+        // server response so the account shell can be rebuilt after process death.
+        ZenoraApiClient.enableSession(meJson);
         UserConfig userConfig = accountInstance.getUserConfig();
         MessagesController controller = accountInstance.getMessagesController();
         TLRPC.User self = userConfig.getCurrentUser();
@@ -182,6 +187,10 @@ public final class ZenoraChatController {
             addDialog(account, controller, self, directRooms.getJSONObject(i), true);
         }
 
+        // Zenora dialogs arrive as a complete API snapshot, not through
+        // Telegram's paginated loadDialogs pipeline. Remove the native paging
+        // cutoff so old-but-valid rooms are not filtered out during sorting.
+        controller.dialogsLoadedTillDate = Integer.MIN_VALUE;
         controller.sortDialogs(null);
         ArrayList<TLRPC.Dialog> visible = controller.dialogsByFolder.get(0);
         if (visible == null) {
@@ -206,6 +215,9 @@ public final class ZenoraChatController {
             Collections.sort(visible, order);
             Collections.sort(archived, order);
         }
+        FileLog.d("[ZenoraChat] applied room snapshot: groups=" + rooms.length()
+                + ", direct=" + directRooms.length()
+                + ", nativeDialogs=" + controller.allDialogs.size());
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
 
