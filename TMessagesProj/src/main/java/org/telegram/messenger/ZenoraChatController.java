@@ -47,6 +47,7 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
     private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
+    private static final Map<Integer, Set<Long>> presenceUserIdsByAccount = new HashMap<>();
     private static final Map<Integer, Map<Long, Integer>> attentionReadMessageIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Integer>> attentionReadPending = new HashMap<>();
     private static final Map<Integer, AccountInstance> accountInstances = new HashMap<>();
@@ -134,6 +135,23 @@ public final class ZenoraChatController {
         return ZenoraApiClient.isZenoraSessionEnabled();
     }
 
+    private static void clearEphemeralState(int account) {
+        Set<Long> peerIds;
+        synchronized (loadLock) {
+            Set<Long> stored = presenceUserIdsByAccount.remove(account);
+            peerIds = stored == null ? new HashSet<>() : new HashSet<>(stored);
+        }
+        MessagesController controller = MessagesController.getInstance(account);
+        for (Long peerId : peerIds) {
+            if (peerId == null || peerId <= 0) continue;
+            TLRPC.User user = controller.getUsers().get(peerId);
+            if (user != null) user.status = new TLRPC.TL_userStatusEmpty();
+        }
+        controller.applyZenoraTypingSnapshot(new HashMap<>());
+        NotificationCenter.getInstance(account).postNotificationName(
+                NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_STATUS);
+    }
+
     public static void activateAccount(int account, JSONObject profile) {
         TLRPC.User self = makeUser(profile.optLong("id", 0),
                 profile.optString("username", ""),
@@ -149,6 +167,7 @@ public final class ZenoraChatController {
                 || (previousSnapshotUserId != null && previousSnapshotUserId > 0
                 && previousSnapshotUserId != self.id);
         if (accountIdentityChanged) {
+            clearEphemeralState(account);
             synchronized (loadLock) {
                 snapshotAvailable.remove(account);
                 cacheRestoreStarted.remove(account);
@@ -157,6 +176,7 @@ public final class ZenoraChatController {
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
                 savedDialogIds.remove(account);
+                presenceUserIdsByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
                 long generation = requestGenerations.containsKey(account)
@@ -571,7 +591,12 @@ public final class ZenoraChatController {
         cacheExecutor.execute(() -> {
             JSONObject cached = ZenoraDialogCache.read(account, expectedUserId);
             if (cached == null) return;
-            cached.put("_zenora_cache_restore", true);
+            try {
+                cached.put("_zenora_cache_restore", true);
+            } catch (Exception cacheMarkerError) {
+                FileLog.e(cacheMarkerError);
+                return;
+            }
             retryHandler.post(() -> {
                 synchronized (loadLock) {
                     if (snapshotAvailable.contains(account)) return;
@@ -636,6 +661,7 @@ public final class ZenoraChatController {
                         snapshotAvailable.remove(account);
                     }
                     FileLog.e("[ZenoraChat] rooms.php rejected the saved session after retry: " + error.getMessage());
+                    clearEphemeralState(account);
                     DialogsActivity.resetZenoraLoadState(account);
                     ZenoraApiClient.clearSession();
                     LaunchActivity.requestZenoraLogin();
@@ -715,6 +741,7 @@ public final class ZenoraChatController {
         final HashMap<Long, Long> roomIds = new HashMap<>();
         final HashMap<Long, Integer> muteUntil = new HashMap<>();
         final HashMap<Long, ArrayList<Long>> typingUsers = new HashMap<>();
+        final Set<Long> presenceUserIds = new HashSet<>();
         long serverTime;
         boolean applyEphemeralState;
         final HashMap<String, String> avatars = new HashMap<>();
@@ -772,6 +799,7 @@ public final class ZenoraChatController {
             JSONObject row = directRooms.getJSONObject(i);
             if (!"saved".equals(row.optString("type", "dm"))) {
                 long peerId = row.optLong("other_user_id", 0);
+                if (peerId > 0) snapshot.presenceUserIds.add(peerId);
                 applyUserPresence(account, snapshot.users.get(peerId), row,
                         snapshot.serverTime, snapshot.applyEphemeralState);
             }
@@ -849,6 +877,7 @@ public final class ZenoraChatController {
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
             savedDialogIds.put(account, new HashSet<>(snapshot.savedDialogs));
+            presenceUserIdsByAccount.put(account, new HashSet<>(snapshot.presenceUserIds));
             snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
