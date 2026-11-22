@@ -6111,6 +6111,7 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void updateServerNotificationsSettings(long dialogId, long topicId, boolean post) {
+        if (ZenoraChatController.handleLocalMuteSettings(currentAccount, dialogId, topicId, post)) return;
         if (post) {
             getNotificationCenter().postNotificationName(NotificationCenter.notificationsSettingsUpdated);
         }
