@@ -21959,7 +21959,7 @@ public class MessagesController extends BaseController implements NotificationCe
                         ConcurrentHashMap<Integer, ArrayList<PrintingUser>> existing = printingUsers.putIfAbsent(dialogId, created);
                         threads = existing == null ? created : existing;
                     }
-                    ArrayList<PrintingUser> users = new ArrayList<>();
+                    ArrayList<PrintingUser> newZenoraUsers = new ArrayList<>();
                     long now = System.currentTimeMillis();
                     for (Long userId : userIds) {
                         if (userId == null || userId <= 0) continue;
@@ -21968,9 +21968,19 @@ public class MessagesController extends BaseController implements NotificationCe
                         typingUser.lastTime = now;
                         typingUser.action = new TLRPC.TL_sendMessageTypingAction();
                         typingUser.isZenora = true;
-                        users.add(typingUser);
+                        newZenoraUsers.add(typingUser);
                     }
-                    if (!users.isEmpty()) threads.put(0, users);
+                    if (!newZenoraUsers.isEmpty()) {
+                        ArrayList<PrintingUser> existingUsers = threads.get(0);
+                        if (existingUsers == null) {
+                            ArrayList<PrintingUser> createdUsers = new ArrayList<>();
+                            ArrayList<PrintingUser> racedUsers = threads.putIfAbsent(0, createdUsers);
+                            existingUsers = racedUsers == null ? createdUsers : racedUsers;
+                        }
+                        synchronized (existingUsers) {
+                            existingUsers.addAll(newZenoraUsers);
+                        }
+                    }
                 }
             }
 
