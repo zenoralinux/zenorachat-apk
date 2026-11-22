@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -326,7 +327,8 @@ public final class ZenoraChatController {
         }
 
         AccountInstance instance = AccountInstance.getInstance(account);
-        ZenoraApiClient.deleteChats(roomIds, scopes, (response, error) -> {
+        String operationId = UUID.randomUUID().toString();
+        ZenoraApiClient.deleteChats(roomIds, scopes, operationId, (response, error) -> {
             if (error != null) {
                 FileLog.e(error);
                 requestRooms(instance, true);

@@ -10,6 +10,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -232,11 +233,14 @@ public final class ZenoraApiClient {
 
 
     /** Delete/hide chats in Zenora; each DM can carry its own delete-for-both scope. */
-    public static void deleteChats(List<Long> roomIds, Map<Long, String> deleteScopes, Callback callback) {
+    public static void deleteChats(List<Long> roomIds, Map<Long, String> deleteScopes, String operationId, Callback callback) {
         executor.execute(() -> {
             try {
                 if (roomIds == null || roomIds.isEmpty() || roomIds.size() > 500) {
                     throw new IllegalArgumentException("Invalid delete operation size");
+                }
+                if (operationId == null || !operationId.matches("[A-Za-z0-9._:-]{8,64}")) {
+                    throw new IllegalArgumentException("Invalid delete operation id");
                 }
                 JSONArray ids = new JSONArray();
                 JSONObject scopes = new JSONObject();
@@ -267,8 +271,9 @@ public final class ZenoraApiClient {
                 String form = "room_ids=" + encode(ids.toString())
                         + "&action=delete"
                         + "&delete_scopes=" + encode(scopes.toString())
+                        + "&operation_id=" + encode(operationId)
                         + "&csrf=" + encode(csrf);
-                JSONObject response = request("chat_bulk_action.php", "POST", form);
+                JSONObject response = requestDeleteWithRetry(form);
                 if (response.optInt("processed_count", -1) != ids.length()) {
                     throw new IllegalStateException("ZenoraChat did not confirm every delete/leave operation");
                 }
@@ -276,11 +281,48 @@ public final class ZenoraApiClient {
                 if (items == null || items.length() != ids.length()) {
                     throw new IllegalStateException("ZenoraChat returned an incomplete delete result");
                 }
+                java.util.HashSet<Long> expectedIds = new java.util.HashSet<>();
+                for (int i = 0; i < ids.length(); i++) expectedIds.add(ids.optLong(i, 0));
+                java.util.HashSet<Long> returnedIds = new java.util.HashSet<>();
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject item = items.optJSONObject(i);
+                    if (item == null) throw new IllegalStateException("ZenoraChat returned an invalid delete item");
+                    long returnedId = item.optLong("room_id", 0);
+                    if (!expectedIds.contains(returnedId) || !returnedIds.add(returnedId)) {
+                        throw new IllegalStateException("ZenoraChat returned mismatched delete items");
+                    }
+                }
+                if (!returnedIds.equals(expectedIds)) {
+                    throw new IllegalStateException("ZenoraChat did not confirm every selected chat");
+                }
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
             }
         });
+    }
+
+    /**
+     * Retry a possibly committed delete request once with the same operation id.
+     * The server caches the committed result by user + operation id.
+     */
+    private static JSONObject requestDeleteWithRetry(String form) throws Exception {
+        try {
+            return request("chat_bulk_action.php", "POST", form);
+        } catch (ApiException error) {
+            if (error.statusCode < 500) throw error;
+            FileLog.w("[ZenoraChat] delete API returned HTTP " + error.statusCode + "; retrying idempotently.");
+        } catch (IOException error) {
+            FileLog.w("[ZenoraChat] delete API connection failed; retrying with the same operation id.");
+        }
+
+        try {
+            Thread.sleep(400L);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Delete retry was interrupted", interrupted);
+        }
+        return request("chat_bulk_action.php", "POST", form);
     }
 
     /** Block/unblock a DM peer using Zenora's authenticated API, not MTProto. */
