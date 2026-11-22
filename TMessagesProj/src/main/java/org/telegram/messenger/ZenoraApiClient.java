@@ -230,6 +230,57 @@ public final class ZenoraApiClient {
         });
     }
 
+    /** Persist native Telegram pin state in Zenora; no MTProto request is sent. */
+    public static void setChatPinned(List<Long> roomIds, boolean pinned, Callback callback) {
+        setChatPinAction(roomIds, pinned ? "pin" : "unpin", callback);
+    }
+
+    /** Persist the complete visible pin order for the current folder in Zenora. */
+    public static void movePinnedChatsToTop(List<Long> orderedRoomIds, Callback callback) {
+        setChatPinAction(orderedRoomIds, "move_pin_top", callback);
+    }
+
+    private static void setChatPinAction(List<Long> roomIds, String action, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomIds == null || roomIds.isEmpty() || roomIds.size() > 500) {
+                    throw new IllegalArgumentException("Invalid pin operation size");
+                }
+                JSONArray ids = new JSONArray();
+                java.util.HashSet<Long> uniqueIds = new java.util.HashSet<>();
+                for (Long roomId : roomIds) {
+                    if (roomId == null || roomId <= 0 || !uniqueIds.add(roomId)) {
+                        throw new IllegalArgumentException("Invalid or duplicate Zenora room id");
+                    }
+                    ids.put(roomId);
+                }
+                String csrf = prefs().getString("csrf", "");
+                if (csrf.isEmpty()) {
+                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
+                    csrf = challenge.optString("csrf", "");
+                    if (csrf.isEmpty()) {
+                        throw new IllegalStateException("Authenticated CSRF token missing");
+                    }
+                    prefs().edit().putString("csrf", csrf).commit();
+                }
+                String form = "room_ids=" + encode(ids.toString())
+                        + "&action=" + encode(action)
+                        + "&csrf=" + encode(csrf);
+                JSONObject response = request("chat_bulk_action.php", "POST", form);
+                if (response.optInt("processed_count", -1) != ids.length()) {
+                    throw new IllegalStateException("ZenoraChat did not confirm every pin change");
+                }
+                if ("move_pin_top".equals(action)
+                        && response.optInt("reordered_count", -1) != ids.length()) {
+                    throw new IllegalStateException("ZenoraChat did not confirm the complete pinned order");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
     public static void fetchRooms(Callback callback) {
         executor.execute(() -> {
             try {
