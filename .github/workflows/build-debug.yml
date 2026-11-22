@@ -3,7 +3,9 @@ run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - fix/zenora-phase1-stability-20261122
     paths:
       - 'settings.gradle'
       - 'build.gradle'
@@ -54,6 +56,9 @@ concurrency:
 jobs:
   build-debug:
     name: Build universal Debug APK
+    # The phase-1 branch publishes from push events. Its pull_request event is
+    # intentionally skipped to avoid building and publishing the same commit twice.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref != 'fix/zenora-phase1-stability-20261122'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -165,6 +170,7 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
       - name: Build Debug APK
+        id: build_apk
         shell: bash
         run: |
           set -euo pipefail
@@ -182,8 +188,8 @@ jobs:
             -PZENORA_ABIS="$ZENORA_ABIS" \
             -PZENORA_USE_CCACHE=true \
             -PZENORA_FAST_DEBUG="$ZENORA_FAST_DEBUG" \
-            :TMessagesProj_App:assembleAfatDebug
-          BUILD_STATUS=$?
+            :TMessagesProj_App:assembleAfatDebug 2>&1 | tee dist/gradle-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
           set -e
           BUILD_DURATION=$(( $(date +%s) - BUILD_STARTED ))
           echo "Build duration: ${BUILD_DURATION}s" | tee dist/build-duration.txt
@@ -191,6 +197,7 @@ jobs:
           if [[ "$BUILD_STATUS" -ne 0 ]]; then exit "$BUILD_STATUS"; fi
 
       - name: Validate and package Debug APK
+        id: validate_apk
         shell: bash
         run: |
           set -euo pipefail
@@ -256,7 +263,78 @@ jobs:
             echo "The app uses the Debug signing configuration and package suffix .beta. It is not a production-signed build."
           } > dist/debug-preview-notes.md
 
+
+      # Always produce something useful for the branch release. A failed or
+      # invalid build must never be represented as an installable APK.
+      - name: Prepare source and diagnostics fallback when build fails
+        if: failure()
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build_apk.outcome || 'not-run' }}
+          VALIDATION_OUTCOME: ${{ steps.validate_apk.outcome || 'not-run' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          rm -f dist/*.apk dist/SHA256SUMS dist/BUILD-INFO.txt
+          {
+            echo "ZenoraChat Phase 1 build did not produce a validated APK."
+            echo "Build step: ${BUILD_OUTCOME}"
+            echo "APK validation step: ${VALIDATION_OUTCOME}"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "This release contains the source snapshot and diagnostics only."
+            echo "Do not install or treat this failure package as an APK."
+          } > dist/BUILD-FAILED.txt
+          if [[ -d .git ]]; then
+            git archive --format=zip --prefix="ZenoraChat-source-${GITHUB_SHA}/" HEAD > "dist/ZenoraChat-source-${GITHUB_RUN_NUMBER}.zip" || true
+          fi
+
+      - name: Prepare Zenora Phase 1 release notes
+        if: always() && (github.ref == 'refs/heads/fix/zenora-phase1-stability-20261122' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/fix/zenora-phase1-stability-20261122'))
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build_apk.outcome || 'not-run' }}
+          VALIDATION_OUTCOME: ${{ steps.validate_apk.outcome || 'not-run' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [[ "${BUILD_OUTCOME}" == "success" && "${VALIDATION_OUTCOME}" == "success" && -f dist/ZenoraChat-debug-arm64.apk ]]; then
+            RELEASE_STATUS="SUCCESS — validated ARM64 Debug APK is attached."
+          else
+            RELEASE_STATUS="BUILD FAILED — no installable APK is attached. Source snapshot and diagnostics are attached instead."
+            [[ -f dist/BUILD-FAILED.txt ]] || {
+              {
+                echo "Build step: ${BUILD_OUTCOME}"
+                echo "Validation step: ${VALIDATION_OUTCOME}"
+                echo "Commit: ${GITHUB_SHA}"
+                echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              } > dist/BUILD-FAILED.txt
+            }
+          fi
+          {
+            echo "# ZenoraChat — Phase 1 stability preview"
+            echo
+            echo "${RELEASE_STATUS}"
+            echo
+            echo "## Build"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Repository commit: ${GITHUB_SHA}"
+            echo "- Source branch: fix/zenora-phase1-stability-20261122"
+            echo "- Build outcome: ${BUILD_OUTCOME}"
+            echo "- APK validation outcome: ${VALIDATION_OUTCOME}"
+            echo "- App version: 13.2.2 (7303)"
+            echo "- Application ID: ir.zenora.zenorachat.beta"
+            echo "- Target ABI: arm64-v8a"
+            echo
+            echo "## Important"
+            echo "This is a Debug-signed preview build, not a production-signed Stable release."
+            echo "The existing Telegram-native UI is retained. This branch integrates the Phase 1 ZenoraChat chat-list API."
+          } > dist/release-notes.md
+
       - name: Upload Debug APK and build diagnostics
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: ZenoraChat-Debug-${{ env.ZENORA_BUILD_MODE }}-${{ github.run_number }}
@@ -279,6 +357,33 @@ jobs:
           else
             gh api --method POST "${API}/refs" -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" >/dev/null
           fi
+
+
+      - name: Publish Zenora Phase 1 Preview to GitHub Releases
+        if: always() && github.ref == 'refs/heads/fix/zenora-phase1-stability-20261122'
+        uses: softprops/action-gh-release@v3.0.4
+        with:
+          tag_name: zenora-phase1-stability-20261122-preview-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: ZenoraChat Phase 1 Stability Preview #${{ github.run_number }}
+          body_path: dist/release-notes.md
+          files: |
+            dist/*
+          draft: false
+          prerelease: true
+          make_latest: false
+          overwrite_files: false
+          fail_on_unmatched_files: true
+
+      - name: Verify Zenora Phase 1 Release exists
+        if: always() && github.ref == 'refs/heads/fix/zenora-phase1-stability-20261122'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="zenora-phase1-stability-20261122-preview-${GITHUB_RUN_NUMBER}"
+          gh release view "$TAG" --json tagName,name,url,assets
 
       - name: Publish rolling Debug Preview to GitHub Releases
         if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
