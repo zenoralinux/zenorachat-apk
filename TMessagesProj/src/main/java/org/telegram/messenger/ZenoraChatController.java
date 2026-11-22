@@ -355,7 +355,7 @@ public final class ZenoraChatController {
         final ConcurrentHashMap<Long, TLRPC.User> users = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Long, TLRPC.Chat> chats = new ConcurrentHashMap<>();
         final HashMap<Long, TLRPC.Dialog> dialogs = new HashMap<>();
-        final HashMap<Long, ArrayList<MessageObject>> messages = new HashMap<>();
+        final HashMap<Long, ArrayList<TLRPC.Message>> messages = new HashMap<>();
         final HashMap<Long, Long> roomIds = new HashMap<>();
         final HashMap<Long, Integer> muteUntil = new HashMap<>();
         final HashMap<String, String> avatars = new HashMap<>();
@@ -431,22 +431,40 @@ public final class ZenoraChatController {
         // receive dialogsNeedReload only after all related maps have been replaced.
         controller.dialogs_dict.clear();
         controller.dialogMessage.clear();
+        controller.dialogMessagesByIds.clear();
+        controller.dialogMessagesByRandomIds.clear();
         controller.dialogsByFolder.clear();
         controller.allDialogs.clear();
+        controller.dialogs_read_inbox_max.clear();
+        controller.dialogs_read_outbox_max.clear();
         controller.getUsers().clear();
         controller.getChats().clear();
         controller.getUsers().putAll(snapshot.users);
         controller.getChats().putAll(snapshot.chats);
         for (Map.Entry<Long, TLRPC.Dialog> entry : snapshot.dialogs.entrySet()) {
             controller.dialogs_dict.put(entry.getKey(), entry.getValue());
+            controller.dialogs_read_inbox_max.put(entry.getKey(), entry.getValue().read_inbox_max_id);
         }
-        for (Map.Entry<Long, ArrayList<MessageObject>> entry : snapshot.messages.entrySet()) {
-            controller.dialogMessage.put(entry.getKey(), entry.getValue());
+        // Recreate MessageObjects against MessagesController's live peer maps.
+        // This avoids retaining references to the staging maps after publication.
+        for (Map.Entry<Long, ArrayList<TLRPC.Message>> entry : snapshot.messages.entrySet()) {
+            ArrayList<MessageObject> liveMessages = new ArrayList<>();
+            for (TLRPC.Message message : entry.getValue()) {
+                MessageObject object = new MessageObject(account, message,
+                        controller.getUsers(), controller.getChats(), false, false);
+                liveMessages.add(object);
+                controller.dialogMessagesByIds.put(object.getId(), object);
+                if (message.random_id != 0) {
+                    controller.dialogMessagesByRandomIds.put(message.random_id, object);
+                }
+            }
+            controller.dialogMessage.put(entry.getKey(), liveMessages);
         }
         controller.allDialogs.addAll(snapshot.allDialogs);
         controller.dialogsByFolder.put(0, snapshot.mainDialogs);
         controller.dialogsByFolder.put(1, snapshot.archivedDialogs);
         controller.resetDialogsLoadedTillDate();
+        controller.sortDialogs(null);
 
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
@@ -590,10 +608,8 @@ public final class ZenoraChatController {
                 message.flags |= 1 << 8;
             }
 
-            MessageObject object = new MessageObject(account, message,
-                    snapshot.users, snapshot.chats, false, false);
-            ArrayList<MessageObject> messages = new ArrayList<>();
-            messages.add(object);
+            ArrayList<TLRPC.Message> messages = new ArrayList<>();
+            messages.add(message);
             snapshot.messages.put(dialogId, messages);
         }
     }
