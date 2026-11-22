@@ -11,6 +11,11 @@ public final class ZenoraAvatarRegistry {
     public static void beginSnapshot(int account) {
         AVATARS.put(account, new ConcurrentHashMap<>());
     }
+    public static void replaceSnapshot(int account, Map<String, String> snapshot) {
+        ConcurrentHashMap<String, String> replacement = new ConcurrentHashMap<>();
+        if (snapshot != null) replacement.putAll(snapshot);
+        AVATARS.put(account, replacement);
+    }
     public static void setUserAvatar(int account, long userId, String url) {
         put(account, "u:" + userId, url);
     }
