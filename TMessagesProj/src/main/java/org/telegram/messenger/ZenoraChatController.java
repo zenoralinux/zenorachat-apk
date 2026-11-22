@@ -1151,9 +1151,10 @@ public final class ZenoraChatController {
             mode = muted ? "muted" : "inherit";
         }
         snapshot.muteMode.put(dialogId, mode);
-        snapshot.muteUntil.put(dialogId, toLocalMuteUntil("muted".equals(mode), until,
-                snapshot.serverTime, snapshot.account));
-        snapshot.muteSignatures.put(dialogId, muteSignature(mode, until));
+        int localUntil = toLocalMuteUntil("muted".equals(mode), until,
+                snapshot.serverTime, snapshot.account);
+        snapshot.muteUntil.put(dialogId, localUntil);
+        snapshot.muteSignatures.put(dialogId, muteSignature(mode, localUntil));
     }
 
     /**
@@ -1174,7 +1175,10 @@ public final class ZenoraChatController {
     }
 
     private static String muteSignature(String mode, long muteUntil) {
-        return "muted".equals(mode) ? "muted:" + Math.max(0, muteUntil) : mode;
+        if (!"muted".equals(mode)) return mode;
+        // Telegram's permanent-mute sentinel is Integer.MAX_VALUE; on the API
+        // side a permanent mute is represented by a zero absolute deadline.
+        return "muted:" + (muteUntil == Integer.MAX_VALUE ? 0 : Math.max(0, muteUntil));
     }
 
     private static void rememberMuteSignature(int account, long dialogId, String signature) {
@@ -1351,7 +1355,7 @@ public final class ZenoraChatController {
         long until = response.optLong("mute_until", 0);
         long serverTime = response.optLong("server_time", 0);
         int localUntil = toLocalMuteUntil("muted".equals(mode), until, serverTime, account);
-        rememberMuteSignature(account, dialogId, muteSignature(mode, until));
+        rememberMuteSignature(account, dialogId, muteSignature(mode, localUntil));
         NotificationsController.getInstance(account).getNotificationsSettingsFacade()
                 .applyZenoraMuteState(dialogId, localUntil, mode);
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
