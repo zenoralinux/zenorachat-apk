@@ -2211,7 +2211,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                             performSelectedDialogsAction(selectedDialogs, read, true, false);
                                         } else if (SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_MUTE) {
                                             if (!getMessagesController().isDialogMuted(dialogId, 0)) {
-                                                NotificationsController.getInstance(UserConfig.selectedAccount).setDialogNotificationsSettings(dialogId, 0, NotificationsController.SETTING_MUTE_FOREVER);
+                                                // Keep the pre-existing swipe gesture path unchanged.
+                                                NotificationsController.getInstance(UserConfig.selectedAccount).setDialogNotificationsSettingsLocal(dialogId, 0, NotificationsController.SETTING_MUTE_FOREVER);
                                                 if (BulletinFactory.canShowBulletin(DialogsActivity.this)) {
                                                     BulletinFactory.createMuteBulletin(DialogsActivity.this, NotificationsController.SETTING_MUTE_FOREVER).show();
                                                 }
