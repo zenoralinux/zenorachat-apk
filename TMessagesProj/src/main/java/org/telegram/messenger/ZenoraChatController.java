@@ -213,6 +213,29 @@ public final class ZenoraChatController {
         chatAvatarUrls = Collections.unmodifiableMap(new HashMap<>(staged.chatAvatars));
 
         controller.sortDialogs(null);
+        ArrayList<TLRPC.Dialog> visible = controller.dialogsByFolder.get(0);
+        if (visible == null) {
+            visible = new ArrayList<>();
+            controller.dialogsByFolder.put(0, visible);
+        }
+        if (visible.isEmpty() && !controller.allDialogs.isEmpty()) {
+            ArrayList<TLRPC.Dialog> archived = controller.dialogsByFolder.get(1);
+            if (archived == null) {
+                archived = new ArrayList<>();
+                controller.dialogsByFolder.put(1, archived);
+            }
+            for (TLRPC.Dialog dialog : controller.allDialogs) {
+                if (dialog.folder_id == 1) archived.add(dialog);
+                else visible.add(dialog);
+            }
+            java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
+                if (left.pinned != right.pinned) return left.pinned ? -1 : 1;
+                if (left.pinned) return Integer.compare(right.pinnedNum, left.pinnedNum);
+                return Integer.compare(right.last_message_date, left.last_message_date);
+            };
+            Collections.sort(visible, order);
+            Collections.sort(archived, order);
+        }
         DialogsActivity.markZenoraLoadSuccess(account);
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
