@@ -372,11 +372,9 @@ public final class ZenoraChatController {
         user.first_name = nonEmpty(displayName, nonEmpty(user.username, "ZenoraChat"));
         user.last_name = "";
         user.phone = "";
-        user.access_hash = id ^ 0x5a454e4f52414348L;
-        if (user.access_hash == 0) user.access_hash = id | 1L;
         user.photo = new TLRPC.TL_userProfilePhotoEmpty();
         user.status = new TLRPC.TL_userStatusEmpty();
-        user.flags |= (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        user.flags |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
         if (self) user.flags |= 1 << 10;
         return user;
     }
