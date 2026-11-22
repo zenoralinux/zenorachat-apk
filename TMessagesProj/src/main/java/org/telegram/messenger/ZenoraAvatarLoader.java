@@ -179,7 +179,8 @@ public final class ZenoraAvatarLoader {
             connection.setConnectTimeout(10000);
             connection.setReadTimeout(15000);
             connection.setUseCaches(false);
-            connection.setInstanceFollowRedirects(true);
+            // Avatar origins are allow-listed above; do not follow redirects to a different host.
+            connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8");
             connection.setRequestProperty("User-Agent", "ZenoraChat-Android/1.0");
 
