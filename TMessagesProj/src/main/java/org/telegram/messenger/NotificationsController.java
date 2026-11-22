@@ -6060,9 +6060,20 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void setDialogNotificationsSettings(long dialog_id, long topicId, int setting) {
-        // Zenora owns per-user chat notification state. Never write this action to
-        // Telegram's local-only preferences or send an MTProto notify-settings RPC.
-        if (ZenoraChatController.handleMuteSetting(UserConfig.selectedAccount, dialog_id, topicId, setting)) {
+        setDialogNotificationsSettingsInternal(dialog_id, topicId, setting, true);
+    }
+
+    /**
+     * Explicit legacy path used only by the existing swipe gesture. Its behavior
+     * is intentionally kept unchanged as requested; all menu and selection
+     * actions use the Zenora API interception above.
+     */
+    public void setDialogNotificationsSettingsLocal(long dialog_id, long topicId, int setting) {
+        setDialogNotificationsSettingsInternal(dialog_id, topicId, setting, false);
+    }
+
+    private void setDialogNotificationsSettingsInternal(long dialog_id, long topicId, int setting, boolean useZenora) {
+        if (useZenora && ZenoraChatController.handleMuteSetting(UserConfig.selectedAccount, dialog_id, topicId, setting)) {
             return;
         }
         SharedPreferences preferences = getAccountInstance().getNotificationsSettings();
