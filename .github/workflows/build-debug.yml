@@ -1,4 +1,5 @@
 name: Build Debug APK
+# Branch-specific Debug Preview: permanent Zenora mute/unmute.
 run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
