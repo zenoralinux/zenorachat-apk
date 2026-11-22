@@ -172,14 +172,25 @@ public final class ZenoraApiClient {
 
     /** Change per-user mute state using Zenora PHP, without any MTProto request. */
     public static void setChatMute(long roomId, boolean muted, int muteSeconds, Callback callback) {
+        setChatMuteMode(roomId, muted ? "muted" : "unmuted", muteSeconds, callback);
+    }
+
+    /** Persist one of Zenora's three notification modes without an MTProto request. */
+    public static void setChatMuteMode(long roomId, String muteMode, int muteSeconds, Callback callback) {
         executor.execute(() -> {
             try {
                 if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
-                if (muteSeconds < 0 || muteSeconds > 31536000) {
+                if (!"muted".equals(muteMode) && !"unmuted".equals(muteMode)
+                        && !"inherit".equals(muteMode)) {
+                    throw new IllegalArgumentException("Invalid mute mode");
+                }
+                if (muteSeconds < 0 || muteSeconds > 31536000
+                        || (!"muted".equals(muteMode) && muteSeconds != 0)) {
                     throw new IllegalArgumentException("Invalid mute duration");
                 }
 
-                String action = muted ? "mute" : "unmute";
+                String action = "muted".equals(muteMode) ? "mute"
+                        : ("unmuted".equals(muteMode) ? "unmute" : "inherit");
                 String csrf = getMuteActionCsrfToken();
                 String form = buildMuteActionForm(roomId, action, muteSeconds, csrf);
                 JSONObject response;
@@ -201,16 +212,17 @@ public final class ZenoraApiClient {
                 if (response.optInt("processed_count", -1) != 1) {
                     throw new IllegalStateException("ZenoraChat did not confirm exactly one updated chat");
                 }
-                int expectedMuted = muted ? 1 : 0;
-                if (response.optInt("is_muted", -1) != expectedMuted) {
+                int expectedMuted = "muted".equals(muteMode) ? 1 : 0;
+                if (response.optInt("is_muted", -1) != expectedMuted
+                        || !muteMode.equals(response.optString("mute_mode", ""))) {
                     throw new IllegalStateException("ZenoraChat returned an unexpected mute state");
                 }
                 long muteUntil = response.optLong("mute_until", -1);
                 long serverTime = response.optLong("server_time", 0);
                 if (muteUntil < 0 || serverTime <= 0
-                        || (!muted && muteUntil != 0)
-                        || (muted && muteSeconds == 0 && muteUntil != 0)
-                        || (muted && muteSeconds > 0 && muteUntil == 0)) {
+                        || (!"muted".equals(muteMode) && muteUntil != 0)
+                        || ("muted".equals(muteMode) && muteSeconds == 0 && muteUntil != 0)
+                        || ("muted".equals(muteMode) && muteSeconds > 0 && muteUntil == 0)) {
                     throw new IllegalStateException("ZenoraChat returned an invalid mute deadline");
                 }
                 dispatch(callback, response, null);
