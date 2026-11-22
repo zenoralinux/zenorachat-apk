@@ -270,6 +270,114 @@ public final class ZenoraChatController {
         });
     }
 
+    /**
+     * Pin or unpin native dialogs through the authenticated Zenora API.
+     * Native dialog ids are resolved against the latest complete snapshot.
+     */
+    public static void setDialogsPinned(int account, ArrayList<Long> dialogIds,
+                                        boolean pinned, OperationCallback callback) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) {
+            if (callback != null) callback.onComplete(false, "حساب زنورا فعال نیست.");
+            return;
+        }
+        final ArrayList<Long> roomIds;
+        try {
+            roomIds = resolveDialogRoomIds(account, dialogIds);
+        } catch (Exception e) {
+            if (callback != null) callback.onComplete(false, e.getMessage());
+            return;
+        }
+
+        AccountInstance instance = AccountInstance.getInstance(account);
+        ZenoraApiClient.setChatPinned(roomIds, pinned, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                requestRooms(instance, true);
+                if (callback != null) callback.onComplete(false, pinOperationError(error));
+                return;
+            }
+            requestRooms(instance, true);
+            if (callback != null) callback.onComplete(true, null);
+        });
+    }
+
+    /**
+     * Reorders every pinned dialog in the supplied folder from top to bottom.
+     * The API's move_pin_top operation applies the sequence atomically per user.
+     */
+    public static void reorderPinnedDialogs(int account, ArrayList<Long> orderedDialogIds,
+                                            OperationCallback callback) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) {
+            if (callback != null) callback.onComplete(false, "حساب زنورا فعال نیست.");
+            return;
+        }
+        final ArrayList<Long> roomIds;
+        try {
+            roomIds = resolveDialogRoomIds(account, orderedDialogIds);
+        } catch (Exception e) {
+            if (callback != null) callback.onComplete(false, e.getMessage());
+            return;
+        }
+
+        AccountInstance instance = AccountInstance.getInstance(account);
+        ZenoraApiClient.movePinnedChatsToTop(roomIds, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                // Restore the order from the last valid server snapshot if the
+                // optimistic RecyclerView drag could not be committed.
+                requestRooms(instance, true);
+                if (callback != null) callback.onComplete(false, pinOperationError(error));
+                return;
+            }
+            requestRooms(instance, true);
+            if (callback != null) callback.onComplete(true, null);
+        });
+    }
+
+    private static ArrayList<Long> resolveDialogRoomIds(int account, ArrayList<Long> dialogIds) {
+        if (dialogIds == null || dialogIds.isEmpty() || dialogIds.size() > 500) {
+            throw new IllegalArgumentException("تعداد گفتگوهای انتخاب‌شده معتبر نیست.");
+        }
+        ArrayList<Long> roomIds = new ArrayList<>();
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            if (mappings == null) {
+                throw new IllegalStateException("شناسه گفتگوهای زنورا در دسترس نیست؛ فهرست را تازه‌سازی کنید.");
+            }
+            HashSet<Long> seen = new HashSet<>();
+            for (Long dialogId : dialogIds) {
+                if (dialogId == null || !seen.add(dialogId)) continue;
+                Long roomId = mappings.get(dialogId);
+                if (roomId == null || roomId <= 0) {
+                    throw new IllegalStateException("شناسه یکی از گفتگوها در زنورا پیدا نشد؛ فهرست را تازه‌سازی کنید.");
+                }
+                roomIds.add(roomId);
+            }
+        }
+        if (roomIds.isEmpty()) {
+            throw new IllegalArgumentException("گفتگوی معتبری برای تغییر وضعیت انتخاب نشده است.");
+        }
+        return roomIds;
+    }
+
+    private static String pinOperationError(Exception error) {
+        if (error instanceof ZenoraApiClient.ApiException) {
+            String code = ((ZenoraApiClient.ApiException) error).errorCode;
+            if ("PIN_LIMIT_REACHED".equals(code)) {
+                return "حداکثر سه گفتگو در فهرست اصلی قابل سنجاق کردن است.";
+            }
+            if ("PINNED_DIALOG_SET_CHANGED".equals(code)) {
+                return "وضعیت گفتگوهای سنجاق‌شده تغییر کرده است؛ فهرست دوباره همگام‌سازی شد.";
+            }
+            if ("CHAT_NOT_ACCESSIBLE".equals(code)) {
+                return "یکی از گفتگوها دیگر در دسترس حساب زنورا نیست.";
+            }
+        }
+        return error == null || TextUtils.isEmpty(error.getMessage())
+                ? "ذخیره ترتیب گفتگوهای سنجاق‌شده ناموفق بود."
+                : error.getMessage();
+    }
+
     private static void restoreCachedSnapshot(AccountInstance accountInstance) {
         final int account = accountInstance.getCurrentAccount();
         synchronized (loadLock) {
