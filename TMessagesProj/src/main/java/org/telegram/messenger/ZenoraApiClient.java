@@ -169,7 +169,12 @@ public final class ZenoraApiClient {
             try {
                 if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
                 String csrf = prefs().getString("csrf", "");
-                if (csrf.isEmpty()) throw new IllegalStateException("Authenticated CSRF token missing");
+                if (csrf.isEmpty()) {
+                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
+                    csrf = challenge.optString("csrf", "");
+                    if (csrf.isEmpty()) throw new IllegalStateException("Authenticated CSRF token missing");
+                    prefs().edit().putString("csrf", csrf).commit();
+                }
                 String action = muted ? "mute" : "unmute";
                 String form = "room_ids=" + encode("[" + roomId + "]")
                         + "&action=" + encode(action)
