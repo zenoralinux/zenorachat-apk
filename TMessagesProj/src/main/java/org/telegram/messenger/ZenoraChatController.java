@@ -190,7 +190,7 @@ public final class ZenoraChatController {
         // Zenora dialogs arrive as a complete API snapshot, not through
         // Telegram's paginated loadDialogs pipeline. Remove the native paging
         // cutoff so old-but-valid rooms are not filtered out during sorting.
-        controller.dialogsLoadedTillDate = Integer.MIN_VALUE;
+        controller.resetDialogsLoadedTillDate();
         controller.sortDialogs(null);
         ArrayList<TLRPC.Dialog> visible = controller.dialogsByFolder.get(0);
         if (visible == null) {
