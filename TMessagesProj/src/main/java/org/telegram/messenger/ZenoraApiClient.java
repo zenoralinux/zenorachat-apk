@@ -177,9 +177,19 @@ public final class ZenoraApiClient {
 
     /** Persist one of Zenora's three notification modes without an MTProto request. */
     public static void setChatMuteMode(long roomId, String muteMode, int muteSeconds, Callback callback) {
+        ArrayList<Long> roomIds = new ArrayList<>();
+        roomIds.add(roomId);
+        setChatMuteModes(roomIds, muteMode, muteSeconds, callback);
+    }
+
+    /** Change up to 500 per-user mute states in one server transaction. */
+    public static void setChatMuteModes(List<Long> roomIds, String muteMode,
+                                        int muteSeconds, Callback callback) {
         executor.execute(() -> {
             try {
-                if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
+                if (roomIds == null || roomIds.isEmpty() || roomIds.size() > 500) {
+                    throw new IllegalArgumentException("Invalid mute operation size");
+                }
                 if (!"muted".equals(muteMode) && !"unmuted".equals(muteMode)
                         && !"inherit".equals(muteMode)) {
                     throw new IllegalArgumentException("Invalid mute mode");
@@ -188,11 +198,19 @@ public final class ZenoraApiClient {
                         || (!"muted".equals(muteMode) && muteSeconds != 0)) {
                     throw new IllegalArgumentException("Invalid mute duration");
                 }
+                JSONArray ids = new JSONArray();
+                java.util.HashSet<Long> uniqueIds = new java.util.HashSet<>();
+                for (Long roomId : roomIds) {
+                    if (roomId == null || roomId <= 0 || !uniqueIds.add(roomId)) {
+                        throw new IllegalArgumentException("Invalid or duplicate mute room id");
+                    }
+                    ids.put(roomId);
+                }
 
                 String action = "muted".equals(muteMode) ? "mute"
                         : ("unmuted".equals(muteMode) ? "unmute" : "inherit");
                 String csrf = getMuteActionCsrfToken();
-                String form = buildMuteActionForm(roomId, action, muteSeconds, csrf);
+                String form = buildMuteActionForm(ids, action, muteSeconds, csrf);
                 JSONObject response;
                 try {
                     response = request("chat_bulk_action.php", "POST", form);
@@ -202,15 +220,15 @@ public final class ZenoraApiClient {
                     if (!"CSRF_INVALID".equals(error.errorCode)) throw error;
                     FileLog.w("[ZenoraChat] mute request rejected by CSRF; refreshing token once.");
                     csrf = refreshMuteActionCsrfToken();
-                    form = buildMuteActionForm(roomId, action, muteSeconds, csrf);
+                    form = buildMuteActionForm(ids, action, muteSeconds, csrf);
                     response = request("chat_bulk_action.php", "POST", form);
                 }
 
                 if (!action.equals(response.optString("action", ""))) {
                     throw new IllegalStateException("ZenoraChat returned an unexpected mute action");
                 }
-                if (response.optInt("processed_count", -1) != 1) {
-                    throw new IllegalStateException("ZenoraChat did not confirm exactly one updated chat");
+                if (response.optInt("processed_count", -1) != roomIds.size()) {
+                    throw new IllegalStateException("ZenoraChat did not confirm every mute change");
                 }
                 int expectedMuted = "muted".equals(muteMode) ? 1 : 0;
                 if (response.optInt("is_muted", -1) != expectedMuted
@@ -313,9 +331,9 @@ public final class ZenoraApiClient {
         return csrf;
     }
 
-    private static String buildMuteActionForm(long roomId, String action,
+    private static String buildMuteActionForm(JSONArray roomIds, String action,
                                               int muteSeconds, String csrf) throws Exception {
-        return "room_ids=" + encode("[" + roomId + "]")
+        return "room_ids=" + encode(roomIds.toString())
                 + "&action=" + encode(action)
                 + "&mute_seconds=" + encode(String.valueOf(muteSeconds))
                 + "&csrf=" + encode(csrf);
