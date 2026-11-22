@@ -76,7 +76,31 @@ public final class ZenoraApiClient {
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
                 .putLong("user_id", profile.optLong("id", 0))
+                .putString("profile_json", profile.toString())
                 .apply();
+    }
+
+    /** Restores the local Zenora identity after an unrelated MTProto logout event. */
+    public static JSONObject getSavedProfile() {
+        if (ApplicationLoader.applicationContext == null) return null;
+        try {
+            String stored = prefs().getString("profile_json", "");
+            if (!stored.isEmpty()) {
+                JSONObject profile = new JSONObject(stored);
+                return profile.optLong("id", 0) > 0 ? profile : null;
+            }
+            long userId = prefs().getLong("user_id", 0);
+            if (userId <= 0) return null;
+            JSONObject fallback = new JSONObject();
+            fallback.put("id", userId);
+            fallback.put("username", prefs().getString("username", ""));
+            fallback.put("display_name", prefs().getString("username", ""));
+            fallback.put("avatar_path", "");
+            return fallback;
+        } catch (Exception e) {
+            FileLog.e(e);
+            return null;
+        }
     }
 
     public static void clearSession() {

@@ -83,6 +83,13 @@ public final class ZenoraChatController {
         }
     }
 
+    public static boolean restoreAccount(int account) {
+        JSONObject profile = ZenoraApiClient.getSavedProfile();
+        if (profile == null || profile.optLong("id", 0) <= 0) return false;
+        activateAccount(account, profile);
+        return UserConfig.getInstance(account).isClientActivated();
+    }
+
     public static void loadDialogs(AccountInstance accountInstance) {
         final int account = accountInstance.getCurrentAccount();
         synchronized (loadingAccounts) {
@@ -192,8 +199,8 @@ public final class ZenoraChatController {
         controller.dialogMessage.clear();
         controller.dialogsByFolder.clear();
         controller.allDialogs.clear();
-        controller.getUsers().clear();
-        controller.getChats().clear();
+        // Merge Zenora peers into the existing account-scoped maps. Clearing these
+        // shared caches invalidates references held by native profile/chat views.
 
         for (int i = 0; i < staged.users.size(); i++) {
             controller.getUsers().put(staged.users.keyAt(i), staged.users.valueAt(i));

@@ -3,7 +3,7 @@ run-name: Debug APK (${{ inputs.build_mode || 'fast ARM64' }})
 
 on:
   push:
-    branches: [main, 'fix/zenora-dialogs-stability-20261122']
+    branches: [main, 'fix/zenora-dialogs-stability-20261122', 'fix/zenora-session-profile-isolation-20261122']
     paths:
       - 'settings.gradle'
       - 'build.gradle'
@@ -264,6 +264,59 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: Prepare Zenora Session Isolation preview notes
+        if: github.ref == 'refs/heads/fix/zenora-session-profile-isolation-20261122' && env.ZENORA_BUILD_MODE == 'fast' && github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_NAME="$(awk -F= '$1=="APP_VERSION_NAME" {print $2}' gradle.properties | tail -n1)"
+          VERSION_CODE="$(awk -F= '$1=="APP_VERSION_CODE" {print $2}' gradle.properties | tail -n1)"
+          {
+            echo "# ZenoraChat Session/Profile Isolation Preview"
+            echo
+            echo "Test build for the ZenoraChat session isolation and native profile compatibility branch."
+            echo
+            echo "- App version: ${VERSION_NAME} (${VERSION_CODE})"
+            echo "- ABI: arm64-v8a"
+            echo "- Repository commit: $(git rev-parse HEAD)"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "This is a Debug-signed test build, not a production release."
+          } > dist/zenora-session-preview-notes.md
+
+      - name: Update Zenora Session Isolation preview tag
+        if: github.ref == 'refs/heads/fix/zenora-session-profile-isolation-20261122' && env.ZENORA_BUILD_MODE == 'fast' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="zenora-session-profile-preview"
+          API="repos/${GITHUB_REPOSITORY}/git"
+          if gh api "${API}/ref/tags/${TAG}" >/dev/null 2>&1; then
+            gh api --method PATCH "${API}/refs/tags/${TAG}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+          else
+            gh api --method POST "${API}/refs" -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" >/dev/null
+          fi
+
+      - name: Publish Zenora Session Isolation preview release
+        if: github.ref == 'refs/heads/fix/zenora-session-profile-isolation-20261122' && env.ZENORA_BUILD_MODE == 'fast' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v3.0.4
+        with:
+          tag_name: zenora-session-profile-preview
+          target_commitish: ${{ github.sha }}
+          name: ZenoraChat Session/Profile Isolation Preview
+          body_path: dist/zenora-session-preview-notes.md
+          files: |
+            dist/ZenoraChat-debug-arm64.apk
+            dist/SHA256SUMS
+            dist/BUILD-INFO.txt
+          draft: false
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
 
       - name: Update rolling Debug Preview tag
         if: github.ref == 'refs/heads/main' && env.ZENORA_BUILD_MODE == 'fast' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
