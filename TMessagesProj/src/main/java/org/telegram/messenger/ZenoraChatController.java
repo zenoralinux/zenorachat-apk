@@ -47,6 +47,8 @@ public final class ZenoraChatController {
     private static final Map<Integer, Long> snapshotUserIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
     private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
+    private static final Map<Integer, Map<Long, Integer>> attentionReadMessageIds = new HashMap<>();
+    private static final Map<Integer, Map<Long, Integer>> attentionReadPending = new HashMap<>();
     private static final Map<Integer, AccountInstance> accountInstances = new HashMap<>();
     private static final Map<Integer, Integer> visibleDialogsScreens = new HashMap<>();
     private static final Handler retryHandler = new Handler(Looper.getMainLooper());
@@ -155,6 +157,8 @@ public final class ZenoraChatController {
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
                 savedDialogIds.remove(account);
+                attentionReadMessageIds.remove(account);
+                attentionReadPending.remove(account);
                 long generation = requestGenerations.containsKey(account)
                         ? requestGenerations.get(account) + 1L : 1L;
                 requestGenerations.put(account, generation);
@@ -191,6 +195,80 @@ public final class ZenoraChatController {
             }
         }
         requestRooms(accountInstance, false);
+    }
+
+    /** Send native composer typing state to the currently mapped Zenora room. */
+    public static void setTypingState(int account, long dialogId, boolean typing) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return;
+        final Long roomId;
+        synchronized (loadLock) {
+            Set<Long> saved = savedDialogIds.get(account);
+            if (saved != null && saved.contains(dialogId)) return;
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            roomId = mappings == null ? null : mappings.get(dialogId);
+        }
+        if (roomId == null || roomId <= 0) return;
+        ZenoraApiClient.updateTyping(roomId, typing, (response, error) -> {
+            if (error != null) FileLog.w("[ZenoraChat] typing state update failed: " + error.getMessage());
+        });
+    }
+
+    /**
+     * Advance mention/reaction cursors only through the message range Telegram
+     * has actually marked read after its message-visibility checks.
+     */
+    public static void markDialogAttentionRead(int account, long dialogId, int maxReadMessageId) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0 || maxReadMessageId <= 0) return;
+        final long roomId;
+        synchronized (loadLock) {
+            Set<Long> saved = savedDialogIds.get(account);
+            if (saved != null && saved.contains(dialogId)) return;
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            Long resolved = mappings == null ? null : mappings.get(dialogId);
+            if (resolved == null || resolved <= 0) return;
+            roomId = resolved;
+            int last = attentionReadMessageIds.containsKey(account)
+                    ? attentionReadMessageIds.get(account).getOrDefault(dialogId, 0) : 0;
+            if (maxReadMessageId <= last) return;
+            Map<Long, Integer> pending = attentionReadPending.computeIfAbsent(account, key -> new HashMap<>());
+            int pendingId = pending.getOrDefault(dialogId, 0);
+            if (pendingId >= maxReadMessageId) return;
+            pending.put(dialogId, maxReadMessageId);
+            if (pendingId > 0) return;
+        }
+        submitAttentionRead(account, dialogId, roomId, maxReadMessageId);
+    }
+
+    private static void submitAttentionRead(int account, long dialogId, long roomId, int sentMessageId) {
+        ZenoraApiClient.markRoomAttentionRead(roomId, sentMessageId, (response, error) -> {
+            int highestPending;
+            AccountInstance instance;
+            synchronized (loadLock) {
+                Map<Long, Integer> pending = attentionReadPending.get(account);
+                highestPending = pending == null ? sentMessageId : pending.getOrDefault(dialogId, sentMessageId);
+                if (pending != null) {
+                    pending.remove(dialogId);
+                    if (pending.isEmpty()) attentionReadPending.remove(account);
+                }
+                if (error == null) {
+                    Map<Long, Integer> read = attentionReadMessageIds.computeIfAbsent(account, key -> new HashMap<>());
+                    read.put(dialogId, Math.max(read.getOrDefault(dialogId, 0), sentMessageId));
+                }
+                instance = accountInstances.get(account);
+            }
+            if (error != null) {
+                FileLog.w("[ZenoraChat] mention/reaction read cursor update failed: " + error.getMessage());
+                if (highestPending > sentMessageId) {
+                    markDialogAttentionRead(account, dialogId, highestPending);
+                }
+                return;
+            }
+            if (highestPending > sentMessageId) {
+                markDialogAttentionRead(account, dialogId, highestPending);
+            } else if (instance != null) {
+                requestRooms(instance, true);
+            }
+        });
     }
 
     public static void setDialogsScreenVisible(int account, boolean visible) {
@@ -493,6 +571,7 @@ public final class ZenoraChatController {
         cacheExecutor.execute(() -> {
             JSONObject cached = ZenoraDialogCache.read(account, expectedUserId);
             if (cached == null) return;
+            cached.put("_zenora_cache_restore", true);
             retryHandler.post(() -> {
                 synchronized (loadLock) {
                     if (snapshotAvailable.contains(account)) return;
@@ -635,7 +714,9 @@ public final class ZenoraChatController {
         final HashMap<Long, ArrayList<TLRPC.Message>> messages = new HashMap<>();
         final HashMap<Long, Long> roomIds = new HashMap<>();
         final HashMap<Long, Integer> muteUntil = new HashMap<>();
+        final HashMap<Long, ArrayList<Long>> typingUsers = new HashMap<>();
         long serverTime;
+        boolean applyEphemeralState;
         final HashMap<String, String> avatars = new HashMap<>();
         final ArrayList<TLRPC.Dialog> allDialogs = new ArrayList<>();
         final ArrayList<TLRPC.Dialog> mainDialogs = new ArrayList<>();
@@ -677,12 +758,23 @@ public final class ZenoraChatController {
         // has been mapped and sorted successfully.
         DialogSnapshot snapshot = new DialogSnapshot();
         snapshot.serverTime = response.optLong("server_time", 0);
+        snapshot.applyEphemeralState = !response.optBoolean("_zenora_cache_restore", false);
         snapshot.users.put(self.id, self);
         for (int i = 0; i < rooms.length(); i++) {
             addDialog(account, snapshot, self, rooms.getJSONObject(i), false);
         }
         for (int i = 0; i < directRooms.length(); i++) {
             addDialog(account, snapshot, self, directRooms.getJSONObject(i), true);
+        }
+        // Resolve presence after all peer/sender models have been merged, so a
+        // last-message sender cannot overwrite the final presence state.
+        for (int i = 0; i < directRooms.length(); i++) {
+            JSONObject row = directRooms.getJSONObject(i);
+            if (!"saved".equals(row.optString("type", "dm"))) {
+                long peerId = row.optLong("other_user_id", 0);
+                applyUserPresence(account, snapshot.users.get(peerId), row,
+                        snapshot.serverTime, snapshot.applyEphemeralState);
+            }
         }
 
         java.util.Comparator<TLRPC.Dialog> order = (left, right) -> {
@@ -748,6 +840,11 @@ public final class ZenoraChatController {
         // Recreate Telegram's special Archive folder row after each complete
         // Zenora snapshot; sortDialogs alone only populates folder contents.
         controller.checkArchiveFolder();
+
+        // Never replay ephemeral status/typing from the local snapshot cache.
+        NotificationCenter.getInstance(account).postNotificationName(
+                NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_STATUS);
+        controller.applyZenoraTypingSnapshot(snapshot.typingUsers);
 
         synchronized (loadLock) {
             dialogRoomIds.put(account, new HashMap<>(snapshot.roomIds));
@@ -847,6 +944,8 @@ public final class ZenoraChatController {
         dialog.top_message = messageId;
         dialog.read_inbox_max_id = readId;
         dialog.unread_count = Math.max(0, row.optInt("unread_count", 0));
+        dialog.unread_mentions_count = Math.max(0, row.optInt("unread_mentions", 0));
+        dialog.unread_reactions_count = Math.max(0, row.optInt("unread_reaction_mentions", 0));
         dialog.unread_mark = row.optInt("is_marked_unread", 0) == 1;
         dialog.pinned = row.optInt("is_pinned", 0) == 1;
         dialog.pinnedNum = 100000 - Math.max(0, row.optInt("pin_order", 0));
@@ -909,6 +1008,49 @@ public final class ZenoraChatController {
             messages.add(message);
             snapshot.messages.put(dialogId, messages);
         }
+        addTypingUsers(snapshot, row, dialogId, !saved && !channel && (direct || "group".equals(type)));
+    }
+
+    private static void addTypingUsers(DialogSnapshot snapshot, JSONObject row,
+                                       long dialogId, boolean typingSupported) {
+        ArrayList<Long> ids = new ArrayList<>();
+        JSONArray typers = snapshot.applyEphemeralState && typingSupported
+                ? row.optJSONArray("typing_users") : null;
+        if (typers != null) {
+            for (int i = 0; i < typers.length(); i++) {
+                JSONObject typer = typers.optJSONObject(i);
+                if (typer == null) continue;
+                long userId = typer.optLong("user_id", 0);
+                if (userId <= 0 || ids.contains(userId)) continue;
+                String username = typer.optString("username", "");
+                String displayName = typer.optString("display_name", "");
+                TLRPC.User typingUser = makeUser(userId, username, displayName, false);
+                if (typingUser != null) snapshot.users.putIfAbsent(userId, typingUser);
+                ids.add(userId);
+            }
+        }
+        snapshot.typingUsers.put(dialogId, ids);
+    }
+
+    private static void applyUserPresence(int account, TLRPC.User user, JSONObject row,
+                                          long serverTime, boolean applyEphemeralState) {
+        if (user == null) return;
+        user.status = new TLRPC.TL_userStatusEmpty();
+        if (!applyEphemeralState || row.optInt("presence_visible", 0) != 1) return;
+        int currentTime = ConnectionsManager.getInstance(account).getCurrentTime();
+        int onlineRemaining = Math.max(0, row.optInt("online_remaining_seconds", 0));
+        if (row.optInt("is_online", 0) == 1 && onlineRemaining > 0) {
+            TLRPC.TL_userStatusOnline status = new TLRPC.TL_userStatusOnline();
+            status.expires = (int) Math.min(Integer.MAX_VALUE, (long) currentTime + onlineRemaining);
+            user.status = status;
+            return;
+        }
+        long lastSeenUnix = row.optLong("other_last_seen_unix", 0);
+        if (lastSeenUnix <= 0 || serverTime <= 0) return;
+        long ageSeconds = Math.max(0, serverTime - lastSeenUnix);
+        TLRPC.TL_userStatusOffline status = new TLRPC.TL_userStatusOffline();
+        status.expires = (int) Math.max(Integer.MIN_VALUE, (long) currentTime - ageSeconds);
+        user.status = status;
     }
 
     private static void applyDialogMuteSnapshot(DialogSnapshot snapshot, long dialogId, JSONObject row) {

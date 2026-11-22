@@ -1259,6 +1259,7 @@ public class MessagesController extends BaseController implements NotificationCe
         public long lastTime;
         public long userId;
         public TLRPC.SendMessageAction action;
+        public boolean isZenora;
     }
 
     public static int DIALOG_FILTER_FLAG_CONTACTS = 0x00000001;
@@ -21919,6 +21920,63 @@ public class MessagesController extends BaseController implements NotificationCe
             return null;
         }
         return threads.get(threadId);
+    }
+
+    /**
+     * Replace only Zenora-owned typing entries while preserving Telegram's
+     * native typing actions from other transports.
+     */
+    public void applyZenoraTypingSnapshot(HashMap<Long, ArrayList<Long>> typingByDialog) {
+        AndroidUtilities.runOnUIThread(() -> {
+            for (HashMap.Entry<Long, ConcurrentHashMap<Integer, ArrayList<PrintingUser>>> dialogEntry : printingUsers.entrySet()) {
+                ConcurrentHashMap<Integer, ArrayList<PrintingUser>> threads = dialogEntry.getValue();
+                if (threads == null) continue;
+                for (HashMap.Entry<Integer, ArrayList<PrintingUser>> threadEntry : threads.entrySet()) {
+                    ArrayList<PrintingUser> users = threadEntry.getValue();
+                    if (users == null) continue;
+                    synchronized (users) {
+                        for (int i = users.size() - 1; i >= 0; i--) {
+                            if (users.get(i).isZenora) users.remove(i);
+                        }
+                        if (users.isEmpty() && threads.get(threadEntry.getKey()) == users) {
+                            threads.remove(threadEntry.getKey());
+                        }
+                    }
+                }
+                if (threads.isEmpty() && printingUsers.get(dialogEntry.getKey()) == threads) {
+                    printingUsers.remove(dialogEntry.getKey());
+                }
+            }
+
+            if (typingByDialog != null) {
+                for (HashMap.Entry<Long, ArrayList<Long>> dialogEntry : typingByDialog.entrySet()) {
+                    Long dialogId = dialogEntry.getKey();
+                    ArrayList<Long> userIds = dialogEntry.getValue();
+                    if (dialogId == null || userIds == null || userIds.isEmpty()) continue;
+                    ConcurrentHashMap<Integer, ArrayList<PrintingUser>> threads = printingUsers.get(dialogId);
+                    if (threads == null) {
+                        ConcurrentHashMap<Integer, ArrayList<PrintingUser>> created = new ConcurrentHashMap<>();
+                        ConcurrentHashMap<Integer, ArrayList<PrintingUser>> existing = printingUsers.putIfAbsent(dialogId, created);
+                        threads = existing == null ? created : existing;
+                    }
+                    ArrayList<PrintingUser> users = new ArrayList<>();
+                    long now = System.currentTimeMillis();
+                    for (Long userId : userIds) {
+                        if (userId == null || userId <= 0) continue;
+                        PrintingUser typingUser = new PrintingUser();
+                        typingUser.userId = userId;
+                        typingUser.lastTime = now;
+                        typingUser.action = new TLRPC.TL_sendMessageTypingAction();
+                        typingUser.isZenora = true;
+                        users.add(typingUser);
+                    }
+                    if (!users.isEmpty()) threads.put(0, users);
+                }
+            }
+
+            updatePrintingStrings();
+            getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_USER_PRINT);
+        });
     }
 
     private boolean updatePrintingUsersWithNewMessages(long uid, ArrayList<MessageObject> messages) {

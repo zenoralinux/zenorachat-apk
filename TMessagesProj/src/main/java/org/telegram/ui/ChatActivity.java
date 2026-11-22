@@ -193,6 +193,7 @@ import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.Timer;
 import org.telegram.messenger.TranslateController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -2242,6 +2243,9 @@ public class ChatActivity extends BaseFragment implements
         public void needSendTyping() {
             if (isQuickRepliesOrWelcomeMessagesMode() || chatMode == MODE_EDIT_BUSINESS_LINK || chatMode == MODE_SUGGESTIONS) return;
             getMessagesController().sendTyping(dialog_id, threadMessageId, 0, classGuid);
+            if (threadMessageId == 0) {
+                ZenoraChatController.setTypingState(currentAccount, dialog_id, true);
+            }
         }
 
         @Override
@@ -17268,6 +17272,9 @@ public class ChatActivity extends BaseFragment implements
                     inlineUpdate1();
                 }
                 getMessagesController().markDialogAsRead(dialog_id, maxPositiveUnreadId, maxNegativeUnreadId, maxUnreadDate, false, threadId, counterDecrement, maxPositiveUnreadId == minMessageId[0] || maxNegativeUnreadId == minMessageId[0], scheduledRead);
+                if (threadId == 0 && maxPositiveUnreadId > 0) {
+                    ZenoraChatController.markDialogAttentionRead(currentAccount, dialog_id, maxPositiveUnreadId);
+                }
                 firstUnreadSent = true;
             } else if (!firstUnreadSent && currentEncryptedChat == null) {
                 if (chatLayoutManager.findFirstVisibleItemPosition() == 0) {
@@ -17278,6 +17285,9 @@ public class ChatActivity extends BaseFragment implements
                         inlineUpdate2();
                     }
                     getMessagesController().markDialogAsRead(dialog_id, minMessageId[0], minMessageId[0], maxDate[0], false, threadId, 0, true, scheduledRead);
+                    if (threadId == 0 && minMessageId[0] > 0) {
+                        ZenoraChatController.markDialogAttentionRead(currentAccount, dialog_id, minMessageId[0]);
+                    }
                     if (isTopic && replyOriginalChat != null) {
                         getMessagesStorage().updateRepliesMaxReadId(replyOriginalChat.id, replyOriginalMessageId, Math.max(maxPositiveUnreadId, replyMaxReadId), 0, true);
                     }
@@ -30882,6 +30892,9 @@ public class ChatActivity extends BaseFragment implements
         }
         long replyId = threadMessageId;
         getMessagesController().markDialogAsReadNow(dialog_id, replyId);
+        if (threadMessageId == 0) {
+            ZenoraChatController.setTypingState(currentAccount, dialog_id, false);
+        }
         final boolean keepVoiceRecording = keepVoiceRecordingOnPause && saveVoiceRecordingForRestore();
         keepVoiceRecordingOnPause = false;
         if (keepVoiceRecording) {

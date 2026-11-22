@@ -17,6 +17,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,8 @@ public final class ZenoraApiClient {
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Object cookieLock = new Object();
+    // Accessed only from the serialized API executor.
+    private static final Map<Long, Long> lastTypingUpdateMs = new HashMap<>();
 
     public interface Callback {
         void onComplete(JSONObject response, Exception error);
@@ -213,6 +216,70 @@ public final class ZenoraApiClient {
                 dispatch(callback, null, e);
             }
         });
+    }
+
+    /** Update server typing state with native composer throttling (2s; server expiry is 6s). */
+    public static void updateTyping(long roomId, boolean typing, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
+                long now = System.currentTimeMillis();
+                Long last = lastTypingUpdateMs.get(roomId);
+                if (typing && last != null && now - last < 2_000L) {
+                    JSONObject throttled = new JSONObject();
+                    throttled.put("ok", true);
+                    throttled.put("throttled", true);
+                    dispatch(callback, throttled, null);
+                    return;
+                }
+                String form = "room_id=" + encode(String.valueOf(roomId))
+                        + "&is_typing=" + (typing ? "1" : "0");
+                JSONObject response = postWithCsrfRetry("typing_update.php", form);
+                if (typing) lastTypingUpdateMs.put(roomId, now);
+                else lastTypingUpdateMs.remove(roomId);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Mark only mention/reaction events inside the actual native read range. */
+    public static void markRoomAttentionRead(long roomId, int maxMessageId, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomId <= 0 || maxMessageId <= 0) {
+                    throw new IllegalArgumentException("Invalid room attention read range");
+                }
+                String form = "room_id=" + encode(String.valueOf(roomId))
+                        + "&max_message_id=" + encode(String.valueOf(maxMessageId));
+                JSONObject mentions = postWithCsrfRetry("mentions_read.php", form);
+                JSONObject reactions = postWithCsrfRetry("reaction_mentions_read.php", form);
+                JSONObject combined = new JSONObject();
+                combined.put("ok", mentions.optBoolean("ok", false) && reactions.optBoolean("ok", false));
+                combined.put("mentions", mentions);
+                combined.put("reactions", reactions);
+                if (!combined.optBoolean("ok", false)) {
+                    throw new IllegalStateException("ZenoraChat did not confirm both attention read cursors");
+                }
+                dispatch(callback, combined, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    private static JSONObject postWithCsrfRetry(String path, String formWithoutCsrf) throws Exception {
+        String csrf = getMuteActionCsrfToken();
+        String form = formWithoutCsrf + "&csrf=" + encode(csrf);
+        try {
+            return request(path, "POST", form);
+        } catch (ApiException error) {
+            if (!"CSRF_INVALID".equals(error.errorCode)) throw error;
+            FileLog.w("[ZenoraChat] " + path + " rejected CSRF; refreshing and retrying once.");
+            csrf = refreshMuteActionCsrfToken();
+            return request(path, "POST", formWithoutCsrf + "&csrf=" + encode(csrf));
+        }
     }
 
     private static String getMuteActionCsrfToken() throws Exception {
