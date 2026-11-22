@@ -1,11 +1,14 @@
 package org.telegram.messenger;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.ui.DialogsActivity;
 import org.telegram.ui.LaunchActivity;
 
 import java.text.ParseException;
@@ -13,13 +16,23 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Converts ZenoraChat API rooms into Telegram's native TL dialog model.
  * The existing DialogsActivity and DialogCell views are not replaced.
  */
 public final class ZenoraChatController {
+    private static final Object loadLock = new Object();
+    private static final Set<Integer> loadingAccounts = new HashSet<>();
+    private static final Map<Integer, Integer> retryAttempts = new HashMap<>();
+    private static final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private static final int MAX_AUTOMATIC_RETRIES = 3;
+
     private ZenoraChatController() {
     }
 
@@ -39,34 +52,90 @@ public final class ZenoraChatController {
     }
 
     public static void loadDialogs(AccountInstance accountInstance) {
+        if (accountInstance == null) return;
+        final int account = accountInstance.getCurrentAccount();
+        synchronized (loadLock) {
+            if (!loadingAccounts.add(account)) return;
+        }
         ZenoraApiClient.fetchRooms((response, error) -> {
+            synchronized (loadLock) {
+                loadingAccounts.remove(account);
+            }
             if (error != null) {
                 if (error instanceof ZenoraApiClient.ApiException
                         && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
+                    synchronized (loadLock) {
+                        retryAttempts.remove(account);
+                    }
+                    DialogsActivity.resetZenoraLoadState(account);
                     ZenoraApiClient.clearSession();
                     LaunchActivity.requestZenoraLogin();
                     return;
                 }
+                DialogsActivity.resetZenoraLoadState(account);
                 Toast.makeText(ApplicationLoader.applicationContext,
-                        "اتصال به زنوراچت ناموفق بود. اتصال اینترنت و نشانی API را بررسی کنید.",
+                        "اتصال به زنوراچت ناموفق بود. فهرست قبلی حفظ شد و تلاش مجدد انجام می‌شود.",
                         Toast.LENGTH_LONG).show();
+                scheduleRetry(accountInstance);
                 return;
             }
             try {
                 applyRooms(accountInstance, response);
+                synchronized (loadLock) {
+                    retryAttempts.remove(account);
+                }
             } catch (Exception e) {
                 FileLog.e(e);
+                DialogsActivity.resetZenoraLoadState(account);
                 Toast.makeText(ApplicationLoader.applicationContext,
-                        "دریافت فهرست گفتگوهای زنوراچت ناموفق بود.", Toast.LENGTH_LONG).show();
+                        "پاسخ فهرست گفتگوها معتبر نبود؛ فهرست قبلی حفظ شد.",
+                        Toast.LENGTH_LONG).show();
+                scheduleRetry(accountInstance);
             }
         });
     }
 
+    private static void scheduleRetry(AccountInstance accountInstance) {
+        final int account = accountInstance.getCurrentAccount();
+        final int retryIndex;
+        synchronized (loadLock) {
+            retryIndex = retryAttempts.containsKey(account) ? retryAttempts.get(account) : 0;
+            if (retryIndex >= MAX_AUTOMATIC_RETRIES) return;
+            retryAttempts.put(account, retryIndex + 1);
+        }
+        retryHandler.postDelayed(() -> loadDialogs(accountInstance), 2_000L << retryIndex);
+    }
+
+    private static void validateRows(JSONArray rows, boolean directList) {
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row == null || row.optLong("id", 0) <= 0) {
+                throw new IllegalStateException("Invalid room row at index " + i);
+            }
+            String type = row.optString("type", directList ? "dm" : "group");
+            if (directList && !"saved".equals(type) && row.optLong("other_user_id", 0) <= 0) {
+                throw new IllegalStateException("Direct room is missing its peer at index " + i);
+            }
+        }
+    }
+
     private static void applyRooms(AccountInstance accountInstance, JSONObject response) throws Exception {
+        if (response == null || !response.optBoolean("ok", false)) {
+            throw new IllegalStateException("Rooms API did not return success");
+        }
+        JSONObject meJson = response.optJSONObject("me");
+        JSONArray rooms = response.optJSONArray("rooms");
+        JSONArray directRooms = response.optJSONArray("dm_rooms");
+        if (meJson == null || meJson.optLong("id", 0) <= 0 || rooms == null || directRooms == null) {
+            throw new IllegalStateException("Incomplete rooms API payload");
+        }
+        // Validate every row before clearing the currently displayed dialogs.
+        validateRows(rooms, false);
+        validateRows(directRooms, true);
+
         int account = accountInstance.getCurrentAccount();
         UserConfig userConfig = accountInstance.getUserConfig();
         MessagesController controller = accountInstance.getMessagesController();
-        JSONObject meJson = response.optJSONObject("me");
         TLRPC.User self = userConfig.getCurrentUser();
 
         if (meJson != null && meJson.optLong("id", 0) > 0
@@ -88,19 +157,11 @@ public final class ZenoraChatController {
         controller.getChats().clear();
         controller.putUser(self, false, true);
 
-        JSONArray rooms = response.optJSONArray("rooms");
-        JSONArray directRooms = response.optJSONArray("dm_rooms");
-        if (rooms != null) {
-            for (int i = 0; i < rooms.length(); i++) {
-                JSONObject row = rooms.optJSONObject(i);
-                if (row != null) addDialog(account, controller, self, row, false);
-            }
+        for (int i = 0; i < rooms.length(); i++) {
+            addDialog(account, controller, self, rooms.getJSONObject(i), false);
         }
-        if (directRooms != null) {
-            for (int i = 0; i < directRooms.length(); i++) {
-                JSONObject row = directRooms.optJSONObject(i);
-                if (row != null) addDialog(account, controller, self, row, true);
-            }
+        for (int i = 0; i < directRooms.length(); i++) {
+            addDialog(account, controller, self, directRooms.getJSONObject(i), true);
         }
 
         controller.sortDialogs(null);
@@ -281,7 +342,7 @@ public final class ZenoraChatController {
     }
 
     private static int parseDate(String value) {
-        if (TextUtils.isEmpty(value)) return (int) (System.currentTimeMillis() / 1000L);
+        if (TextUtils.isEmpty(value)) return 0;
         try {
             long numeric = Long.parseLong(value);
             if (numeric > 100000000000L) numeric /= 1000L;
@@ -298,6 +359,6 @@ public final class ZenoraChatController {
             } catch (ParseException ignored) {
             }
         }
-        return (int) (System.currentTimeMillis() / 1000L);
+        return 0;
     }
 }

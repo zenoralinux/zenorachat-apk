@@ -155,7 +155,7 @@ public class ZenoraLoginActivity extends BaseFragment {
         errorView.setVisibility(View.GONE);
 
         ZenoraApiClient.login(username, password, (response, error) -> {
-            if (loginButton == null) return;
+            if (loginButton == null || getParentActivity() == null) return;
             submitting = false;
             loginButton.setEnabled(true);
             loginButton.setAlpha(1f);

@@ -54,9 +54,23 @@ public final class ZenoraApiClient {
     }
 
     public static boolean isZenoraSessionEnabled() {
-        return ApplicationLoader.applicationContext != null
-                && prefs().getBoolean("enabled", false)
-                && hasAuthCookie();
+        if (ApplicationLoader.applicationContext == null
+                || !prefs().getBoolean("enabled", false) || !hasAuthCookie()) {
+            return false;
+        }
+        // Restore the native account shell if UserConfig was lost while the
+        // long-lived Zenora session cookie and profile metadata survived.
+        try {
+            int account = UserConfig.selectedAccount;
+            UserConfig config = UserConfig.getInstance(account);
+            if (!config.isClientActivated()) {
+                JSONObject profile = getStoredProfile();
+                if (profile != null) ZenoraChatController.activateAccount(account, profile);
+            }
+        } catch (Exception ignored) {
+            // The subsequent normal startup/login flow remains responsible for recovery.
+        }
+        return true;
     }
 
     private static boolean hasAuthCookie() {
@@ -71,16 +85,33 @@ public final class ZenoraApiClient {
     }
 
     public static void enableSession(JSONObject profile) {
-        if (profile == null) return;
+        if (profile == null || profile.optLong("id", 0) <= 0) return;
         prefs().edit()
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
+                .putString("display_name", profile.optString("display_name", ""))
                 .putLong("user_id", profile.optLong("id", 0))
-                .apply();
+                .commit();
+    }
+
+    public static JSONObject getStoredProfile() {
+        if (ApplicationLoader.applicationContext == null
+                || !prefs().getBoolean("enabled", false) || !hasAuthCookie()) return null;
+        long userId = prefs().getLong("user_id", 0);
+        if (userId <= 0) return null;
+        JSONObject profile = new JSONObject();
+        try {
+            profile.put("id", userId);
+            profile.put("username", prefs().getString("username", ""));
+            profile.put("display_name", prefs().getString("display_name", ""));
+        } catch (Exception ignored) {
+            return null;
+        }
+        return profile;
     }
 
     public static void clearSession() {
-        prefs().edit().clear().apply();
+        prefs().edit().clear().commit();
     }
 
     public static void login(String username, String password, Callback callback) {
@@ -209,7 +240,8 @@ public final class ZenoraApiClient {
                 if (joined.length() > 0) joined.append("; ");
                 joined.append(item.getKey()).append('=').append(item.getValue());
             }
-            prefs().edit().putString(COOKIE_KEY, joined.toString()).apply();
+            // Persist the auth cookie before the UI navigates away from the login screen.
+            prefs().edit().putString(COOKIE_KEY, joined.toString()).commit();
         }
     }
 
