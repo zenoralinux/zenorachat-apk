@@ -9628,7 +9628,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
             } else if (action == mute) {
                 if (count == 1 && canMuteCount == 1) {
-                    showDialog(AlertsCreator.createMuteAlert(this, selectedDialog, 0, null), dialog12 -> hideActionMode(true));
+                    getNotificationsController().setDialogNotificationsSettings(selectedDialog, 0, NotificationsController.SETTING_MUTE_FOREVER);
+                    hideActionMode(true);
                     return;
                 } else {
                     if (canUnmuteCount != 0) {
@@ -9637,7 +9638,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         }
                         getNotificationsController().setDialogNotificationsSettings(selectedDialog, 0, NotificationsController.SETTING_MUTE_UNMUTE);
                     } else if (longPress) {
-                        showDialog(AlertsCreator.createMuteAlert(this, selectedDialogs, 0, null), dialog12 -> hideActionMode(true));
+                        for (int i = 0; i < selectedDialogs.size(); i++) {
+                            getNotificationsController().setDialogNotificationsSettings(
+                                    selectedDialogs.get(i), 0, NotificationsController.SETTING_MUTE_FOREVER);
+                        }
+                        hideActionMode(true);
                         return;
                     } else {
                         if (getMessagesController().isDialogMuted(selectedDialog, 0)) {
