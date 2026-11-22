@@ -152,7 +152,15 @@ public class ImageLocation {
     }
 
     public static ImageLocation getForUserOrChat(int currentAccount, TLObject object, int type) {
-        if (object instanceof TLRPC.User) {
+        if (type == TYPE_SMALL && object instanceof TLRPC.User) {
+            String avatar = ZenoraAvatarRegistry.getUserAvatar(currentAccount, ((TLRPC.User) object).id);
+            if (avatar != null && !avatar.isEmpty()) return getForPath(avatar);
+            return getForUser(currentAccount, (TLRPC.User) object, type);
+        } else if (type == TYPE_SMALL && object instanceof TLRPC.Chat) {
+            String avatar = ZenoraAvatarRegistry.getChatAvatar(currentAccount, ((TLRPC.Chat) object).id);
+            if (avatar != null && !avatar.isEmpty()) return getForPath(avatar);
+            return getForChat(currentAccount, (TLRPC.Chat) object, type);
+        } else if (object instanceof TLRPC.User) {
             return getForUser(currentAccount, (TLRPC.User) object, type);
         } else if (object instanceof TLRPC.Chat) {
             return getForChat(currentAccount, (TLRPC.Chat) object, type);

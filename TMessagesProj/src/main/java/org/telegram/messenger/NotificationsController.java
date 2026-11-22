@@ -341,6 +341,7 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void muteUntil(long did, long topicId, int selectedTimeInSeconds) {
+        if (ZenoraChatController.handleMuteUntil(currentAccount, did, topicId, selectedTimeInSeconds)) return;
         if (did != 0) {
             SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
             SharedPreferences.Editor editor = preferences.edit();
@@ -6340,6 +6341,7 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void muteDialog(long dialog_id, long topicId, boolean mute) {
+        if (ZenoraChatController.handleMuteDialog(currentAccount, dialog_id, topicId, mute)) return;
         if (mute) {
             NotificationsController.getInstance(currentAccount).muteUntil(dialog_id, topicId, Integer.MAX_VALUE);
         } else {

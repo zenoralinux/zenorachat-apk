@@ -32,6 +32,7 @@ public final class ZenoraChatController {
     private static final Set<Integer> loadingAccounts = new HashSet<>();
     private static final Map<Integer, Integer> retryAttempts = new HashMap<>();
     private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
+    private static final Map<Integer, Map<Long, Long>> dialogRoomIds = new HashMap<>();
     private static final Handler retryHandler = new Handler(Looper.getMainLooper());
     private static final int MAX_AUTOMATIC_RETRIES = 3;
 
@@ -172,6 +173,10 @@ public final class ZenoraChatController {
         }
         if (self == null) throw new IllegalStateException("ZenoraChat profile is missing");
 
+        synchronized (loadLock) {
+            dialogRoomIds.put(account, new HashMap<>());
+        }
+        ZenoraAvatarRegistry.beginSnapshot(account);
         controller.dialogs_dict.clear();
         controller.dialogMessage.clear();
         controller.dialogsByFolder.clear();
@@ -246,6 +251,8 @@ public final class ZenoraChatController {
         } else if (direct) {
             long otherId = row.optLong("other_user_id", 0);
             if (otherId <= 0) return;
+            ZenoraAvatarRegistry.setUserAvatar(account, otherId,
+                    ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
             TLRPC.User other = makeUser(otherId,
                     row.optString("other_username", ""),
                     row.optString("other_display_name", ""), false);
@@ -269,6 +276,8 @@ public final class ZenoraChatController {
             chat.id = roomId;
             chat.title = nonEmpty(row.optString("name", ""), " ");
             chat.photo = new TLRPC.TL_chatPhotoEmpty();
+            ZenoraAvatarRegistry.setChatAvatar(account, roomId,
+                    ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
             chat.date = parseDate(row.optString("last_message_time", ""));
             chat.participants_count = row.optInt("member_count", 0);
             controller.putChat(chat, false);
@@ -301,8 +310,13 @@ public final class ZenoraChatController {
         dialog.last_message_date = date;
         dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
 
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.computeIfAbsent(account, ignored -> new HashMap<>());
+            mappings.put(dialogId, roomId);
+        }
         controller.dialogs_dict.put(dialogId, dialog);
         controller.allDialogs.add(dialog);
+        applyDialogMuteSnapshot(account, dialogId, row);
 
         if (messageId > 0) {
             TLRPC.TL_message message = new TLRPC.TL_message();
@@ -312,17 +326,30 @@ public final class ZenoraChatController {
             message.dialog_id = dialogId;
             message.message = messagePreview(row);
             message.media = new TLRPC.TL_messageMediaEmpty();
-            String sender = row.optString("last_message_sender_username", "");
-            message.out = !TextUtils.isEmpty(self.username) && self.username.equalsIgnoreCase(sender);
+            long senderId = row.optLong("last_message_sender_user_id", 0);
+            String senderUsername = row.optString("last_message_sender_username", "");
+            if (senderId <= 0 && !TextUtils.isEmpty(self.username)
+                    && self.username.equalsIgnoreCase(senderUsername)) senderId = self.id;
+            if (senderId <= 0 && direct) senderId = row.optLong("other_user_id", 0);
+            message.out = senderId > 0 ? senderId == self.id
+                    : (!TextUtils.isEmpty(self.username) && self.username.equalsIgnoreCase(senderUsername));
             if (message.out) {
                 message.flags |= 1 << 1;
+                senderId = self.id;
+            }
+            if (senderId > 0) {
+                if (senderId == self.id) {
+                    controller.putUser(self, false, true);
+                } else {
+                    String senderName = row.optString("last_message_sender_display_name", "");
+                    String senderAvatar = row.optString("last_message_sender_avatar_url", "");
+                    ZenoraAvatarRegistry.setUserAvatar(account, senderId,
+                            ZenoraApiClient.resolvePublicUrl(senderAvatar));
+                    TLRPC.User senderUser = makeUser(senderId, senderUsername, senderName, false);
+                    if (senderUser != null) controller.putUser(senderUser, false, true);
+                }
                 TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
-                fromPeer.user_id = self.id;
-                message.from_id = fromPeer;
-                message.flags |= 1 << 8;
-            } else if (direct) {
-                TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
-                fromPeer.user_id = row.optLong("other_user_id", 0);
+                fromPeer.user_id = senderId;
                 message.from_id = fromPeer;
                 message.flags |= 1 << 8;
             }
@@ -333,6 +360,67 @@ public final class ZenoraChatController {
             messages.add(object);
             controller.dialogMessage.put(dialogId, messages);
         }
+    }
+
+    private static void applyDialogMuteSnapshot(int account, long dialogId, JSONObject row) {
+        boolean muted = row.optInt("is_muted", 0) == 1;
+        long until = row.optLong("mute_until", 0);
+        TLRPC.TL_peerNotifySettings settings = new TLRPC.TL_peerNotifySettings();
+        settings.flags |= 1 << 2;
+        settings.mute_until = !muted ? 0 : until <= 0
+                ? Integer.MAX_VALUE : (int) Math.min(Integer.MAX_VALUE, until);
+        NotificationsController.getInstance(account).getNotificationsSettingsFacade()
+                .applyDialogNotificationsSettings(dialogId, 0, settings);
+    }
+
+    /** Intercept native Telegram mute-duration actions while Zenora is the active backend. */
+    public static boolean handleMuteUntil(int account, long dialogId, long topicId, int seconds) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
+        return submitMuteAction(account, dialogId, topicId, true,
+                seconds == Integer.MAX_VALUE ? 0 : Math.max(1, seconds));
+    }
+
+    /** Intercept native Telegram mute/unmute toggles while Zenora is the active backend. */
+    public static boolean handleMuteDialog(int account, long dialogId, long topicId, boolean mute) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
+        return submitMuteAction(account, dialogId, topicId, mute, 0);
+    }
+
+    private static boolean submitMuteAction(int account, long dialogId, long topicId,
+                                            boolean muted, int muteSeconds) {
+        if (topicId != 0) {
+            Toast.makeText(ApplicationLoader.applicationContext,
+                    "تنظیم اعلان موضوع‌ها هنوز در زنوراچت پشتیبانی نمی‌شود.", Toast.LENGTH_LONG).show();
+            return true;
+        }
+        Long roomId = null;
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            if (mappings != null) roomId = mappings.get(dialogId);
+        }
+        if (roomId == null || roomId <= 0) {
+            Toast.makeText(ApplicationLoader.applicationContext,
+                    "شناسه گفتگوی زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.", Toast.LENGTH_LONG).show();
+            return true;
+        }
+        ZenoraApiClient.setChatMute(roomId, muted, muteSeconds, (response, error) -> {
+            if (error != null) {
+                FileLog.e(error);
+                Toast.makeText(ApplicationLoader.applicationContext,
+                        "ذخیره وضعیت بی‌صدا در زنوراچت ناموفق بود.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            TLRPC.TL_peerNotifySettings settings = new TLRPC.TL_peerNotifySettings();
+            settings.flags |= 1 << 2;
+            settings.mute_until = !muted ? 0 : muteSeconds <= 0
+                    ? Integer.MAX_VALUE
+                    : (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() / 1000L + muteSeconds);
+            NotificationsController.getInstance(account).getNotificationsSettingsFacade()
+                    .applyDialogNotificationsSettings(dialogId, 0, settings);
+            NotificationCenter.getInstance(account)
+                    .postNotificationName(NotificationCenter.dialogsNeedReload);
+        });
+        return true;
     }
 
     private static TLRPC.User makeUser(long id, String username, String displayName, boolean self) {

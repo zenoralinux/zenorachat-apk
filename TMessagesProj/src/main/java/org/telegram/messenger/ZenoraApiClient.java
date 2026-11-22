@@ -23,7 +23,8 @@ import java.util.concurrent.Executors;
 
 /** Cookie-backed transport for the ZenoraChat PHP API. */
 public final class ZenoraApiClient {
-    private static final String API_BASE = "https://miladalizadw.ir/telegram/api/";
+    private static final String SITE_BASE = "https://miladalizadw.ir/telegram/";
+    private static final String API_BASE = SITE_BASE + "api/";
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -143,7 +144,39 @@ public final class ZenoraApiClient {
                     throw new IllegalStateException("The server did not issue a ZenoraChat session cookie.");
                 }
                 enableSession(me);
+                String csrfToken = result.optString("csrf", "");
+                if (csrfToken.isEmpty()) throw new IllegalStateException("Authenticated CSRF token missing");
+                prefs().edit().putString("csrf", csrfToken).commit();
                 dispatch(callback, result, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    public static String resolvePublicUrl(String path) {
+        if (path == null) return "";
+        String value = path.trim();
+        if (value.isEmpty()) return "";
+        if (value.startsWith("https://") || value.startsWith("http://")) return value;
+        while (value.startsWith("/")) value = value.substring(1);
+        return SITE_BASE + value;
+    }
+
+    /** Change per-user mute state using Zenora PHP, without any MTProto request. */
+    public static void setChatMute(long roomId, boolean muted, int muteSeconds, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
+                String csrf = prefs().getString("csrf", "");
+                if (csrf.isEmpty()) throw new IllegalStateException("Authenticated CSRF token missing");
+                String action = muted ? "mute" : "unmute";
+                String form = "room_ids=" + encode("[" + roomId + "]")
+                        + "&action=" + encode(action)
+                        + "&mute_seconds=" + encode(String.valueOf(Math.max(0, muteSeconds)))
+                        + "&csrf=" + encode(csrf);
+                JSONObject response = request("chat_bulk_action.php", "POST", form);
+                dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
             }
