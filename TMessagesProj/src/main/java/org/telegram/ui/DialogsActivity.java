@@ -2473,7 +2473,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             DialogCell dialogCell = (DialogCell) target.itemView;
             long dialogId = dialogCell.getDialogId();
             TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(dialogId);
-            if (dialog == null || !isDialogPinned(dialog) || DialogObject.isFolderDialogId(dialogId)) {
+            if (dialog == null || !isDialogPinned(dialog) || DialogObject.isFolderDialogId(dialogId)
+                    || ZenoraChatController.isZenoraEnabled()
+                    && (parentPage.dialogsAdapter.getDialogsType() == 7 || parentPage.dialogsAdapter.getDialogsType() == 8)) {
                 return false;
             }
             int fromIndex = source.getAdapterPosition();
@@ -8715,6 +8717,35 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             unpinItem.setOnClickListener(e -> {
                 finishPreviewFragment();
                 AndroidUtilities.runOnUIThread(() -> {
+                    if (ZenoraChatController.isZenoraEnabled()) {
+                        if (filter != null) {
+                            android.widget.Toast.makeText(getParentActivity(),
+                                    "سنجاق گفتگو در پوشه‌های سفارشی تلگرام برای حساب زنورا پشتیبانی نمی‌شود.",
+                                    android.widget.Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        final boolean pinOnServer = !isDialogPinned(dialog);
+                        ArrayList<Long> zenoraPinIds = new ArrayList<>();
+                        zenoraPinIds.add(dialogId);
+                        ZenoraChatController.setDialogsPinned(currentAccount, zenoraPinIds, pinOnServer,
+                                (success, errorMessage) -> {
+                                    if (!success) {
+                                        if (getParentActivity() != null) {
+                                            android.widget.Toast.makeText(getParentActivity(),
+                                                    errorMessage == null ? "تغییر وضعیت سنجاق ناموفق بود." : errorMessage,
+                                                    android.widget.Toast.LENGTH_LONG).show();
+                                        }
+                                        return;
+                                    }
+                                    UndoView zenoraUndo = getUndoView();
+                                    if (zenoraUndo != null) {
+                                        zenoraUndo.showWithAction(0,
+                                                pinOnServer ? UndoView.ACTION_PIN_DIALOGS : UndoView.ACTION_UNPIN_DIALOGS,
+                                                1, 1600, null, null);
+                                    }
+                                });
+                        return;
+                    }
                     int minPinnedNum = Integer.MAX_VALUE;
                     if (filter != null && isDialogPinned(dialog)) {
                         for (int c = 0, N = filter.pinnedDialogs.size(); c < N; c++) {
@@ -9086,7 +9117,27 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             movingDialogFilters.clear();
         }
         if (movingWas) {
-            getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+            if (ZenoraChatController.isZenoraEnabled()) {
+                ArrayList<Long> orderedPinnedDialogIds = new ArrayList<>();
+                ArrayList<TLRPC.Dialog> currentDialogs = getDialogsArray(
+                        currentAccount, viewPages[0].dialogsType, folderId, false);
+                // Preserve the actual visual order produced by DialogsAdapter.moveDialogs.
+                for (TLRPC.Dialog dialog : currentDialogs) {
+                    if (dialog != null && dialog.pinned) {
+                        orderedPinnedDialogIds.add(dialog.id);
+                    }
+                }
+                ZenoraChatController.reorderPinnedDialogs(currentAccount, orderedPinnedDialogIds,
+                        (success, errorMessage) -> {
+                            if (!success && getParentActivity() != null) {
+                                android.widget.Toast.makeText(getParentActivity(),
+                                        errorMessage == null ? "ذخیره ترتیب گفتگوهای سنجاق‌شده ناموفق بود." : errorMessage,
+                                        android.widget.Toast.LENGTH_LONG).show();
+                            }
+                        });
+            } else {
+                getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+            }
             movingWas = false;
         }
         updateCounters(true);
@@ -9154,6 +9205,47 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             filter = null;
         }
         int count = selectedDialogs.size();
+        if (ZenoraChatController.isZenoraEnabled() && (action == pin || action == pin2)) {
+            if (filter != null || viewPages != null
+                    && (viewPages[0].dialogsType == 7 || viewPages[0].dialogsType == 8)) {
+                android.widget.Toast.makeText(getParentActivity(),
+                        "سنجاق گفتگو در پوشه‌های سفارشی تلگرام برای حساب زنورا پشتیبانی نمی‌شود.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            final boolean pinOnServer = canPinCount != 0;
+            ArrayList<Long> zenoraPinIds = new ArrayList<>();
+            for (Long selectedDialog : selectedDialogs) {
+                TLRPC.Dialog selected = getMessagesController().dialogs_dict.get(selectedDialog);
+                if (selected != null && (pinOnServer ? !isDialogPinned(selected) : isDialogPinned(selected))) {
+                    zenoraPinIds.add(selectedDialog);
+                }
+            }
+            if (zenoraPinIds.isEmpty()) {
+                hideActionMode(false);
+                return;
+            }
+            final int changedCount = zenoraPinIds.size();
+            ZenoraChatController.setDialogsPinned(currentAccount, zenoraPinIds, pinOnServer,
+                    (success, errorMessage) -> {
+                        if (!success) {
+                            if (getParentActivity() != null) {
+                                android.widget.Toast.makeText(getParentActivity(),
+                                        errorMessage == null ? "تغییر وضعیت سنجاق ناموفق بود." : errorMessage,
+                                        android.widget.Toast.LENGTH_LONG).show();
+                            }
+                            return;
+                        }
+                        hideActionMode(false);
+                        UndoView undoView = getUndoView();
+                        if (searchIsShowed && undoView != null) {
+                            undoView.showWithAction(0,
+                                    pinOnServer ? UndoView.ACTION_PIN_DIALOGS : UndoView.ACTION_UNPIN_DIALOGS,
+                                    changedCount);
+                        }
+                    });
+            return;
+        }
         int pinnedActionCount = 0;
         if (action == archive || action == archive2) {
             ArrayList<Long> copy = new ArrayList<>(selectedDialogs);
