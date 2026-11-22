@@ -217,6 +217,7 @@ public final class ZenoraChatController {
                 retryAttempts.remove(account);
                 snapshotUserIds.remove(account);
                 dialogRoomIds.remove(account);
+                muteStateSignaturesByAccount.remove(account);
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
@@ -1355,6 +1356,10 @@ public final class ZenoraChatController {
         long until = response.optLong("mute_until", 0);
         long serverTime = response.optLong("server_time", 0);
         int localUntil = toLocalMuteUntil("muted".equals(mode), until, serverTime, account);
+        if ("muted".equals(mode) && until > 0 && localUntil <= 0) {
+            mode = "inherit";
+            localUntil = 0;
+        }
         rememberMuteSignature(account, dialogId, muteSignature(mode, localUntil));
         NotificationsController.getInstance(account).getNotificationsSettingsFacade()
                 .applyZenoraMuteState(dialogId, localUntil, mode);
