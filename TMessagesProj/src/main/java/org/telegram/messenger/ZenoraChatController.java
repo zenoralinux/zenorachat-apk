@@ -1162,11 +1162,21 @@ public final class ZenoraChatController {
         else snapshot.avatars.put(key, url.trim());
     }
 
-    /** Intercept native Telegram mute-duration actions while Zenora is the active backend. */
+    /**
+     * Intercept all native notification-setting menu actions for Zenora.
+     * Timed values are intentionally normalized to a permanent mute; unmute
+     * remains an explicit per-chat override removal on the server.
+     */
+    public static boolean handleMuteSetting(int account, long dialogId, long topicId, int setting) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
+        boolean muted = setting != NotificationsController.SETTING_MUTE_UNMUTE;
+        return submitMuteAction(account, dialogId, topicId, muted, 0);
+    }
+
+    /** Intercept legacy duration calls defensively: every Zenora mute is permanent. */
     public static boolean handleMuteUntil(int account, long dialogId, long topicId, int seconds) {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return false;
-        return submitMuteAction(account, dialogId, topicId, true,
-                seconds == Integer.MAX_VALUE ? 0 : Math.max(1, seconds));
+        return submitMuteAction(account, dialogId, topicId, true, 0);
     }
 
     /** Intercept native Telegram mute/unmute toggles while Zenora is the active backend. */
@@ -1192,7 +1202,10 @@ public final class ZenoraChatController {
                     "شناسه گفتگوی زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.", Toast.LENGTH_LONG).show();
             return true;
         }
-        ZenoraApiClient.setChatMute(roomId, muted, muteSeconds, (response, error) -> {
+        // Do not accept timed mutes from legacy callers; Zenora Android uses
+        // permanent mute/unmute only. The PHP endpoint remains backward-compatible
+        // for other clients such as the web app.
+        ZenoraApiClient.setChatMute(roomId, muted, 0, (response, error) -> {
             if (error != null) {
                 FileLog.e(error);
                 Toast.makeText(ApplicationLoader.applicationContext,
@@ -1205,9 +1218,9 @@ public final class ZenoraChatController {
             settings.flags |= 1 << 2;
             settings.mute_until = toLocalMuteUntil(muted, serverMuteUntil, serverTime);
             NotificationsController.getInstance(account).getNotificationsSettingsFacade()
-                    .applyZenoraMuteState(dialogId, settings.mute_until);
-            NotificationCenter.getInstance(account)
-                    .postNotificationName(NotificationCenter.dialogsNeedReload);
+                    .applyZenoraMuteState(dialogId, settings.mute_until, () ->
+                            NotificationCenter.getInstance(account)
+                                    .postNotificationName(NotificationCenter.dialogsNeedReload));
         });
         return true;
     }
