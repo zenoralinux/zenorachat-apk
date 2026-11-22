@@ -139,6 +139,7 @@ import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.TopicsController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
@@ -403,7 +404,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 return;
             }
             ZenoraApiClient.clearSession();
-            UserConfig.getInstance(activity.currentAccount).clearConfig();
+            // Do not call UserConfig.clearConfig(): it triggers Telegram's global
+            // logout transition and incorrectly displays Telegram's IntroActivity.
+            // The old local user object is replaced after the next Zenora sign-in.
             DialogsActivity.resetZenoraLoadState(activity.currentAccount);
             INavigationLayout layout = activity.getActionBarLayout();
             if (layout != null) {
@@ -440,6 +443,10 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         ApplicationLoader.postInitApplication();
         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
         currentAccount = UserConfig.selectedAccount;
+        if (ZenoraApiClient.isZenoraSessionEnabled()
+                && !UserConfig.getInstance(currentAccount).isClientActivated()) {
+            ZenoraChatController.restoreAccount(currentAccount);
+        }
         // This build uses ZenoraChat identities instead of Telegram MTProto accounts.
         // Clear a pre-existing Telegram identity once before showing the Zenora login.
         if (!ZenoraApiClient.isZenoraSessionEnabled()
@@ -7449,6 +7456,19 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     @SuppressWarnings("unchecked")
     public void didReceivedNotification(int id, final int account, Object... args) {
         if (id == NotificationCenter.appDidLogout) {
+            if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                // MTProto authorization can expire independently of the Zenora API.
+                // Restore the local account and re-fetch its dialogs instead of
+                // converting an unrelated Telegram logout into a Zenora logout.
+                ZenoraChatController.restoreAccount(account);
+                DialogsActivity.resetZenoraLoadState(account);
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                        DialogsActivity.loadDialogs(AccountInstance.getInstance(account));
+                    }
+                });
+                return;
+            }
             switchToAvailableAccountOrLogout();
         } else if (id == NotificationCenter.openBoostForUsersDialog) {
             long dialogId = (long) args[0];

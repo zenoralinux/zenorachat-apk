@@ -166,6 +166,8 @@ import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
@@ -2127,33 +2129,43 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 return false;
             }
 
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.contactsDidLoad);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.newSuggestionsAvailable);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.encryptedChatCreated);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.encryptedChatUpdated);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.blockedUsersDidLoad);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.botInfoDidLoad);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.userInfoDidLoad);
-            getNotificationCenter().addWeakObserver(this, NotificationCenter.privacyRulesUpdated);
-            NotificationCenter.getGlobalInstance().addWeakObserver(this, NotificationCenter.reloadInterface);
+            if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                // This user is authenticated by ZenoraChat, not Telegram MTProto.
+                // Keep the native ProfileActivity layout while avoiding Telegram-only
+                // full-user, bot, sticker, filter and user-info RPCs.
+                userInfo = ZenoraChatController.createLocalUserFull(user);
+                userBlocked = false;
+                isBot = false;
+                participantsMap = null;
+            } else {
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.contactsDidLoad);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.newSuggestionsAvailable);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.encryptedChatCreated);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.encryptedChatUpdated);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.blockedUsersDidLoad);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.botInfoDidLoad);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.userInfoDidLoad);
+                getNotificationCenter().addWeakObserver(this, NotificationCenter.privacyRulesUpdated);
+                NotificationCenter.getGlobalInstance().addWeakObserver(this, NotificationCenter.reloadInterface);
 
-            userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
-            if (user.bot) {
-                isBot = true;
-                getMediaDataController().loadBotInfo(user.id, user.id, true, classGuid);
-            }
-            userInfo = getMessagesController().getUserFull(userId);
-            getMessagesController().loadFullUser(getMessagesController().getUser(userId), classGuid, true);
-            participantsMap = null;
+                userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
+                if (user.bot) {
+                    isBot = true;
+                    getMediaDataController().loadBotInfo(user.id, user.id, true, classGuid);
+                }
+                userInfo = getMessagesController().getUserFull(userId);
+                getMessagesController().loadFullUser(getMessagesController().getUser(userId), classGuid, true);
+                participantsMap = null;
 
-            if (UserObject.isUserSelf(user)) {
-                imageUpdater = new ImageUpdater(true, ImageUpdater.FOR_TYPE_USER, true);
-                imageUpdater.setOpenWithFrontfaceCamera(true);
-                imageUpdater.parentFragment = this;
-                imageUpdater.setDelegate(this);
-                getMediaDataController().checkFeaturedStickers();
-                getMessagesController().loadSuggestedFilters();
-                getMessagesController().loadUserInfo(getUserConfig().getCurrentUser(), true, classGuid);
+                if (UserObject.isUserSelf(user)) {
+                    imageUpdater = new ImageUpdater(true, ImageUpdater.FOR_TYPE_USER, true);
+                    imageUpdater.setOpenWithFrontfaceCamera(true);
+                    imageUpdater.parentFragment = this;
+                    imageUpdater.setDelegate(this);
+                    getMediaDataController().checkFeaturedStickers();
+                    getMessagesController().loadSuggestedFilters();
+                    getMessagesController().loadUserInfo(getUserConfig().getCurrentUser(), true, classGuid);
+                }
             }
             actionBarAnimationColorFrom = arguments.getInt("actionBarColor", 0);
         } else if (chatId != 0) {

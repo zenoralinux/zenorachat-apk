@@ -10563,7 +10563,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             updateStatus(UserConfig.getInstance(account).getCurrentUser(), true);
         } else if (id == NotificationCenter.appDidLogout) {
-            dialogsLoaded[currentAccount] = false;
+            if (ZenoraChatController.isZenoraEnabled()) {
+                ZenoraChatController.restoreAccount(currentAccount);
+                dialogsLoaded[currentAccount] = false;
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (ZenoraChatController.isZenoraEnabled()) {
+                        loadDialogs(getAccountInstance());
+                    }
+                });
+            } else {
+                dialogsLoaded[currentAccount] = false;
+            }
         } else if (id == NotificationCenter.encryptedChatUpdated) {
             updateVisibleRows(0);
         } else if (id == NotificationCenter.contactsDidLoad) {
