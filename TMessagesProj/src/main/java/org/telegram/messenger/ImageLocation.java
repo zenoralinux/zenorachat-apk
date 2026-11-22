@@ -1,5 +1,7 @@
 package org.telegram.messenger;
 
+import android.text.TextUtils;
+
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.Theme;
