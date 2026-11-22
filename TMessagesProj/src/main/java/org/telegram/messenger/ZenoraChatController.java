@@ -775,16 +775,14 @@ public final class ZenoraChatController {
         long dialogId;
         TLRPC.Peer peer;
         if (saved) {
-            TLRPC.TL_chat savedChat = new TLRPC.TL_chat();
-            savedChat.id = roomId;
-            savedChat.title = nonEmpty(row.optString("name", ""), "پیام‌های ذخیره‌شده");
-            savedChat.photo = new TLRPC.TL_chatPhotoEmpty();
-            savedChat.date = parseDate(row.optString("last_message_time", ""));
-            snapshot.chats.put(savedChat.id, savedChat);
-            TLRPC.TL_peerChat savedPeer = new TLRPC.TL_peerChat();
-            savedPeer.chat_id = roomId;
+            // Saved Messages is Telegram's native self-chat. Keep the Zenora
+            // room mapping separate from the peer identity so native dialogs,
+            // clear-history confirmation, and Saved Messages checks all use
+            // the authenticated self user just like the official client.
+            TLRPC.TL_peerUser savedPeer = new TLRPC.TL_peerUser();
+            savedPeer.user_id = self.id;
             peer = savedPeer;
-            dialogId = -roomId;
+            dialogId = self.id;
         } else if (direct) {
             long otherId = row.optLong("other_user_id", 0);
             if (otherId <= 0) return;
