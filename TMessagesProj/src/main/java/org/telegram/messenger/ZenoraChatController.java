@@ -67,7 +67,7 @@ public final class ZenoraChatController {
                     refreshDialogs(instance);
                 }
             }
-            lifecycleHandler.postDelayed(this, 15_000L);
+            lifecycleHandler.postDelayed(this, 2_000L);
         }
     };
 
@@ -90,7 +90,7 @@ public final class ZenoraChatController {
                         if (!appForeground) {
                             appForeground = true;
                             lifecycleHandler.removeCallbacks(foregroundPoll);
-                            lifecycleHandler.postDelayed(foregroundPoll, 15_000L);
+                            lifecycleHandler.postDelayed(foregroundPoll, 2_000L);
                         }
                     }
                 }
@@ -177,7 +177,7 @@ public final class ZenoraChatController {
             accountInstances.put(account, accountInstance);
             Long lastLoaded = lastSuccessfulLoad.get(account);
             long minimumInterval = visibleDialogsScreens.containsKey(account)
-                    && visibleDialogsScreens.get(account) > 0 ? 15_000L : 30_000L;
+                    && visibleDialogsScreens.get(account) > 0 ? 2_000L : 4_000L;
             if (lastLoaded != null
                     && SystemClock.elapsedRealtime() - lastLoaded < minimumInterval) {
                 return;
@@ -247,7 +247,7 @@ public final class ZenoraChatController {
             if (!force) {
                 Long lastLoaded = lastSuccessfulLoad.get(account);
                 long minimumInterval = visibleDialogsScreens.containsKey(account)
-                        && visibleDialogsScreens.get(account) > 0 ? 15_000L : 30_000L;
+                        && visibleDialogsScreens.get(account) > 0 ? 2_000L : 4_000L;
                 if (lastLoaded != null
                         && SystemClock.elapsedRealtime() - lastLoaded < minimumInterval) {
                     return;
