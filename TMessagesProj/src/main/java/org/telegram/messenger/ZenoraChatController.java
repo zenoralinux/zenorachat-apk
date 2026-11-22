@@ -1075,8 +1075,9 @@ public final class ZenoraChatController {
             return;
         }
         long lastSeenUnix = row.optLong("other_last_seen_unix", 0);
-        if (lastSeenUnix <= 0 || serverTime <= 0) return;
-        long ageSeconds = Math.max(0, serverTime - lastSeenUnix);
+        if (lastSeenUnix <= 0) return;
+        long ageSeconds = row.optLong("last_seen_age_seconds", -1);
+        if (ageSeconds < 0) ageSeconds = serverTime > 0 ? Math.max(0, serverTime - lastSeenUnix) : 0;
         TLRPC.TL_userStatusOffline status = new TLRPC.TL_userStatusOffline();
         status.expires = (int) Math.max(Integer.MIN_VALUE, (long) currentTime - ageSeconds);
         user.status = status;
