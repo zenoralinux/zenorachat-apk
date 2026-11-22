@@ -2908,12 +2908,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+    public static void markZenoraLoadComplete(int account) {
+        if (account >= 0 && account < dialogsLoaded.length) {
+            dialogsLoaded[account] = true;
+        }
+    }
+
     public static void loadDialogs(AccountInstance accountInstance) {
         int currentAccount = accountInstance.getCurrentAccount();
         if (!dialogsLoaded[currentAccount]) {
             if (ZenoraChatController.isZenoraEnabled()) {
                 ZenoraChatController.loadDialogs(accountInstance);
-                dialogsLoaded[currentAccount] = true;
                 return;
             }
             MessagesController messagesController = accountInstance.getMessagesController();
@@ -6954,6 +6959,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onResume() {
         super.onResume();
+        if (ZenoraChatController.isZenoraEnabled() && !onlySelect && folderId == 0 && communityId == 0) {
+            ZenoraChatController.refreshDialogs(AccountInstance.getInstance(currentAccount));
+        }
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
         }
@@ -7746,6 +7754,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
     private void checkListLoad(ViewPage viewPage, int firstVisibleItem, int lastVisibleItem) {
         if (tabsAnimationInProgress || startedTracking || filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isAnimatingIndicator()) {
+            return;
+        }
+        // The Zenora API returns a complete list; do not invoke Telegram's MTProto pagination.
+        if (ZenoraChatController.isZenoraEnabled()) {
             return;
         }
         int visibleItemCount = Math.abs(lastVisibleItem - firstVisibleItem) + 1;

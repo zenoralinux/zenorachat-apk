@@ -2,6 +2,7 @@ package org.telegram.messenger;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.widget.Toast;
 
@@ -30,6 +31,7 @@ public final class ZenoraChatController {
     private static final Object loadLock = new Object();
     private static final Set<Integer> loadingAccounts = new HashSet<>();
     private static final Map<Integer, Integer> retryAttempts = new HashMap<>();
+    private static final Map<Integer, Long> lastSuccessfulLoad = new HashMap<>();
     private static final Handler retryHandler = new Handler(Looper.getMainLooper());
     private static final int MAX_AUTOMATIC_RETRIES = 3;
 
@@ -66,6 +68,7 @@ public final class ZenoraChatController {
                         && ((ZenoraApiClient.ApiException) error).statusCode == 401) {
                     synchronized (loadLock) {
                         retryAttempts.remove(account);
+                        lastSuccessfulLoad.remove(account);
                     }
                     DialogsActivity.resetZenoraLoadState(account);
                     ZenoraApiClient.clearSession();
@@ -83,7 +86,9 @@ public final class ZenoraChatController {
                 applyRooms(accountInstance, response);
                 synchronized (loadLock) {
                     retryAttempts.remove(account);
+                    lastSuccessfulLoad.put(account, SystemClock.elapsedRealtime());
                 }
+                DialogsActivity.markZenoraLoadComplete(account);
             } catch (Exception e) {
                 FileLog.e(e);
                 DialogsActivity.resetZenoraLoadState(account);
@@ -93,6 +98,19 @@ public final class ZenoraChatController {
                 scheduleRetry(accountInstance);
             }
         });
+    }
+
+    public static void refreshDialogs(AccountInstance accountInstance) {
+        if (accountInstance == null) return;
+        int account = accountInstance.getCurrentAccount();
+        synchronized (loadLock) {
+            Long lastLoaded = lastSuccessfulLoad.get(account);
+            if (lastLoaded != null
+                    && SystemClock.elapsedRealtime() - lastLoaded < 30_000L) {
+                return;
+            }
+        }
+        loadDialogs(accountInstance);
     }
 
     private static void scheduleRetry(AccountInstance accountInstance) {
