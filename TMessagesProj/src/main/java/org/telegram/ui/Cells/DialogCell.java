@@ -2376,7 +2376,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         }
 
         nameAdditionalsForChannelSubscriber = 0;
-        final boolean reserveMuteSlot = (dialogMuted || isHiddenInCommunity || drawUnmute || dialogMutedProgress > 0) && !drawVerified && drawScam == 0;
+        final boolean reserveMuteSlot = (dialogMuted || isHiddenInCommunity || drawUnmute || dialogMutedProgress > 0) && drawScam == 0;
         if (drawPremium && emojiStatus.getDrawable() != null) {
             int w = dp(6 + 24 + 6);
             if (reserveMuteSlot) {
@@ -2389,6 +2389,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             }
         } else if (reserveMuteSlot) {
             int w = dp(6) + Theme.dialogs_muteDrawable.getIntrinsicWidth();
+            if (drawVerified) {
+                w += dp(6) + Theme.dialogs_verifiedDrawable.getIntrinsicWidth();
+            }
             if (drawPremium) {
                 w += dp(6 + 24 + 6);
             }
@@ -2867,7 +2870,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 if (nameLayoutEllipsizeByGradient) {
                     widthpx = Math.min(nameWidth, widthpx);
                 }
-                if ((dialogMuted || drawUnmute || dialogMutedProgress > 0) && !drawVerified && drawScam == 0) {
+                if ((dialogMuted || drawUnmute || dialogMutedProgress > 0) && drawScam == 0) {
                     if (drawPremium) {
                         nameMuteLeft = (int) (nameLeft + (nameWidth - widthpx - left) - dp(24));
                         nameMutedIconLeft = nameMuteLeft - dp(6) - Theme.dialogs_muteDrawable.getIntrinsicWidth();
@@ -2876,6 +2879,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                     }
                 } else if (drawVerified) {
                     nameMuteLeft = (int) (nameLeft + (nameWidth - widthpx) - dp(6) - Theme.dialogs_verifiedDrawable.getIntrinsicWidth());
+                    if (dialogMuted || drawUnmute || dialogMutedProgress > 0) {
+                        nameMutedIconLeft = nameMuteLeft - dp(6) - Theme.dialogs_muteDrawable.getIntrinsicWidth();
+                    }
                 } else if (drawPremium) {
                     nameMuteLeft = (int) (nameLeft + (nameWidth - widthpx - left) - dp(24));
                     nameMutedIconLeft = nameMuteLeft - dp(6) - Theme.dialogs_muteDrawable.getIntrinsicWidth();
@@ -2969,6 +2975,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 }
                 if ((dialogMuted || true) || drawUnmute || drawVerified || drawPremium || drawScam != 0) {
                     nameMuteLeft = (int) (nameLeft + left + dp(6));
+                    if (drawVerified && (dialogMuted || drawUnmute || dialogMutedProgress > 0)) {
+                        nameMutedIconLeft = nameMuteLeft + Theme.dialogs_verifiedDrawable.getIntrinsicWidth() + dp(6);
+                    }
                     if (drawPremium) {
                         nameMutedIconLeft = nameMuteLeft + dp(24 + 6);
                     }
@@ -4487,7 +4496,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 }
             }
             boolean drawMuted = drawUnmute || dialogMuted || isHiddenInCommunity;
-            if (dialogsType != 2 && (drawMuted || dialogMutedProgress > 0) && !drawVerified && drawScam == 0) {
+            if (dialogsType != 2 && (drawMuted || dialogMutedProgress > 0) && drawScam == 0) {
                 if (drawMuted && dialogMutedProgress != 1f) {
                     dialogMutedProgress += 16 / 150f;
                     if (dialogMutedProgress > 1f) {
@@ -4503,7 +4512,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                         invalidate();
                     }
                 }
-                int muteAnchor = drawPremium ? nameMutedIconLeft : nameMuteLeft;
+                int muteAnchor = drawPremium || drawVerified ? nameMutedIconLeft : nameMuteLeft;
                 float muteX = muteAnchor - dp(useForceThreeLines || SharedConfig.useThreeLinesLayout ? 0 : 1);
                 float muteY = dp(SharedConfig.useThreeLinesLayout ? 13.5f : 17.5f);
                 if ((!(useForceThreeLines || SharedConfig.useThreeLinesLayout) || isForumCell()) && hasTags()) {
