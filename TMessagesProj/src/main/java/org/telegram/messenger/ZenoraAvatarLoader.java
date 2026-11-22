@@ -35,6 +35,24 @@ public final class ZenoraAvatarLoader {
     private static final Object lock = new Object();
     private static final Set<String> inFlight = new HashSet<>();
     private static final Map<String, String> activeUrls = new HashMap<>();
+    private static final Map<String, java.util.ArrayList<PendingAvatar>> pendingAvatars = new HashMap<>();
+
+    private static final class PendingAvatar {
+        final int account;
+        final String kind;
+        final long id;
+        final String key;
+        final TLRPC.TL_fileLocationToBeDeprecated location;
+
+        PendingAvatar(int account, String kind, long id, String key,
+                      TLRPC.TL_fileLocationToBeDeprecated location) {
+            this.account = account;
+            this.kind = kind;
+            this.id = id;
+            this.key = key;
+            this.location = location;
+        }
+    }
 
     private ZenoraAvatarLoader() {
     }
@@ -47,6 +65,7 @@ public final class ZenoraAvatarLoader {
             synchronized (lock) {
                 activeUrls.remove(key);
             }
+            user.photo = new TLRPC.TL_userProfilePhotoEmpty();
             return;
         }
 
@@ -62,6 +81,7 @@ public final class ZenoraAvatarLoader {
             return;
         }
 
+        user.photo = new TLRPC.TL_userProfilePhotoEmpty();
         enqueueDownload(account, "u", user.id, key, url, location);
     }
 
@@ -73,6 +93,7 @@ public final class ZenoraAvatarLoader {
             synchronized (lock) {
                 activeUrls.remove(key);
             }
+            chat.photo = new TLRPC.TL_chatPhotoEmpty();
             return;
         }
 
@@ -88,54 +109,64 @@ public final class ZenoraAvatarLoader {
             return;
         }
 
+        chat.photo = new TLRPC.TL_chatPhotoEmpty();
         enqueueDownload(account, "c", chat.id, key, url, location);
     }
 
     private static void enqueueDownload(int account, String kind, long id, String key,
                                         String url, TLRPC.TL_fileLocationToBeDeprecated location) {
+        boolean startDownload = false;
         synchronized (lock) {
-            if (!inFlight.add(url)) return;
+            java.util.ArrayList<PendingAvatar> pending = pendingAvatars.get(url);
+            if (pending == null) {
+                pending = new java.util.ArrayList<>();
+                pendingAvatars.put(url, pending);
+            }
+            pending.add(new PendingAvatar(account, kind, id, key, location));
+            if (inFlight.add(url)) startDownload = true;
         }
+        if (!startDownload) return;
+
         executor.execute(() -> {
             boolean downloaded = false;
             try {
                 File target = FileLoader.getInstance(account).getPathToAttach(location, true);
-                if (isValidCachedImage(target)) {
-                    downloaded = true;
-                } else {
-                    downloaded = downloadToCache(url, target);
-                }
+                downloaded = isValidCachedImage(target) || downloadToCache(url, target);
             } catch (Throwable error) {
-                FileLog.w("[ZenoraChat] avatar cache failed for " + kind + ":" + id + " (" + error.getClass().getSimpleName() + ")");
-            } finally {
-                synchronized (lock) {
-                    inFlight.remove(url);
-                }
+                FileLog.w("[ZenoraChat] avatar cache failed (" + error.getClass().getSimpleName() + ")");
             }
 
-            if (!downloaded) return;
-            AndroidUtilities.runOnUIThread(() -> {
-                synchronized (lock) {
-                    if (!url.equals(activeUrls.get(key))) return;
-                }
+            java.util.ArrayList<PendingAvatar> completed;
+            synchronized (lock) {
+                inFlight.remove(url);
+                completed = pendingAvatars.remove(url);
+            }
+            if (!downloaded || completed == null) return;
 
-                MessagesController controller = MessagesController.getInstance(account);
-                if ("u".equals(kind)) {
-                    TLRPC.User current = controller.getUsers().get((int) id);
-                    if (current == null) return;
-                    current.photo = makeUserPhoto(location);
-                    ensureUserAccessHash(current, location);
-                    controller.putUser(current, false, true);
-                } else {
-                    TLRPC.Chat current = controller.getChats().get((int) id);
-                    if (current == null) return;
-                    current.photo = makeChatPhoto(location);
-                    ensureChatAccessHash(current, location);
-                    controller.putChat(current, false);
-                }
-                NotificationCenter.getInstance(account)
-                        .postNotificationName(NotificationCenter.dialogsNeedReload);
-            });
+            for (PendingAvatar item : completed) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    synchronized (lock) {
+                        if (!url.equals(activeUrls.get(item.key))) return;
+                    }
+
+                    MessagesController controller = MessagesController.getInstance(item.account);
+                    if ("u".equals(item.kind)) {
+                        TLRPC.User current = controller.getUsers().get((int) item.id);
+                        if (current == null) return;
+                        current.photo = makeUserPhoto(item.location);
+                        ensureUserAccessHash(current, item.location);
+                        controller.putUser(current, false, true);
+                    } else {
+                        TLRPC.Chat current = controller.getChats().get((int) item.id);
+                        if (current == null) return;
+                        current.photo = makeChatPhoto(item.location);
+                        ensureChatAccessHash(current, item.location);
+                        controller.putChat(current, false);
+                    }
+                    NotificationCenter.getInstance(item.account)
+                            .postNotificationName(NotificationCenter.dialogsNeedReload);
+                });
+            }
         });
     }
 
@@ -154,7 +185,7 @@ public final class ZenoraAvatarLoader {
 
             int status = connection.getResponseCode();
             if (status != HttpURLConnection.HTTP_OK) return false;
-            long contentLength = connection.getContentLengthLong();
+            long contentLength = connection.getContentLength();
             if (contentLength > MAX_AVATAR_BYTES) return false;
 
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
