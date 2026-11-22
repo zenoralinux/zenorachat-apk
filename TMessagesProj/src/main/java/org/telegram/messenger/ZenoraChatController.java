@@ -253,7 +253,7 @@ public final class ZenoraChatController {
             if (other == null) return;
             applyUserMetadata(other, row.optInt("is_verified", 0) == 1,
                     row.optInt("is_bot", 0) == 1, row.optInt("is_online", 0) == 1,
-                    row.optString("last_seen_at", row.optString("other_last_seen_at", "")));
+                    row.optString("last_seen_timestamp", row.optString("last_seen_at", row.optString("other_last_seen_at", ""))));
             controller.putUser(other, false, true);
             ZenoraAvatarLoader.applyUserAvatar(account, other, row.optString("avatar_path", ""));
             TLRPC.TL_peerUser userPeer = new TLRPC.TL_peerUser();
