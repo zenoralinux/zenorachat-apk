@@ -786,6 +786,8 @@ public final class ZenoraChatController {
         final Set<Long> presenceUserIds = new HashSet<>();
         long serverTime;
         boolean applyEphemeralState;
+        boolean typingDmEnabled = true;
+        boolean typingGroupEnabled = true;
         final HashMap<String, String> avatars = new HashMap<>();
         final ArrayList<TLRPC.Dialog> allDialogs = new ArrayList<>();
         final ArrayList<TLRPC.Dialog> mainDialogs = new ArrayList<>();
@@ -828,6 +830,8 @@ public final class ZenoraChatController {
         DialogSnapshot snapshot = new DialogSnapshot();
         snapshot.serverTime = response.optLong("server_time", 0);
         snapshot.applyEphemeralState = !response.optBoolean("_zenora_cache_restore", false);
+        snapshot.typingDmEnabled = response.optBoolean("typing_dm_enabled", true);
+        snapshot.typingGroupEnabled = response.optBoolean("typing_group_enabled", true);
         snapshot.users.put(self.id, self);
         for (int i = 0; i < rooms.length(); i++) {
             addDialog(account, snapshot, self, rooms.getJSONObject(i), false);
@@ -1080,7 +1084,9 @@ public final class ZenoraChatController {
             messages.add(message);
             snapshot.messages.put(dialogId, messages);
         }
-        boolean typingSupported = !saved && !channel && (direct || "group".equals(type));
+        boolean typingSupported = !saved && !channel
+                && ((direct && snapshot.typingDmEnabled)
+                || ("group".equals(type) && snapshot.typingGroupEnabled));
         if (typingSupported) snapshot.typingDialogIds.add(dialogId);
         addTypingUsers(snapshot, row, dialogId, typingSupported);
     }
