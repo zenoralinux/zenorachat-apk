@@ -9104,6 +9104,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         if (getParentActivity() == null) {
             return;
         }
+        if (ZenoraChatController.isZenoraEnabled()) {
+            performZenoraSelectedDialogsAction(selectedDialogs, action);
+            return;
+        }
         MessagesController.DialogFilter filter;
         boolean containsFilter = (viewPages[0].dialogsType == 7 || viewPages[0].dialogsType == 8) && (!actionBar.isActionModeShowed() || actionBar.isActionModeShowed(null));
         if (containsFilter) {
@@ -9482,7 +9486,73 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         hideActionMode(action != pin2 && action != pin && action != delete);
     }
 
+    private void performZenoraSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action) {
+        if (selectedDialogs == null || selectedDialogs.isEmpty()) {
+            hideActionMode(false);
+            return;
+        }
+
+        String apiAction = null;
+        if (action == archive || action == archive2) {
+            apiAction = canUnarchiveCount > 0 ? "unarchive" : "archive";
+        } else if (action == pin || action == pin2) {
+            apiAction = canPinCount > 0 ? "pin" : "unpin";
+        } else if (action == read) {
+            apiAction = canReadCount > 0 ? "mark_read" : "mark_unread";
+        } else if (action == delete) {
+            apiAction = "delete";
+        } else if (action == mute) {
+            boolean allMuted = true;
+            for (Long dialogId : selectedDialogs) {
+                TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(dialogId);
+                if (dialog == null || dialog.notify_settings == null
+                        || dialog.notify_settings.mute_until <= (int) (System.currentTimeMillis() / 1000L)) {
+                    allMuted = false;
+                    break;
+                }
+            }
+            apiAction = allMuted ? "unmute" : "mute";
+        }
+
+        if (apiAction == null) {
+            Toast.makeText(getParentActivity(),
+                    "این عملیات در مرحله فعلی اتصال زنوراچت هنوز در دسترس نیست.",
+                    Toast.LENGTH_SHORT).show();
+            hideActionMode(false);
+            return;
+        }
+
+        final String operation = apiAction;
+        ZenoraChatController.performBulkAction(operation, selectedDialogs, (response, error) -> {
+            if (error != null) {
+                String message = "عملیات روی گفتگو انجام نشد.";
+                if (error instanceof ZenoraApiClient.ApiException) {
+                    String code = ((ZenoraApiClient.ApiException) error).errorCode;
+                    if ("PIN_LIMIT_REACHED".equals(code)) {
+                        message = "حداکثر سه گفتگو را می‌توانید سنجاق کنید.";
+                    }
+                }
+                Toast.makeText(getParentActivity(), message, Toast.LENGTH_LONG).show();
+                return;
+            }
+            hideActionMode(false);
+            ZenoraChatController.refreshDialogs(getAccountInstance());
+        });
+    }
+
     private void markAsRead(long did) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> ids = new ArrayList<>();
+            ids.add(did);
+            ZenoraChatController.performBulkAction("mark_read", ids, (response, error) -> {
+                if (error != null) {
+                    Toast.makeText(getParentActivity(), "خواندن گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                } else {
+                    ZenoraChatController.refreshDialogs(getAccountInstance());
+                }
+            });
+            return;
+        }
         TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(did);
         if (dialog instanceof TLRPC.TL_dialogCommunity) {
             final ArrayList<TLRPC.Dialog> dialogs = getMessagesController().getDialogsByCommunity(dialog.community_id);
@@ -9534,10 +9604,36 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void markAsUnread(long did) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> ids = new ArrayList<>();
+            ids.add(did);
+            ZenoraChatController.performBulkAction("mark_unread", ids, (response, error) -> {
+                if (error != null) {
+                    Toast.makeText(getParentActivity(), "علامت‌گذاری گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                } else {
+                    ZenoraChatController.refreshDialogs(getAccountInstance());
+                }
+            });
+            return;
+        }
         getMessagesController().markDialogAsUnread(did, null, 0);
     }
 
     private void markDialogsAsRead(ArrayList<TLRPC.Dialog> dialogs) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> ids = new ArrayList<>();
+            for (TLRPC.Dialog dialog : dialogs) {
+                if (dialog != null) ids.add(dialog.id);
+            }
+            ZenoraChatController.performBulkAction("mark_read", ids, (response, error) -> {
+                if (error != null) {
+                    Toast.makeText(getParentActivity(), "خواندن گفتگوها انجام نشد.", Toast.LENGTH_SHORT).show();
+                } else {
+                    ZenoraChatController.refreshDialogs(getAccountInstance());
+                }
+            });
+            return;
+        }
         debugLastUpdateAction = 2;
         int selectedDialogIndex = -1;
 
@@ -9560,6 +9656,24 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void performDeleteOrClearDialogAction(int action, long selectedDialog, TLRPC.Chat chat, boolean isBot, boolean revoke) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            if (action == delete) {
+                ArrayList<Long> ids = new ArrayList<>();
+                ids.add(selectedDialog);
+                ZenoraChatController.performBulkAction("delete", ids, (response, error) -> {
+                    if (error != null) {
+                        Toast.makeText(getParentActivity(), "حذف گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                    } else {
+                        ZenoraChatController.refreshDialogs(getAccountInstance());
+                    }
+                });
+            } else {
+                Toast.makeText(getParentActivity(),
+                        "پاک‌سازی تاریخچه در مرحله بعدی اتصال انجام می‌شود.",
+                        Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
         if (action == clear) {
             getMessagesController().deleteDialog(selectedDialog, 1, revoke);
         } else {
@@ -9584,6 +9698,18 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void pinDialog(long selectedDialog, boolean pin, MessagesController.DialogFilter filter, int minPinnedNum, boolean animated) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> ids = new ArrayList<>();
+            ids.add(selectedDialog);
+            ZenoraChatController.performBulkAction(pin ? "pin" : "unpin", ids, (response, error) -> {
+                if (error != null) {
+                    Toast.makeText(getParentActivity(), "تغییر سنجاق گفتگو انجام نشد.", Toast.LENGTH_SHORT).show();
+                } else {
+                    ZenoraChatController.refreshDialogs(getAccountInstance());
+                }
+            });
+            return;
+        }
 
         int selectedDialogIndex = -1;
         int currentDialogIndex = -1;
