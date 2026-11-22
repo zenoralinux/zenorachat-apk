@@ -9402,11 +9402,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else if ((action == delete || action == clear) && count > 1 && alert) {
             boolean hasDialogsToRevoke = false;
             HashSet<Long> dialogsIdsPossibleToRevoke = new HashSet<>();
+            boolean zenoraDeleteAllAvailable = ZenoraChatController.isZenoraEnabled();
             boolean canRevokePmInbox = MessagesController.getInstance(currentAccount).canRevokePmInbox;
             long revokeTimePmLimit = MessagesController.getInstance(currentAccount).revokeTimePmLimit;
-            if (action == delete && canRevokePmInbox && revokeTimePmLimit == 0x7fffffff) {
+            if (action == delete && (zenoraDeleteAllAvailable
+                    || canRevokePmInbox && revokeTimePmLimit == 0x7fffffff)) {
                 for (Long selectedDialog : selectedDialogs) {
-                    if (DialogObject.isUserDialog(selectedDialog) || DialogObject.isEncryptedDialog(selectedDialog)) {
+                    if (DialogObject.isUserDialog(selectedDialog)
+                            || !zenoraDeleteAllAvailable && DialogObject.isEncryptedDialog(selectedDialog)) {
                         TLRPC.User user = null;
                         if (DialogObject.isEncryptedDialog(selectedDialog)) {
                             TLRPC.EncryptedChat encryptedChat = getMessagesController().getEncryptedChat(DialogObject.getEncryptedChatId(selectedDialog));
@@ -9754,7 +9757,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             ArrayList<Long> deleteIds = new ArrayList<>();
             deleteIds.add(selectedDialog);
             HashSet<Long> revokeIds = new HashSet<>();
-            if (revoke && selectedDialog > 0) {
+            // For bots the native checkbox means "Block Bot", not
+            // "delete for both". Keep the DM delete scope personal.
+            if (revoke && selectedDialog > 0 && !isBot) {
                 revokeIds.add(selectedDialog);
             }
             long blockUserId = isBot && revoke && selectedDialog > 0 ? selectedDialog : 0;

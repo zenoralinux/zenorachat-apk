@@ -101,6 +101,7 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.utils.pip.PipEnvironment;
@@ -2711,14 +2712,19 @@ public class AlertsCreator {
         frameLayout.addView(messageTextView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, (LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.TOP, 24, 49, 24, 1));
 
         final TLRPC.Chat mfChat = ChatObject.isMonoForum(chat) ? fragment.getMessagesController().getMonoForumLinkedChat(chat.id) : null;
-        boolean canRevokeInbox = user != null && !user.bot && user.id != selfUserId && MessagesController.getInstance(account).canRevokePmInbox;
+        boolean zenoraDeleteAllAvailable = ZenoraChatController.isZenoraEnabled();
+        boolean canRevokeInbox = user != null && !user.bot && user.id != selfUserId
+                && (zenoraDeleteAllAvailable || MessagesController.getInstance(account).canRevokePmInbox);
         int revokeTimeLimit;
         if (user != null) {
             revokeTimeLimit = MessagesController.getInstance(account).revokeTimePmLimit;
         } else {
             revokeTimeLimit = MessagesController.getInstance(account).revokeTimeLimit;
         }
-        boolean canDeleteInbox = !secret && user != null && canRevokeInbox && revokeTimeLimit == 0x7fffffff;
+        // Zenora owns the DM history policy. Do not hide the native "also delete
+        // for the other side" checkbox behind Telegram's MTProto revoke window.
+        boolean canDeleteInbox = !secret && user != null && canRevokeInbox
+                && (zenoraDeleteAllAvailable || revokeTimeLimit == 0x7fffffff);
         final boolean[] deleteForAll = new boolean[1];
         boolean deleteChatForAll = false;
 
