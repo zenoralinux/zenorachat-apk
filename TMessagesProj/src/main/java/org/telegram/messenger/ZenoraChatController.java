@@ -275,7 +275,7 @@ public final class ZenoraChatController {
      * has actually marked read after its message-visibility checks.
      */
     public static void markDialogAttentionRead(int account, long dialogId, int maxReadMessageId) {
-        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0 || maxReadMessageId <= 0) return;
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId >= 0 || maxReadMessageId <= 0) return;
         final long roomId;
         synchronized (loadLock) {
             Set<Long> saved = savedDialogIds.get(account);
