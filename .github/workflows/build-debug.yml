@@ -285,7 +285,7 @@ jobs:
           retention-days: 14
 
       - name: Update rolling Debug Preview tag
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122')
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -310,7 +310,7 @@ jobs:
           fi
 
       - name: Publish rolling Debug Preview to GitHub Releases
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122')
+        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122')
         uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ github.ref == 'refs/heads/main' && 'zenora-debug-latest' || (github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' && 'zenora-dialog-sync-cache-20261122' || (github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' && 'zenora-dialog-avatars-mute-sender-20261122' || (github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' && 'zenora-session-rooms-stability-20261122' || 'zenora-login-dialogs-stability-20261122'))) }}
