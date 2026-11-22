@@ -179,6 +179,7 @@ public final class ZenoraChatController {
         controller.getUsers().clear();
         controller.getChats().clear();
         controller.putUser(self, false, true);
+        ZenoraAvatarLoader.applyUserAvatar(account, self, meJson.optString("avatar_path", ""));
 
         for (int i = 0; i < rooms.length(); i++) {
             addDialog(account, controller, self, rooms.getJSONObject(i), false);
@@ -237,7 +238,7 @@ public final class ZenoraChatController {
             savedChat.id = roomId;
             savedChat.title = nonEmpty(row.optString("name", ""), "پیام‌های ذخیره‌شده");
             savedChat.photo = new TLRPC.TL_chatPhotoEmpty();
-            savedChat.date = parseDate(row.optString("last_message_time", ""));
+            savedChat.date = parseDate(row.optString("last_message_timestamp", row.optString("last_message_time", "")));
             controller.putChat(savedChat, false);
             TLRPC.TL_peerChat savedPeer = new TLRPC.TL_peerChat();
             savedPeer.chat_id = roomId;
@@ -250,7 +251,11 @@ public final class ZenoraChatController {
                     row.optString("other_username", ""),
                     row.optString("other_display_name", ""), false);
             if (other == null) return;
+            applyUserMetadata(other, row.optInt("is_verified", 0) == 1,
+                    row.optInt("is_bot", 0) == 1, row.optInt("is_online", 0) == 1,
+                    row.optString("last_seen_at", row.optString("other_last_seen_at", "")));
             controller.putUser(other, false, true);
+            ZenoraAvatarLoader.applyUserAvatar(account, other, row.optString("avatar_path", ""));
             TLRPC.TL_peerUser userPeer = new TLRPC.TL_peerUser();
             userPeer.user_id = otherId;
             peer = userPeer;
@@ -262,6 +267,8 @@ public final class ZenoraChatController {
                 channelChat.broadcast = true;
                 channelChat.megagroup = false;
                 channelChat.flags |= 1 << 5;
+                channelChat.verified = row.optInt("is_verified", 0) == 1;
+                if (channelChat.verified) channelChat.flags |= 1 << 7;
                 chat = channelChat;
             } else {
                 chat = new TLRPC.TL_chat();
@@ -269,9 +276,11 @@ public final class ZenoraChatController {
             chat.id = roomId;
             chat.title = nonEmpty(row.optString("name", ""), " ");
             chat.photo = new TLRPC.TL_chatPhotoEmpty();
-            chat.date = parseDate(row.optString("last_message_time", ""));
+            chat.verified = row.optInt("is_verified", 0) == 1;
+            chat.date = parseDate(row.optString("last_message_timestamp", row.optString("last_message_time", "")));
             chat.participants_count = row.optInt("member_count", 0);
             controller.putChat(chat, false);
+            ZenoraAvatarLoader.applyChatAvatar(account, chat, row.optString("avatar_path", ""));
 
             if (channel) {
                 TLRPC.TL_peerChannel channelPeer = new TLRPC.TL_peerChannel();
@@ -287,7 +296,7 @@ public final class ZenoraChatController {
 
         int messageId = (int) Math.max(0, Math.min(Integer.MAX_VALUE, row.optLong("last_message_id", 0)));
         int readId = (int) Math.max(0, Math.min(Integer.MAX_VALUE, row.optLong("last_read_id", 0)));
-        int date = parseDate(row.optString("last_message_time", ""));
+        int date = parseDate(row.optString("last_message_timestamp", row.optString("last_message_time", "")));
         TLRPC.TL_dialog dialog = new TLRPC.TL_dialog();
         dialog.id = dialogId;
         dialog.peer = peer;
@@ -300,6 +309,10 @@ public final class ZenoraChatController {
         dialog.folder_id = row.optInt("is_archived", 0) == 1 ? 1 : 0;
         dialog.last_message_date = date;
         dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
+        if (row.optInt("is_muted", 0) == 1) {
+            dialog.notify_settings.mute_until = Integer.MAX_VALUE;
+            dialog.notify_settings.flags |= 1 << 2;
+        }
 
         controller.dialogs_dict.put(dialogId, dialog);
         controller.allDialogs.add(dialog);
@@ -312,17 +325,32 @@ public final class ZenoraChatController {
             message.dialog_id = dialogId;
             message.message = messagePreview(row);
             message.media = new TLRPC.TL_messageMediaEmpty();
-            String sender = row.optString("last_message_sender_username", "");
-            message.out = !TextUtils.isEmpty(self.username) && self.username.equalsIgnoreCase(sender);
-            if (message.out) {
-                message.flags |= 1 << 1;
+            long senderId = row.optLong("last_message_sender_id", 0);
+            String senderUsername = row.optString("last_message_sender_username", "");
+            if (senderId <= 0 && !TextUtils.isEmpty(self.username)
+                    && self.username.equalsIgnoreCase(senderUsername)) {
+                senderId = self.id;
+            } else if (senderId <= 0 && direct) {
+                senderId = row.optLong("other_user_id", 0);
+            }
+            message.out = senderId > 0 && senderId == self.id;
+            if (senderId > 0 && senderId != self.id
+                    && controller.getUsers().get((int) senderId) == null) {
+                TLRPC.User senderUser = makeUser(senderId, senderUsername,
+                        row.optString("last_message_sender_display_name", senderUsername), false);
+                if (senderUser != null) {
+                    applyUserMetadata(senderUser,
+                            row.optInt("last_message_sender_is_verified", 0) == 1,
+                            row.optInt("last_message_sender_is_bot", 0) == 1, false, "");
+                    controller.putUser(senderUser, false, true);
+                    ZenoraAvatarLoader.applyUserAvatar(account, senderUser,
+                            row.optString("last_message_sender_avatar", ""));
+                }
+            }
+            if (senderId > 0) {
+                if (message.out) message.flags |= 1 << 1;
                 TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
-                fromPeer.user_id = self.id;
-                message.from_id = fromPeer;
-                message.flags |= 1 << 8;
-            } else if (direct) {
-                TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
-                fromPeer.user_id = row.optLong("other_user_id", 0);
+                fromPeer.user_id = senderId;
                 message.from_id = fromPeer;
                 message.flags |= 1 << 8;
             }
@@ -344,11 +372,38 @@ public final class ZenoraChatController {
         user.first_name = nonEmpty(displayName, nonEmpty(user.username, "ZenoraChat"));
         user.last_name = "";
         user.phone = "";
+        user.access_hash = id ^ 0x5a454e4f52414348L;
+        if (user.access_hash == 0) user.access_hash = id | 1L;
         user.photo = new TLRPC.TL_userProfilePhotoEmpty();
         user.status = new TLRPC.TL_userStatusEmpty();
-        user.flags |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        user.flags |= (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
         if (self) user.flags |= 1 << 10;
         return user;
+    }
+
+    private static void applyUserMetadata(TLRPC.User user, boolean verified, boolean bot,
+                                          boolean online, String lastSeen) {
+        user.verified = verified;
+        user.bot = bot;
+        if (verified) user.flags |= 1 << 17;
+        else user.flags &= ~(1 << 17);
+        if (bot) user.flags |= 1 << 14;
+        else user.flags &= ~(1 << 14);
+
+        if (online) {
+            TLRPC.TL_userStatusOnline status = new TLRPC.TL_userStatusOnline();
+            status.expires = (int) (System.currentTimeMillis() / 1000L) + 120;
+            user.status = status;
+        } else {
+            int lastSeenAt = parseDate(lastSeen);
+            if (lastSeenAt > 0) {
+                TLRPC.TL_userStatusOffline status = new TLRPC.TL_userStatusOffline();
+                status.expires = lastSeenAt;
+                user.status = status;
+            } else {
+                user.status = new TLRPC.TL_userStatusEmpty();
+            }
+        }
     }
 
     private static String messagePreview(JSONObject row) {
