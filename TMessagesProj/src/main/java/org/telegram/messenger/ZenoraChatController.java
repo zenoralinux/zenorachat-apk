@@ -169,6 +169,7 @@ public final class ZenoraChatController {
             if (accountValue == null || accountValue < 0) continue;
             int account = accountValue;
             clearEphemeralState(account);
+            ZenoraMediaPreviewRegistry.clear(account);
             synchronized (loadLock) {
                 long generation = requestGenerations.containsKey(account)
                         ? requestGenerations.get(account) + 1L : 1L;
@@ -208,6 +209,7 @@ public final class ZenoraChatController {
                 && previousSnapshotUserId != self.id);
         if (accountIdentityChanged) {
             clearEphemeralState(account);
+            ZenoraMediaPreviewRegistry.clear(account);
             synchronized (loadLock) {
                 snapshotAvailable.remove(account);
                 cacheRestoreStarted.remove(account);
@@ -794,6 +796,7 @@ public final class ZenoraChatController {
         final ArrayList<TLRPC.Dialog> mainDialogs = new ArrayList<>();
         final ArrayList<TLRPC.Dialog> archivedDialogs = new ArrayList<>();
         final Set<Long> savedDialogs = new HashSet<>();
+        final HashMap<String, ZenoraMediaPreviewRegistry.Preview> mediaPreviews = new HashMap<>();
     }
 
     private static void applyRooms(AccountInstance accountInstance, JSONObject response) throws Exception {
@@ -929,6 +932,7 @@ public final class ZenoraChatController {
             snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
+        ZenoraMediaPreviewRegistry.replaceSnapshot(account, snapshot.mediaPreviews);
         int pendingMuteStateCount = 0;
         for (Long dialogId : snapshot.muteUntil.keySet()) {
             if (dialogId != null && dialogId != 0L) {
@@ -1066,8 +1070,17 @@ public final class ZenoraChatController {
             message.date = date;
             message.peer_id = peer;
             message.dialog_id = dialogId;
-            message.message = messagePreview(row);
-            message.media = new TLRPC.TL_messageMediaEmpty();
+            ZenoraMediaPreviewMapper.Mapping mediaMapping =
+                    ZenoraMediaPreviewMapper.map(dialogId, messageId, date, row);
+            message.message = mediaMapping.messageText;
+            message.media = mediaMapping.media;
+            if (!(message.media instanceof TLRPC.TL_messageMediaEmpty)) {
+                message.flags |= TLRPC.MESSAGE_FLAG_HAS_MEDIA;
+            }
+            if (mediaMapping.preview != null) {
+                snapshot.mediaPreviews.put(
+                        ZenoraMediaPreviewRegistry.key(dialogId, messageId), mediaMapping.preview);
+            }
             long senderId = row.optLong("last_message_sender_user_id", 0);
             String senderUsername = row.optString("last_message_sender_username", "");
             if (senderId <= 0 && !TextUtils.isEmpty(self.username)
@@ -1278,16 +1291,30 @@ public final class ZenoraChatController {
     }
 
     private static String messagePreview(JSONObject row) {
+        if (row == null) return "";
+        String kind = row.optString("last_message_media_kind", "");
         String body = row.optString("last_message_body", "");
-        if (!TextUtils.isEmpty(body)) return body;
-        switch (row.optString("last_message_media_kind", "")) {
+        if ("gif".equals(kind)) body = body.replace(":gif:", "");
+        if ("sticker".equals(kind)) {
+            int marker = body.indexOf(":sticker:");
+            if (marker >= 0) {
+                int end = marker + ":sticker:".length();
+                while (end < body.length() && !Character.isWhitespace(body.charAt(end))) end++;
+                body = body.substring(0, marker) + body.substring(end);
+            }
+        }
+        if (!TextUtils.isEmpty(body.trim())) return body.trim();
+        switch (kind) {
             case "photo": return "Photo";
             case "video": return "Video";
             case "video_note": return "Video message";
             case "voice": return "Voice message";
             case "music": return "Music";
             case "gif": return "GIF";
+            case "sticker": return "";
+            case "document":
             case "file": return "File";
+            case "album": return "Album";
             default: return "";
         }
     }

@@ -73,6 +73,7 @@ import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.ImageReceiver;
+import org.telegram.messenger.ZenoraMediaPreviewRegistry;
 import org.telegram.messenger.LiteMode;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MediaDataController;
@@ -530,6 +531,10 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
 
     private int thumbsCount;
     private boolean hasVideoThumb;
+    private int zenoraAlbumAttachmentCount;
+    private int zenoraAlbumMoreCount;
+    private final Paint zenoraAlbumOverflowBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint zenoraAlbumOverflowTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint thumbBackgroundPaint;
     private boolean[] thumbImageSeen = new boolean[3];
     private ImageReceiver[] thumbImage = new ImageReceiver[3];
@@ -1345,6 +1350,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         drawPinBackground = false;
         thumbsCount = 0;
         hasVideoThumb = false;
+        zenoraAlbumAttachmentCount = 0;
+        zenoraAlbumMoreCount = 0;
         nameLayoutEllipsizeByGradient = false;
         int offsetName = 0;
         boolean showChecks = !UserObject.isUserSelf(user) && !useMeForMyMessages;
@@ -1966,11 +1973,14 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                                     }
                                     messageString = StarsIntroActivity.replaceStars(LocaleController.formatString(R.string.AttachPaidMedia, messageString));
                                     currentMessagePaint = Theme.dialogs_messagePrintingPaint[paintIndex];
-                                } else if (thumbsCount > 1) {
+                                } else if (thumbsCount > 1 || zenoraAlbumAttachmentCount > 1) {
+                                    int mediaCount = zenoraAlbumAttachmentCount > 1
+                                            ? zenoraAlbumAttachmentCount
+                                            : (groupMessages == null ? 0 : groupMessages.size());
                                     if (hasVideoThumb) {
-                                        messageString = LocaleController.formatPluralString("Media", groupMessages == null ? 0 : groupMessages.size());
+                                        messageString = LocaleController.formatPluralString("Media", mediaCount);
                                     } else {
-                                        messageString = LocaleController.formatPluralString("Photos", groupMessages == null ? 0 : groupMessages.size());
+                                        messageString = LocaleController.formatPluralString("Photos", mediaCount);
                                     }
                                     currentMessagePaint = Theme.dialogs_messagePrintingPaint[paintIndex];
                                 } else {
@@ -4768,6 +4778,29 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                         setDrawableBounds(Theme.dialogs_playDrawable, x, y);
                         Theme.dialogs_playDrawable.draw(canvas);
                     }
+                    if (zenoraAlbumMoreCount > 0 && i == thumbsCount - 1) {
+                        String overflow = "+" + zenoraAlbumMoreCount;
+                        float left = thumbImage[i].getImageX();
+                        float top = thumbImage[i].getImageY();
+                        float right = thumbImage[i].getImageX2();
+                        float bottom = thumbImage[i].getImageY2();
+                        zenoraAlbumOverflowBackgroundPaint.setColor(0xB3000000);
+                        zenoraAlbumOverflowBackgroundPaint.setStyle(Paint.Style.FILL);
+                        canvas.drawRoundRect(left, top, right, bottom, dp(2), dp(2),
+                                zenoraAlbumOverflowBackgroundPaint);
+                        zenoraAlbumOverflowTextPaint.setColor(Color.WHITE);
+                        zenoraAlbumOverflowTextPaint.setTextAlign(Paint.Align.CENTER);
+                        zenoraAlbumOverflowTextPaint.setTextSize(dp(10));
+                        float maxWidth = Math.max(dp(8), right - left - dp(3));
+                        float measured = zenoraAlbumOverflowTextPaint.measureText(overflow);
+                        if (measured > maxWidth) {
+                            zenoraAlbumOverflowTextPaint.setTextSize(Math.max(dp(6), dp(10) * maxWidth / measured));
+                        }
+                        Paint.FontMetrics metrics = zenoraAlbumOverflowTextPaint.getFontMetrics();
+                        float baseline = (top + bottom) / 2f - (metrics.ascent + metrics.descent) / 2f;
+                        canvas.drawText(overflow, (left + right) / 2f, baseline,
+                                zenoraAlbumOverflowTextPaint);
+                    }
                 }
 
                 if (updateHelper.typingProgres > 0) {
@@ -5742,11 +5775,51 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         return captionMessage;
     }
 
+    private boolean updateZenoraMediaThumbs() {
+        if (message == null || message.messageOwner == null || currentDialogFolderId != 0) return false;
+        ZenoraMediaPreviewRegistry.Preview preview = ZenoraMediaPreviewRegistry.get(
+                message.currentAccount, message.messageOwner.dialog_id, message.getId());
+        if (preview == null) return false;
+
+        // A registry entry owns the row. There is no fallback to a viewer poster,
+        // old blurred thumb or the source file when the compact derivative is absent.
+        thumbsCount = 0;
+        hasVideoThumb = false;
+        zenoraAlbumAttachmentCount = "album".equals(preview.kind) ? preview.attachmentCount : 0;
+        zenoraAlbumMoreCount = "album".equals(preview.kind) ? preview.moreCount : 0;
+        for (int i = 0; i < 3; i++) {
+            drawPlay[i] = false;
+            drawSpoiler[i] = false;
+        }
+        for (ZenoraMediaPreviewRegistry.Attachment attachment : preview.attachments) {
+            if (thumbsCount >= 3) break;
+            if (attachment == null || TextUtils.isEmpty(attachment.chatListThumbnailUrl)) continue;
+            ImageLocation location = ImageLocation.getForPath(attachment.chatListThumbnailUrl);
+            if (location == null) continue;
+            int index = thumbsCount++;
+            drawPlay[index] = attachment.showPlayIcon;
+            drawSpoiler[index] = false;
+            hasVideoThumb |= attachment.showPlayIcon;
+            thumbImage[index].setImage(location, "20_20", null, null, 0, null, message, 0);
+            thumbImage[index].setRoundRadius(attachment.roundVideo ? dp(18) : dp(2));
+            needEmoji = false;
+        }
+        return true;
+    }
+
     public void updateMessageThumbs() {
-        if (message == null) {
+        if (message == null || message.messageOwner == null) {
+            thumbsCount = 0;
+            hasVideoThumb = false;
+            zenoraAlbumAttachmentCount = 0;
+            zenoraAlbumMoreCount = 0;
             return;
         }
         String restrictionReason = MessagesController.getInstance(message.currentAccount).getRestrictionReason(message.messageOwner.restriction_reason);
+        if (TextUtils.isEmpty(restrictionReason) && updateZenoraMediaThumbs()) return;
+        zenoraAlbumAttachmentCount = 0;
+        zenoraAlbumMoreCount = 0;
+
         if (message != null && message.messageOwner != null && message.messageOwner.media instanceof TLRPC.TL_messageMediaPaidMedia) {
             thumbsCount = 0;
             hasVideoThumb = false;
@@ -6102,11 +6175,14 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 }
                 innerMessage = StarsIntroActivity.replaceStars(LocaleController.formatString(R.string.AttachPaidMedia, innerMessage));
                 colorKey = Theme.key_chats_actionMessage;
-            } else if (thumbsCount > 1) {
+            } else if (thumbsCount > 1 || zenoraAlbumAttachmentCount > 1) {
+                int mediaCount = zenoraAlbumAttachmentCount > 1
+                        ? zenoraAlbumAttachmentCount
+                        : (groupMessages == null ? 0 : groupMessages.size());
                 if (hasVideoThumb) {
-                    innerMessage = LocaleController.formatPluralString("Media", groupMessages == null ? 0 : groupMessages.size());
+                    innerMessage = LocaleController.formatPluralString("Media", mediaCount);
                 } else {
-                    innerMessage = LocaleController.formatPluralString("Photos", groupMessages == null ? 0 : groupMessages.size());
+                    innerMessage = LocaleController.formatPluralString("Photos", mediaCount);
                 }
                 colorKey = Theme.key_chats_actionMessage;
             } else {
