@@ -9678,6 +9678,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void markAsRead(long did) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ZenoraChatController.markDialogRead(currentAccount, did, (success, errorMessage) -> {
+                if (!success && getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(),
+                            errorMessage == null ? "علامت‌گذاری گفتگو به‌عنوان خوانده‌شده ناموفق بود." : errorMessage,
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+            return;
+        }
         TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(did);
         if (dialog instanceof TLRPC.TL_dialogCommunity) {
             final ArrayList<TLRPC.Dialog> dialogs = getMessagesController().getDialogsByCommunity(dialog.community_id);
@@ -9729,6 +9739,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void markAsUnread(long did) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ZenoraChatController.markDialogUnread(currentAccount, did, (success, errorMessage) -> {
+                if (!success && getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(),
+                            errorMessage == null ? "علامت‌گذاری گفتگو به‌عنوان خوانده‌نشده ناموفق بود." : errorMessage,
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+            return;
+        }
         getMessagesController().markDialogAsUnread(did, null, 0);
     }
 

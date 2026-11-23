@@ -334,6 +334,80 @@ public final class ZenoraChatController {
         });
     }
 
+    /**
+     * Persist Mark as Read in Zenora rather than issuing an unrelated MTProto
+     * read request. Marker-only chats clear the marker without moving room_reads.
+     */
+    public static void markDialogRead(int account, long dialogId, OperationCallback callback) {
+        updateDialogReadState(account, dialogId, false, callback);
+    }
+
+    /** Set only the current user's Marked Unread flag; never rewind room_reads. */
+    public static void markDialogUnread(int account, long dialogId, OperationCallback callback) {
+        updateDialogReadState(account, dialogId, true, callback);
+    }
+
+    private static void updateDialogReadState(int account, long dialogId, boolean markUnread,
+                                              OperationCallback callback) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) {
+            if (callback != null) callback.onComplete(false, "حساب زنورا فعال نیست.");
+            return;
+        }
+        if (dialogId == 0) {
+            if (callback != null) callback.onComplete(false, "شناسه گفتگو معتبر نیست.");
+            return;
+        }
+
+        final long roomId;
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            Long mappedRoomId = mappings == null ? null : mappings.get(dialogId);
+            if (mappedRoomId == null || mappedRoomId <= 0) {
+                if (callback != null) callback.onComplete(false,
+                        "شناسه اتاق زنورا پیدا نشد؛ فهرست گفتگوها را تازه‌سازی کنید.");
+                return;
+            }
+            roomId = mappedRoomId;
+        }
+
+        int lastReadMessageId = 0;
+        if (!markUnread) {
+            TLRPC.Dialog dialog = MessagesController.getInstance(account).dialogs_dict.get(dialogId);
+            if (dialog == null) {
+                if (callback != null) callback.onComplete(false,
+                        "اطلاعات گفتگو در دسترس نیست؛ فهرست را تازه‌سازی کنید.");
+                return;
+            }
+            // This count represents actual unread messages, not the manual flag.
+            // A zero count means Mark as Read must only clear is_unread.
+            if (dialog.unread_count > 0) {
+                if (dialog.top_message <= 0) {
+                    if (callback != null) callback.onComplete(false,
+                            "شناسه آخرین پیام خواندنی معتبر نیست؛ فهرست را تازه‌سازی کنید.");
+                    return;
+                }
+                lastReadMessageId = dialog.top_message;
+            }
+        }
+
+        final int cursor = lastReadMessageId;
+        ZenoraApiClient.Callback apiCallback = (response, error) -> {
+            if (error != null) {
+                FileLog.w("[ZenoraChat] " + (markUnread ? "mark unread" : "mark read")
+                        + " operation failed: " + error.getMessage());
+                if (callback != null) callback.onComplete(false, error.getMessage());
+                return;
+            }
+            requestRooms(AccountInstance.getInstance(account), true);
+            if (callback != null) callback.onComplete(true, null);
+        };
+        if (markUnread) {
+            ZenoraApiClient.setRoomMarkedUnread(roomId, apiCallback);
+        } else {
+            ZenoraApiClient.markRoomRead(roomId, cursor, apiCallback);
+        }
+    }
+
     public static void setDialogsScreenVisible(int account, boolean visible) {
         if (account < 0) return;
         AccountInstance instance = AccountInstance.getInstance(account);

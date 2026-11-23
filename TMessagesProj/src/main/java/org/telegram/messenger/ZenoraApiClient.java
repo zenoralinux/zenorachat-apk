@@ -266,6 +266,43 @@ public final class ZenoraApiClient {
         });
     }
 
+    /** Persist a real read cursor and clear the personal Marked Unread flag. */
+    public static void markRoomRead(long roomId, int lastReadMessageId, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomId <= 0 || lastReadMessageId < 0) {
+                    throw new IllegalArgumentException("Invalid room read cursor");
+                }
+                String form = "room_id=" + encode(String.valueOf(roomId))
+                        + "&last_read_id=" + encode(String.valueOf(lastReadMessageId));
+                JSONObject response = postWithCsrfRetry("room_read.php", form);
+                if (!response.optBoolean("ok", false)) {
+                    throw new IllegalStateException("ZenoraChat did not confirm the read operation");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Set the personal Marked Unread flag without changing the real read cursor. */
+    public static void setRoomMarkedUnread(long roomId, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomId <= 0) throw new IllegalArgumentException("Invalid room id");
+                String form = "room_id=" + encode(String.valueOf(roomId));
+                JSONObject response = postWithCsrfRetry("room_mark_unread.php", form);
+                if (!response.optBoolean("ok", false)) {
+                    throw new IllegalStateException("ZenoraChat did not confirm the unread marker");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
     private static JSONObject postWithCsrfRetry(String path, String formWithoutCsrf) throws Exception {
         String csrf = getMuteActionCsrfToken();
         String form = formWithoutCsrf + "&csrf=" + encode(csrf);
