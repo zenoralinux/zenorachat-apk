@@ -5791,6 +5791,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
         for (int i = 0; i < 3; i++) {
             drawPlay[i] = false;
             drawSpoiler[i] = false;
+            thumbImage[i].setImageBitmap((BitmapDrawable) null);
         }
         for (ZenoraMediaPreviewRegistry.Attachment attachment : preview.attachments) {
             if (thumbsCount >= 3) break;
@@ -5801,7 +5802,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             drawPlay[index] = attachment.showPlayIcon;
             drawSpoiler[index] = false;
             hasVideoThumb |= attachment.showPlayIcon;
-            thumbImage[index].setImage(location, "20_20", null, null, 0, null, message, 0);
+            thumbImage[index].setImage(location, "30_30", null, null, 0, null, message, 0);
             thumbImage[index].setRoundRadius(attachment.roundVideo ? dp(18) : dp(2));
             needEmoji = false;
         }

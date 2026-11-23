@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 
 /** Cookie-backed transport for the ZenoraChat PHP API. */
 public final class ZenoraApiClient {
-    private static final String SITE_BASE = "https://miladalizadw.ir/telegram/";
+    private static final String SITE_BASE = ZenoraMediaPreviewUrl.SITE_BASE;
     private static final String API_BASE = SITE_BASE + "api/";
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
@@ -162,12 +162,7 @@ public final class ZenoraApiClient {
     }
 
     public static String resolvePublicUrl(String path) {
-        if (path == null) return "";
-        String value = path.trim();
-        if (value.isEmpty()) return "";
-        if (value.startsWith("https://") || value.startsWith("http://")) return value;
-        while (value.startsWith("/")) value = value.substring(1);
-        return SITE_BASE + value;
+        return ZenoraMediaPreviewUrl.resolvePublicUrl(path);
     }
 
     /** Change per-user mute state using Zenora PHP, without any MTProto request. */

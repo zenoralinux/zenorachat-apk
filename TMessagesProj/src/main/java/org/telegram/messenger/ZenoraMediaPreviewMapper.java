@@ -1,6 +1,5 @@
 package org.telegram.messenger;
 
-import android.net.Uri;
 import android.text.TextUtils;
 
 import org.json.JSONArray;
@@ -255,19 +254,12 @@ public final class ZenoraMediaPreviewMapper {
         return value<=0?0:Math.min(value,MAX_DIMENSION);
     }
     private static String resolveCompactUrl(String raw) {
-        if(TextUtils.isEmpty(raw))return "";
-        String resolved=ZenoraApiClient.resolvePublicUrl(raw);
-        if(TextUtils.isEmpty(resolved))return "";
-        try {
-            Uri uri=Uri.parse(resolved);
-            if(!"https".equalsIgnoreCase(uri.getScheme())
-                    || !"miladalizadw.ir".equalsIgnoreCase(uri.getHost())
-                    || uri.getUserInfo()!=null
-                    || (uri.getPort()!=-1&&uri.getPort()!=443)
-                    || uri.getEncodedPath()==null
-                    || !uri.getEncodedPath().contains("/uploads/"))return "";
-            return uri.toString();
-        } catch(Exception ignored){return "";}
+        if (TextUtils.isEmpty(raw)) return "";
+        String resolved = ZenoraApiClient.resolvePublicUrl(raw);
+        if (!ZenoraMediaPreviewUrl.isAllowedChatListThumbnailUrl(resolved)) {
+            return "";
+        }
+        return resolved;
     }
     private static String cleanCaption(String input,String kind) {
         String text=input==null?"":input;
