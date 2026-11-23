@@ -5776,7 +5776,8 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     }
 
     private boolean updateZenoraMediaThumbs() {
-        if (message == null || message.messageOwner == null || currentDialogFolderId != 0) return false;
+        if (message == null || message.messageOwner == null || currentDialogFolderId != 0
+                || message.needDrawBluredPreview()) return false;
         ZenoraMediaPreviewRegistry.Preview preview = ZenoraMediaPreviewRegistry.get(
                 message.currentAccount, message.messageOwner.dialog_id, message.getId());
         if (preview == null) return false;
