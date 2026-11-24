@@ -179,6 +179,7 @@ public final class ZenoraUserBlockController {
      */
     public static void setBlocked(long targetUserId, boolean blocked, MutationCallback callback) {
         final long actorId = ZenoraApiClient.getAuthenticatedUserId();
+        final long actorGeneration = ZenoraApiClient.getSessionGeneration();
         if (actorId <= 0 || targetUserId <= 0) {
             if (callback != null) callback.onComplete(getCachedState(targetUserId),
                     new IllegalStateException("ZENORA_SESSION_REQUIRED"));
@@ -195,7 +196,8 @@ public final class ZenoraUserBlockController {
         }
 
         ZenoraApiClient.setUserBlocked(targetUserId, blocked, (response, error) -> {
-            if (ZenoraApiClient.getAuthenticatedUserId() != actorId) {
+            if (ZenoraApiClient.getAuthenticatedUserId() != actorId
+                    || ZenoraApiClient.getSessionGeneration() != actorGeneration) {
                 synchronized (LOCK) { PENDING.remove(pendingKey); }
                 if (callback != null) callback.onComplete(null, new IllegalStateException("ZENORA_SESSION_CHANGED"));
                 return;
@@ -206,7 +208,7 @@ public final class ZenoraUserBlockController {
                     if (state.blockedByMe != (blocked ? 1 : 0)) {
                         throw new IllegalStateException("BLOCK_STATE_NOT_CONFIRMED");
                     }
-                    if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, state);
+                    if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, actorGeneration, state);
                     synchronized (LOCK) { PENDING.remove(pendingKey); }
                     if (callback != null) callback.onComplete(getCachedState(targetUserId), null);
                     return;
@@ -220,7 +222,8 @@ public final class ZenoraUserBlockController {
             // A fresh authoritative read safely resolves both ambiguous and ordinary failures.
             ZenoraApiClient.getUserBlockStatus(targetUserId, (statusResponse, statusError) -> {
                 synchronized (LOCK) { PENDING.remove(pendingKey); }
-                if (ZenoraApiClient.getAuthenticatedUserId() != actorId) {
+                if (ZenoraApiClient.getAuthenticatedUserId() != actorId
+                        || ZenoraApiClient.getSessionGeneration() != actorGeneration) {
                     if (callback != null) callback.onComplete(null, new IllegalStateException("ZENORA_SESSION_CHANGED"));
                     return;
                 }
