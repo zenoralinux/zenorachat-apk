@@ -6308,6 +6308,22 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             boolean wasLoaded = zenoraBlockStatusLoaded;
             userBlocked = state.blockedByMe == 1;
             zenoraBlockStatusLoaded = true;
+
+            // The other party blocking this account must immediately revoke the
+            // Zenora avatar override, even when the profile was already open.
+            if (state.blockedMe == 1) {
+                org.telegram.messenger.ZenoraAvatarRegistry.setUserAvatar(
+                        currentAccount, targetId, null);
+                org.telegram.messenger.NotificationCenter.getInstance(currentAccount)
+                        .postNotificationName(
+                                org.telegram.messenger.NotificationCenter.updateInterfaces,
+                                org.telegram.messenger.MessagesController.UPDATE_MASK_AVATAR);
+            } else if (!wasLoaded) {
+                // Rebuild the avatar snapshot after the first authoritative status
+                // read so an old cached URL cannot survive a prior blocked state.
+                ZenoraChatController.refreshDialogs(getAccountInstance());
+            }
+
             if (wasBlocked != userBlocked || !wasLoaded) {
                 if (actionBar != null) createActionBarMenu(true);
                 if (fragmentView != null) updateListAnimated(false);
