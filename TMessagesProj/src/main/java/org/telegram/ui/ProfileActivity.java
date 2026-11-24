@@ -2145,7 +2145,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
             if (ZenoraApiClient.isZenoraSessionEnabled()) {
                 ZenoraUserBlockController.State cachedBlockState = ZenoraUserBlockController.getCachedState(userId);
-                zenoraBlockStatusLoaded = cachedBlockState != null;
+                // Cached state may be shown while offline, but never enables Block/Unblock.
+                // Only the current session's fresh status response makes the action available.
+                zenoraBlockStatusLoaded = false;
                 userBlocked = cachedBlockState != null && cachedBlockState.blockedByMe == 1;
                 ZenoraUserBlockController.syncEvents((changed, error) -> {
                     if (changed && error == null) {
