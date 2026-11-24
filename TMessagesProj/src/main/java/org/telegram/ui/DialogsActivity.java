@@ -9473,6 +9473,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     final int total = selectedDialogs.size();
                     final int[] finishedCount = {0};
                     final int[] blockedCount = {0};
+                    final int[] deletedCount = {0};
                     final int[] completeCount = {0};
                     for (int a = 0; a < total; a++) {
                         long did = selectedDialogs.get(a);
@@ -9487,15 +9488,22 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             oneDialog.add(targetId);
                             ZenoraChatController.deleteDialogs(currentAccount, oneDialog, new HashSet<>(), targetId,
                                     (success, errorMessage) -> {
-                                        boolean blockConfirmed = success || (errorMessage != null
-                                                && errorMessage.startsWith("کاربر مسدود شد، اما حذف گفتگو انجام نشد:"));
-                                        if (blockConfirmed) blockedCount[0]++;
-                                        if (success) completeCount[0]++;
+                                        if (success) {
+                                            blockedCount[0]++;
+                                            deletedCount[0]++;
+                                            completeCount[0]++;
+                                        } else if (errorMessage != null
+                                                && errorMessage.startsWith("کاربر مسدود شد، اما حذف گفتگو انجام نشد:")) {
+                                            blockedCount[0]++;
+                                        } else if (errorMessage != null
+                                                && errorMessage.startsWith("گفتگو حذف شد، اما مسدودسازی کاربر انجام نشد:")) {
+                                            deletedCount[0]++;
+                                        }
                                         finishedCount[0]++;
                                         if (finishedCount[0] == total && getParentActivity() != null) {
-                                            String message = blockedCount[0] + " of " + total + " users were blocked.";
-                                            if (completeCount[0] != total) message += " Delete/Block was partial or failed for "
-                                                    + (total - completeCount[0]) + " conversation(s).";
+                                            String message = "Blocked: " + blockedCount[0] + "/" + total
+                                                    + "; conversations deleted: " + deletedCount[0] + "/" + total + ".";
+                                            if (completeCount[0] != total) message += " Some operations were partial or failed.";
                                             android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_LONG).show();
                                         }
                                     });
@@ -9508,7 +9516,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                 }
                                 finishedCount[0]++;
                                 if (finishedCount[0] == total && getParentActivity() != null) {
-                                    String message = blockedCount[0] + " of " + total + " users were blocked.";
+                                    String message = "Blocked: " + blockedCount[0] + "/" + total + ".";
                                     if (completeCount[0] != total) message += " Some Block operations failed.";
                                     android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_LONG).show();
                                 }
