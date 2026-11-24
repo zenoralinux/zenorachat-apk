@@ -72,6 +72,7 @@ public final class ZenoraChatController {
             for (AccountInstance instance : instances) {
                 if (instance != null && ZenoraApiClient.isZenoraSessionEnabled()) {
                     refreshDialogs(instance);
+                    ZenoraUserBlockController.syncEvents(null);
                 }
             }
             lifecycleHandler.postDelayed(this, 2_000L);
@@ -242,6 +243,7 @@ public final class ZenoraChatController {
         }
         restoreCachedSnapshot(accountInstance);
         requestRooms(accountInstance, true);
+        ZenoraUserBlockController.syncEvents(null);
     }
 
     public static void refreshDialogs(AccountInstance accountInstance) {
