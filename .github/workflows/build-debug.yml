@@ -213,10 +213,12 @@ jobs:
           mkdir -p dist
           VERSION_NAME="$(awk -F= '$1=="APP_VERSION_NAME" {print $2}' gradle.properties | tail -n1)"
           VERSION_CODE="$(awk -F= '$1=="APP_VERSION_CODE" {print $2}' gradle.properties | tail -n1)"
+          # AFAT uses abiVersionCode=9 in TMessagesProj_App/build.gradle.
+          APK_VERSION_CODE="$((VERSION_CODE * 10 + 9))"
           OUTPUT="dist/ZenoraChat-${VERSION_NAME}-${VERSION_CODE}-debug-${ZENORA_BUILD_MODE}.apk"
           cp "$APK_SOURCE" "$OUTPUT"
           APP_PACKAGE="$APP_PACKAGE" EXPECTED_ABIS="$ZENORA_ABIS" \
-          EXPECTED_VERSION_NAME="$VERSION_NAME" EXPECTED_VERSION_CODE="$VERSION_CODE" \
+          EXPECTED_VERSION_NAME="$VERSION_NAME" EXPECTED_VERSION_CODE="$APK_VERSION_CODE" \
           bash scripts/validate-apk.sh debug "$OUTPUT"
           if [[ "$ZENORA_BUILD_MODE" == "fast" ]]; then
             cp "$OUTPUT" dist/ZenoraChat-debug-arm64.apk
@@ -231,7 +233,7 @@ jobs:
             echo "Build mode: ${ZENORA_BUILD_MODE}"
             echo "App: ZenoraChat"
             echo "Application ID: ${APP_PACKAGE}.beta"
-            echo "Version: ${VERSION_NAME} (${VERSION_CODE})"
+            echo "Version: ${VERSION_NAME} (base code ${VERSION_CODE}; APK code ${APK_VERSION_CODE})"
             echo "Target ABIs: ${ZENORA_ABIS}"
             echo "Source commit: $(cat UPSTREAM_COMMIT.txt 2>/dev/null || git rev-parse HEAD)"
             echo "Repository commit: $(git rev-parse HEAD)"
