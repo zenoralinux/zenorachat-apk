@@ -9471,8 +9471,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             AlertsCreator.createBlockDialogAlert(DialogsActivity.this, count, canReportSpamCount != 0, user, (report, delete) -> {
                 if (ZenoraChatController.isZenoraEnabled()) {
                     final int total = selectedDialogs.size();
-                    final int[] completed = {0};
-                    final int[] succeeded = {0};
+                    final int[] finishedCount = {0};
+                    final int[] blockedCount = {0};
+                    final int[] completeCount = {0};
                     for (int a = 0; a < total; a++) {
                         long did = selectedDialogs.get(a);
                         TLRPC.User selectedUser = getMessagesController().getUser(did);
@@ -9486,21 +9487,29 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             oneDialog.add(targetId);
                             ZenoraChatController.deleteDialogs(currentAccount, oneDialog, new HashSet<>(), targetId,
                                     (success, errorMessage) -> {
-                                        if (success) succeeded[0]++;
-                                        completed[0]++;
-                                        if (completed[0] == total && getParentActivity() != null) {
-                                            String message = succeeded[0] + " of " + total + " users blocked";
-                                            if (succeeded[0] != total) message += "; some Block/Delete operations failed.";
+                                        boolean blockConfirmed = success || (errorMessage != null
+                                                && errorMessage.startsWith("کاربر مسدود شد، اما حذف گفتگو انجام نشد:"));
+                                        if (blockConfirmed) blockedCount[0]++;
+                                        if (success) completeCount[0]++;
+                                        finishedCount[0]++;
+                                        if (finishedCount[0] == total && getParentActivity() != null) {
+                                            String message = blockedCount[0] + " of " + total + " users were blocked.";
+                                            if (completeCount[0] != total) message += " Delete/Block was partial or failed for "
+                                                    + (total - completeCount[0]) + " conversation(s).";
                                             android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_LONG).show();
                                         }
                                     });
                         } else {
                             ZenoraUserBlockController.setBlocked(targetId, true, (state, error) -> {
-                                if (error == null && state != null && state.blockedByMe == 1) succeeded[0]++;
-                                completed[0]++;
-                                if (completed[0] == total && getParentActivity() != null) {
-                                    String message = succeeded[0] + " of " + total + " users blocked";
-                                    if (succeeded[0] != total) message += "; one or more Block operations failed.";
+                                boolean blockConfirmed = error == null && state != null && state.blockedByMe == 1;
+                                if (blockConfirmed) {
+                                    blockedCount[0]++;
+                                    completeCount[0]++;
+                                }
+                                finishedCount[0]++;
+                                if (finishedCount[0] == total && getParentActivity() != null) {
+                                    String message = blockedCount[0] + " of " + total + " users were blocked.";
+                                    if (completeCount[0] != total) message += " Some Block operations failed.";
                                     android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_LONG).show();
                                 }
                             });
