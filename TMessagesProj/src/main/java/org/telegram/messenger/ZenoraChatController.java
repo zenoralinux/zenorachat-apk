@@ -398,11 +398,6 @@ public final class ZenoraChatController {
                 if (callback != null) callback.onComplete(false, error.getMessage());
                 return;
             }
-            if (!markUnread && cursor > 0) {
-                // Preserve the native Mark as Read side effect for mention and
-                // reaction badges, but only through the exact read cursor sent above.
-                markDialogAttentionRead(account, dialogId, cursor);
-            }
             requestRooms(AccountInstance.getInstance(account), true);
             if (callback != null) callback.onComplete(true, null);
         };
