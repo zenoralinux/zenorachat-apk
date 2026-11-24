@@ -732,7 +732,10 @@ public final class ZenoraApiClient {
 
             int status = connection.getResponseCode();
             saveCookies(connection, preserveAuthCookieOnUnauthorized && status == 401);
-            FileLog.d("[ZenoraChat] API " + path + " HTTP " + status
+            String safePath = path;
+            int queryIndex = safePath.indexOf('?');
+            if (queryIndex >= 0) safePath = safePath.substring(0, queryIndex);
+            FileLog.d("[ZenoraChat] API " + safePath + " HTTP " + status
                     + ", auth cookie sent=" + hasAuthCookie(cookie));
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             String raw = readBody(stream);
