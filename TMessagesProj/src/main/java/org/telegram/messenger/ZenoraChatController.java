@@ -242,6 +242,10 @@ public final class ZenoraChatController {
         }
         restoreCachedSnapshot(accountInstance);
         requestRooms(accountInstance, true);
+        MessagesController messagesController = MessagesController.getInstance(accountInstance.getCurrentAccount());
+        if (ZenoraApiClient.isZenoraSessionEnabled() && messagesController.totalBlockedCount < 0) {
+            messagesController.getBlockedPeers(true);
+        }
     }
 
     public static void refreshDialogs(AccountInstance accountInstance) {
