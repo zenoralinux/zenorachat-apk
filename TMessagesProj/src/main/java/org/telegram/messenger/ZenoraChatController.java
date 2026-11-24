@@ -50,6 +50,8 @@ public final class ZenoraChatController {
     private static final Map<Integer, Set<Long>> savedDialogIds = new HashMap<>();
     private static final Map<Integer, Set<Long>> typingDialogIdsByAccount = new HashMap<>();
     private static final Map<Integer, Set<Long>> presenceUserIdsByAccount = new HashMap<>();
+    // Directional server-authoritative block state (viewer -> peer), scoped per Telegram account.
+    private static final Map<Integer, Map<Long, Boolean>> blockedUsersByAccount = new HashMap<>();
     private static final Map<Integer, Map<Long, Integer>> attentionReadMessageIds = new HashMap<>();
     private static final Map<Integer, Map<Long, Integer>> attentionReadPending = new HashMap<>();
     private static final Map<Integer, AccountInstance> accountInstances = new HashMap<>();
@@ -80,6 +82,29 @@ public final class ZenoraChatController {
 
     public interface OperationCallback {
         void onComplete(boolean success, String errorMessage);
+    }
+
+    /** Returns the last server-confirmed directional block state for this account. */
+    public static boolean isUserBlockedByMe(int account, long userId) {
+        synchronized (loadLock) {
+            Map<Long, Boolean> states = blockedUsersByAccount.get(account);
+            return states != null && Boolean.TRUE.equals(states.get(userId));
+        }
+    }
+
+    /** Update the local projection only after the mutation endpoint confirms success. */
+    public static void setUserBlockedByMeLocal(int account, long userId, boolean blocked) {
+        if (userId <= 0) return;
+        synchronized (loadLock) {
+            blockedUsersByAccount.computeIfAbsent(account, key -> new HashMap<>()).put(userId, blocked);
+        }
+        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+    }
+
+    /** Force a fresh server snapshot after a block mutation. */
+    public static void refreshDialogsForAccount(int account) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) return;
+        refreshDialogs(AccountInstance.getInstance(account));
     }
 
     private ZenoraChatController() {
@@ -184,6 +209,7 @@ public final class ZenoraChatController {
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
+            blockedUsersByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
             }
@@ -861,6 +887,7 @@ public final class ZenoraChatController {
         final HashMap<Long, ArrayList<Long>> typingUsers = new HashMap<>();
         final Set<Long> typingDialogIds = new HashSet<>();
         final Set<Long> presenceUserIds = new HashSet<>();
+        final Map<Long, Boolean> blockedUsers = new HashMap<>();
         long serverTime;
         boolean applyEphemeralState;
         boolean typingDmEnabled = true;
@@ -1003,6 +1030,7 @@ public final class ZenoraChatController {
             savedDialogIds.put(account, new HashSet<>(snapshot.savedDialogs));
             typingDialogIdsByAccount.put(account, new HashSet<>(snapshot.typingDialogIds));
             presenceUserIdsByAccount.put(account, new HashSet<>(snapshot.presenceUserIds));
+            blockedUsersByAccount.put(account, new HashMap<>(snapshot.blockedUsers));
             snapshotUserIds.put(account, meJson.optLong("id", 0));
         }
         ZenoraAvatarRegistry.replaceSnapshot(account, snapshot.avatars);
@@ -1062,6 +1090,7 @@ public final class ZenoraChatController {
         } else if (direct) {
             long otherId = row.optLong("other_user_id", 0);
             if (otherId <= 0) return;
+            snapshot.blockedUsers.put(otherId, row.optInt("blocked_by_me", 0) == 1);
             putAvatar(snapshot, "u:" + otherId,
                     ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
             boolean otherVerified = row.optInt("is_verified", 0) == 1;
