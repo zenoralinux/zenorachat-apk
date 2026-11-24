@@ -865,6 +865,8 @@ public final class ZenoraChatController {
         final HashMap<Long, ArrayList<Long>> typingUsers = new HashMap<>();
         final Set<Long> typingDialogIds = new HashSet<>();
         final Set<Long> presenceUserIds = new HashSet<>();
+        final Set<Long> knownDirectUserIds = new HashSet<>();
+        final Set<Long> blockedDirectUserIds = new HashSet<>();
         long serverTime;
         boolean applyEphemeralState;
         boolean typingDmEnabled = true;
@@ -927,7 +929,13 @@ public final class ZenoraChatController {
             JSONObject row = directRooms.getJSONObject(i);
             if (!"saved".equals(row.optString("type", "dm"))) {
                 long peerId = row.optLong("other_user_id", 0);
-                if (peerId > 0) snapshot.presenceUserIds.add(peerId);
+                if (peerId > 0) {
+                    snapshot.presenceUserIds.add(peerId);
+                    snapshot.knownDirectUserIds.add(peerId);
+                    if (row.optInt("blocked_by_me", 0) == 1) {
+                        snapshot.blockedDirectUserIds.add(peerId);
+                    }
+                }
                 applyUserPresence(account, snapshot.users.get(peerId), row,
                         snapshot.serverTime, snapshot.applyEphemeralState);
             }
@@ -969,6 +977,32 @@ public final class ZenoraChatController {
         controller.getChats().clear();
         controller.getUsers().putAll(snapshot.users);
         controller.getChats().putAll(snapshot.chats);
+
+        // rooms.php is the cross-device source of truth for each visible DM's
+        // "blocked by me" state. Merge only peers present in this complete
+        // snapshot so hidden/unloaded blocked users are not accidentally erased.
+        boolean blockedPeersChanged = false;
+        for (Long peerId : snapshot.knownDirectUserIds) {
+            boolean shouldBeBlocked = snapshot.blockedDirectUserIds.contains(peerId);
+            boolean isBlocked = controller.blockePeers.indexOfKey(peerId) >= 0;
+            if (shouldBeBlocked == isBlocked) continue;
+            if (shouldBeBlocked) {
+                controller.blockePeers.put(peerId, 1);
+                if (controller.totalBlockedCount >= 0) controller.totalBlockedCount++;
+                TLRPC.User blockedUser = snapshot.users.get(peerId);
+                if (blockedUser != null) {
+                    if (blockedUser.bot) controller.getMediaDataController().removeInline(peerId);
+                    else controller.getMediaDataController().removePeer(peerId);
+                }
+            } else {
+                controller.blockePeers.delete(peerId);
+                if (controller.totalBlockedCount >= 0) {
+                    controller.totalBlockedCount = Math.max(0, controller.totalBlockedCount - 1);
+                }
+            }
+            blockedPeersChanged = true;
+        }
+
         for (Map.Entry<Long, TLRPC.Dialog> entry : snapshot.dialogs.entrySet()) {
             controller.dialogs_dict.put(entry.getKey(), entry.getValue());
             controller.dialogs_read_inbox_max.put(entry.getKey(), entry.getValue().read_inbox_max_id);
@@ -996,6 +1030,10 @@ public final class ZenoraChatController {
         // Recreate Telegram's special Archive folder row after each complete
         // Zenora snapshot; sortDialogs alone only populates folder contents.
         controller.checkArchiveFolder();
+        if (blockedPeersChanged) {
+            NotificationCenter.getInstance(account).postNotificationName(
+                    NotificationCenter.blockedUsersDidLoad);
+        }
 
         // Never replay ephemeral status/typing from the local snapshot cache.
         NotificationCenter.getInstance(account).postNotificationName(
