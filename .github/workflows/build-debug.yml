@@ -442,8 +442,7 @@ jobs:
 
           body_path: dist/debug-preview-notes.md
           files: |
-            dist/ZenoraChat-*-debug-universal.apk
-            dist/ZenoraChat-debug-arm64.apk
+            ${{ github.ref == 'refs/heads/feat/zenora-block-unblock-android-20261124' && 'dist/ZenoraChat-*-debug-universal.apk' || 'dist/ZenoraChat-debug-arm64.apk' }}
             dist/SHA256SUMS
             dist/BUILD-INFO.txt
           draft: false
