@@ -65,7 +65,7 @@ public final class ZenoraUserBlockController {
     private static final Map<Long, Map<Long, State>> CACHE = new HashMap<>();
     private static final Map<String, Long> SEQUENCES = new HashMap<>();
     private static final Set<String> PENDING = new HashSet<>();
-    private static final Set<Long> SYNCING = new HashSet<>();
+    private static final Map<Long, Long> SYNCING = new HashMap<>();
 
     private ZenoraUserBlockController() {
     }
@@ -119,8 +119,10 @@ public final class ZenoraUserBlockController {
         }
     }
 
-    private static void storeState(long actorId, State state) {
-        if (actorId <= 0 || state == null || ZenoraApiClient.getAuthenticatedUserId() != actorId) return;
+    private static void storeState(long actorId, long actorGeneration, State state) {
+        if (actorId <= 0 || state == null
+                || ZenoraApiClient.getSessionGeneration() != actorGeneration
+                || ZenoraApiClient.getAuthenticatedUserId() != actorId) return;
         synchronized (LOCK) {
             CACHE.computeIfAbsent(actorId, ignored -> new HashMap<>()).put(state.targetUserId, state);
         }
@@ -144,6 +146,7 @@ public final class ZenoraUserBlockController {
     /** Reconcile a profile against the server; a previous response cannot overwrite a newer request. */
     public static void refreshStatus(long targetUserId, StateCallback callback) {
         final long actorId = ZenoraApiClient.getAuthenticatedUserId();
+        final long actorGeneration = ZenoraApiClient.getSessionGeneration();
         if (actorId <= 0 || targetUserId <= 0) {
             if (callback != null) callback.onComplete(getCachedState(targetUserId),
                     new IllegalStateException("ZENORA_SESSION_REQUIRED"));
@@ -151,7 +154,8 @@ public final class ZenoraUserBlockController {
         }
         final long sequence = nextSequence(actorId, targetUserId);
         ZenoraApiClient.getUserBlockStatus(targetUserId, (response, error) -> {
-            if (ZenoraApiClient.getAuthenticatedUserId() != actorId) {
+            if (ZenoraApiClient.getAuthenticatedUserId() != actorId
+                    || ZenoraApiClient.getSessionGeneration() != actorGeneration) {
                 if (callback != null) callback.onComplete(null, new IllegalStateException("ZENORA_SESSION_CHANGED"));
                 return;
             }
@@ -161,7 +165,7 @@ public final class ZenoraUserBlockController {
             }
             try {
                 State state = parseState(response, targetUserId);
-                if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, state);
+                if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, actorGeneration, state);
                 if (callback != null) callback.onComplete(getCachedState(targetUserId), null);
             } catch (Exception parseError) {
                 if (callback != null) callback.onComplete(getCachedState(targetUserId), parseError);
@@ -240,28 +244,33 @@ public final class ZenoraUserBlockController {
     /** Consume same-actor changes from Web/other devices without trusting event payloads as state. */
     public static void syncEvents(SyncCallback callback) {
         final long actorId = ZenoraApiClient.getAuthenticatedUserId();
+        final long actorGeneration = ZenoraApiClient.getSessionGeneration();
         if (actorId <= 0) {
             if (callback != null) callback.onComplete(false, new IllegalStateException("ZENORA_SESSION_REQUIRED"));
             return;
         }
         synchronized (LOCK) {
-            if (!SYNCING.add(actorId)) {
+            Long activeGeneration = SYNCING.get(actorId);
+            if (activeGeneration != null && activeGeneration == actorGeneration) {
                 if (callback != null) callback.onComplete(false, null);
                 return;
             }
+            SYNCING.put(actorId, actorGeneration);
         }
-        syncEventsPage(actorId, prefs().getLong(cursorKey(actorId), 0), false, callback);
+        syncEventsPage(actorId, actorGeneration, prefs().getLong(cursorKey(actorId), 0), false, callback);
     }
 
-    private static void syncEventsPage(long actorId, long cursor, boolean anyChanged, SyncCallback callback) {
+    private static void syncEventsPage(long actorId, long actorGeneration, long cursor,
+                                       boolean anyChanged, SyncCallback callback) {
         ZenoraApiClient.getUserBlockEvents(cursor, 100, (response, error) -> {
-            if (ZenoraApiClient.getAuthenticatedUserId() != actorId) {
-                finishSync(actorId);
+            if (ZenoraApiClient.getAuthenticatedUserId() != actorId
+                    || ZenoraApiClient.getSessionGeneration() != actorGeneration) {
+                finishSync(actorId, actorGeneration);
                 if (callback != null) callback.onComplete(anyChanged, new IllegalStateException("ZENORA_SESSION_CHANGED"));
                 return;
             }
             if (error != null) {
-                finishSync(actorId);
+                finishSync(actorId, actorGeneration);
                 if (callback != null) callback.onComplete(anyChanged, error);
                 return;
             }
@@ -282,31 +291,42 @@ public final class ZenoraUserBlockController {
                         targets.add(targetId);
                     }
                 }
-                if (nextCursor > maxEventId && events.length() == 0) {
-                    throw new IllegalStateException("BLOCK_EVENT_CURSOR_SKIPPED");
-                }
-                // The feed only signals that the relationship may have changed.
-                // Always obtain each target's full directional state from the status endpoint.
+                if (nextCursor > maxEventId) throw new IllegalStateException("BLOCK_EVENT_CURSOR_SKIPPED");
                 for (Long targetId : targets) {
-                    refreshStatus(targetId, null);
+                    refreshStatus(targetId, (state, statusError) -> {
+                        if (statusError != null) FileLog.w("[ZenoraChat] Block event status refresh failed.");
+                    });
                 }
                 long committedCursor = Math.max(cursor, maxEventId);
                 prefs().edit().putLong(cursorKey(actorId), committedCursor).apply();
                 boolean changed = anyChanged || !targets.isEmpty();
                 if (response.optBoolean("has_more", false)) {
-                    syncEventsPage(actorId, committedCursor, changed, callback);
+                    syncEventsPage(actorId, actorGeneration, committedCursor, changed, callback);
                 } else {
-                    finishSync(actorId);
+                    finishSync(actorId, actorGeneration);
                     if (callback != null) callback.onComplete(changed, null);
                 }
             } catch (Exception parseError) {
-                finishSync(actorId);
+                finishSync(actorId, actorGeneration);
                 if (callback != null) callback.onComplete(anyChanged, parseError);
             }
         });
     }
 
-    private static void finishSync(long actorId) {
-        synchronized (LOCK) { SYNCING.remove(actorId); }
+    /** Called on explicit logout; actor-prefixed disk cache cannot bleed into another identity. */
+    public static void onSessionCleared(long actorId) {
+        if (actorId <= 0) return;
+        synchronized (LOCK) {
+            CACHE.remove(actorId);
+            SYNCING.remove(actorId);
+            PENDING.removeIf(key -> key.startsWith(actorId + ":"));
+            SEQUENCES.keySet().removeIf(key -> key.startsWith(actorId + ":"));
+        }
+    }
+    private static void finishSync(long actorId, long actorGeneration) {
+        synchronized (LOCK) {
+            Long activeGeneration = SYNCING.get(actorId);
+            if (activeGeneration != null && activeGeneration == actorGeneration) SYNCING.remove(actorId);
+        }
     }
 }
