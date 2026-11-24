@@ -122,6 +122,7 @@ import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraUserBlockController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
@@ -9468,6 +9469,46 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 user = null;
             }
             AlertsCreator.createBlockDialogAlert(DialogsActivity.this, count, canReportSpamCount != 0, user, (report, delete) -> {
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    final int total = selectedDialogs.size();
+                    final int[] completed = {0};
+                    final int[] succeeded = {0};
+                    for (int a = 0; a < total; a++) {
+                        long did = selectedDialogs.get(a);
+                        TLRPC.User selectedUser = getMessagesController().getUser(did);
+                        // Reporting is an independent explicit choice; Block always uses Zenora API.
+                        if (report && selectedUser != null) {
+                            getMessagesController().reportSpam(did, selectedUser, null, null, false);
+                        }
+                        final long targetId = did;
+                        if (delete) {
+                            ArrayList<Long> oneDialog = new ArrayList<>();
+                            oneDialog.add(targetId);
+                            ZenoraChatController.deleteDialogs(currentAccount, oneDialog, new HashSet<>(), targetId,
+                                    (success, errorMessage) -> {
+                                        if (success) succeeded[0]++;
+                                        completed[0]++;
+                                        if (completed[0] == total && getParentActivity() != null) {
+                                            String message = succeeded[0] + " of " + total + " users blocked";
+                                            if (succeeded[0] != total) message += "; some Block/Delete operations failed.";
+                                            android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_LONG).show();
+                                        }
+                                    });
+                        } else {
+                            ZenoraUserBlockController.setBlocked(targetId, true, (state, error) -> {
+                                if (error == null && state != null && state.blockedByMe == 1) succeeded[0]++;
+                                completed[0]++;
+                                if (completed[0] == total && getParentActivity() != null) {
+                                    String message = succeeded[0] + " of " + total + " users blocked";
+                                    if (succeeded[0] != total) message += "; one or more Block operations failed.";
+                                    android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_LONG).show();
+                                }
+                            });
+                        }
+                    }
+                    hideActionMode(false);
+                    return;
+                }
                 for (int a = 0, N = selectedDialogs.size(); a < N; a++) {
                     long did = selectedDialogs.get(a);
                     if (report) {
@@ -9818,7 +9859,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             } else {
                 getMessagesController().deleteDialog(selectedDialog, 0, revoke);
                 if (isBot && revoke) {
-                    getMessagesController().blockPeer(selectedDialog);
+                    if (ZenoraChatController.isZenoraEnabled()) {
+                        ZenoraUserBlockController.setBlocked(selectedDialog, true, (state, error) -> {
+                            if ((error != null || state == null || state.blockedByMe != 1) && getParentActivity() != null) {
+                                android.widget.Toast.makeText(getParentActivity(),
+                                        "مسدودسازی ربات در ZenoraChat تأیید نشد.",
+                                        android.widget.Toast.LENGTH_LONG).show();
+                            }
+                        });
+                    } else {
+                        getMessagesController().blockPeer(selectedDialog);
+                    }
                 }
             }
             if (AndroidUtilities.isTablet()) {
