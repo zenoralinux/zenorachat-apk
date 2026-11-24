@@ -21,11 +21,24 @@ elif [[ "$MODE" != "release" ]]; then
 fi
 
 BADGING="$("$AAPT" dump badging "$APK")"
-printf '%s\n' "$BADGING" | grep -F "package: name='$EXPECTED_PACKAGE'" >/dev/null || {
+PACKAGE_LINE="$(printf '%s\n' "$BADGING" | grep -F "package: name='$EXPECTED_PACKAGE'" || true)"
+[[ -n "$PACKAGE_LINE" ]] || {
   echo "::error::Unexpected APK application ID. Expected $EXPECTED_PACKAGE"
   printf '%s\n' "$BADGING" | head -n 5
   exit 1
 }
+if [[ -n "${EXPECTED_VERSION_CODE:-}" && "$PACKAGE_LINE" != *"versionCode='$EXPECTED_VERSION_CODE'"* ]]; then
+  echo "::error::APK versionCode does not match the configured version."
+  echo "Expected: $EXPECTED_VERSION_CODE"
+  echo "Manifest: $PACKAGE_LINE"
+  exit 1
+fi
+if [[ -n "${EXPECTED_VERSION_NAME:-}" && "$PACKAGE_LINE" != *"versionName='$EXPECTED_VERSION_NAME'"* ]]; then
+  echo "::error::APK versionName does not match the configured version."
+  echo "Expected: $EXPECTED_VERSION_NAME"
+  echo "Manifest: $PACKAGE_LINE"
+  exit 1
+fi
 printf '%s\n' "$BADGING" | grep -F "application-label:'ZenoraChat" >/dev/null || {
   echo "::error::APK display name does not appear to be ZenoraChat"
   exit 1
@@ -45,10 +58,11 @@ if [[ -n "${EXPECTED_ABIS:-}" ]]; then
   fi
   echo "ABIs: $(printf '%s' "$ACTUAL_ABIS_SORTED" | paste -sd, -)"
 fi
-"$APKSIGNER" verify --verbose "$APK"
+"$APKSIGNER" verify --verbose --print-certs "$APK"
 
 echo "APK validation passed."
 echo "Mode: $MODE"
 echo "Package: $EXPECTED_PACKAGE"
 echo "File: $APK"
+echo "Size: $(stat -c %s "$APK") bytes"
 sha256sum "$APK"
