@@ -123,10 +123,21 @@ public final class ZenoraUserBlockController {
         if (actorId <= 0 || state == null
                 || ZenoraApiClient.getSessionGeneration() != actorGeneration
                 || ZenoraApiClient.getAuthenticatedUserId() != actorId) return;
+        State previous = getCachedState(state.targetUserId);
+        boolean changed = previous == null
+                || previous.blockedByMe != state.blockedByMe
+                || previous.blockedMe != state.blockedMe
+                || previous.canSendDm != state.canSendDm
+                || previous.canReceiveDm != state.canReceiveDm;
         synchronized (LOCK) {
             CACHE.computeIfAbsent(actorId, ignored -> new HashMap<>()).put(state.targetUserId, state);
         }
         prefs().edit().putString(stateKey(actorId, state.targetUserId), state.toJson().toString()).apply();
+        if (changed && ZenoraApiClient.getSessionGeneration() == actorGeneration
+                && ZenoraApiClient.getAuthenticatedUserId() == actorId) {
+            NotificationCenter.getInstance(UserConfig.selectedAccount)
+                    .postNotificationName(NotificationCenter.blockedUsersDidLoad);
+        }
     }
 
     private static State parseState(JSONObject response, long targetId) throws Exception {
@@ -295,27 +306,53 @@ public final class ZenoraUserBlockController {
                     }
                 }
                 if (nextCursor > maxEventId) throw new IllegalStateException("BLOCK_EVENT_CURSOR_SKIPPED");
+                final long committedCursor = Math.max(cursor, maxEventId);
+                final boolean changed = anyChanged || !targets.isEmpty();
+                if (targets.isEmpty()) {
+                    commitEventPage(actorId, actorGeneration, committedCursor, changed,
+                            response.optBoolean("has_more", false), callback);
+                    return;
+                }
+                final int[] remaining = { targets.size() };
+                final boolean[] refreshFailed = { false };
                 for (Long targetId : targets) {
                     refreshStatus(targetId, (state, statusError) -> {
-                        if (statusError != null) FileLog.w("[ZenoraChat] Block event status refresh failed.");
+                        if (statusError != null || state == null) refreshFailed[0] = true;
+                        remaining[0]--;
+                        if (remaining[0] == 0) {
+                            if (refreshFailed[0]) {
+                                finishSync(actorId, actorGeneration);
+                                if (callback != null) callback.onComplete(anyChanged,
+                                        new IllegalStateException("BLOCK_SNAPSHOT_REFRESH_FAILED"));
+                            } else {
+                                commitEventPage(actorId, actorGeneration, committedCursor, changed,
+                                        response.optBoolean("has_more", false), callback);
+                            }
+                        }
                     });
-                }
-                long committedCursor = Math.max(cursor, maxEventId);
-                prefs().edit().putLong(cursorKey(actorId), committedCursor).apply();
-                boolean changed = anyChanged || !targets.isEmpty();
-                if (response.optBoolean("has_more", false)) {
-                    syncEventsPage(actorId, actorGeneration, committedCursor, changed, callback);
-                } else {
-                    finishSync(actorId, actorGeneration);
-                    if (callback != null) callback.onComplete(changed, null);
-                }
-            } catch (Exception parseError) {
+                }            } catch (Exception parseError) {
                 finishSync(actorId, actorGeneration);
                 if (callback != null) callback.onComplete(anyChanged, parseError);
             }
         });
     }
 
+    private static void commitEventPage(long actorId, long actorGeneration, long cursor,
+                                        boolean changed, boolean hasMore, SyncCallback callback) {
+        if (ZenoraApiClient.getAuthenticatedUserId() != actorId
+                || ZenoraApiClient.getSessionGeneration() != actorGeneration) {
+            finishSync(actorId, actorGeneration);
+            if (callback != null) callback.onComplete(changed, new IllegalStateException("ZENORA_SESSION_CHANGED"));
+            return;
+        }
+        prefs().edit().putLong(cursorKey(actorId), cursor).apply();
+        if (hasMore) {
+            syncEventsPage(actorId, actorGeneration, cursor, changed, callback);
+        } else {
+            finishSync(actorId, actorGeneration);
+            if (callback != null) callback.onComplete(changed, null);
+        }
+    }
     /** Called on explicit logout; actor-prefixed disk cache cannot bleed into another identity. */
     public static void onSessionCleared(long actorId) {
         if (actorId <= 0) return;
