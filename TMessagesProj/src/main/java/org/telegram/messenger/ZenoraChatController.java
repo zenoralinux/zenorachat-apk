@@ -1090,8 +1090,9 @@ public final class ZenoraChatController {
         } else if (direct) {
             long otherId = row.optLong("other_user_id", 0);
             if (otherId <= 0) return;
+            String otherAvatar = row.optInt("blocked_me", 0) == 1 ? "" : row.optString("avatar_url", "");
             putAvatar(snapshot, "u:" + otherId,
-                    ZenoraApiClient.resolvePublicUrl(row.optString("avatar_url", "")));
+                    ZenoraApiClient.resolvePublicUrl(otherAvatar));
             boolean otherVerified = row.optInt("is_verified", 0) == 1;
             TLRPC.User other = makeUser(otherId,
                     row.optString("other_username", ""),
@@ -1199,7 +1200,11 @@ public final class ZenoraChatController {
                     snapshot.users.put(self.id, self);
                 } else {
                     String senderName = row.optString("last_message_sender_display_name", "");
-                    String senderAvatar = row.optString("last_message_sender_avatar_url", "");
+                    boolean senderBlockedMe = direct
+                            && senderId == row.optLong("other_user_id", 0)
+                            && row.optInt("blocked_me", 0) == 1;
+                    String senderAvatar = senderBlockedMe ? ""
+                            : row.optString("last_message_sender_avatar_url", "");
                     putAvatar(snapshot, "u:" + senderId,
                             ZenoraApiClient.resolvePublicUrl(senderAvatar));
                     // A DM peer may also be the last-message sender. Preserve its
