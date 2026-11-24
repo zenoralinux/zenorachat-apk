@@ -231,7 +231,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
                     || !ZenoraApiClient.isZenoraSessionEnabled()) return;
             loading = false;
             if (error != null) {
-                FileLog.e(error);
+                FileLog.d("[ZenoraChat] Blocked-users API request failed.");
                 if (users.isEmpty() && emptyView != null) {
                     emptyView.setText("Could not load blocked users. Tap refresh to retry.");
                     emptyView.showTextView();
