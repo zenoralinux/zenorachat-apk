@@ -4434,10 +4434,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 onNotificationsClicked(false, x, y, view);
 
             } else if (position == unblockRow) {
-                getMessagesController().unblockPeer(userId);
-                if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
-                    BulletinFactory.createBanBulletin(ProfileActivity.this, false).show();
-                }
+                getMessagesController().setPeerBlocked(userId, false, success -> {
+                    if (success) {
+                        if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
+                            BulletinFactory.createBanBulletin(ProfileActivity.this, false).show();
+                        }
+                    } else if (getParentActivity() != null) {
+                        Toast.makeText(getParentActivity(), "رفع مسدودسازی انجام نشد. اتصال را بررسی کنید.", Toast.LENGTH_SHORT).show();
+                    }
+                });
             } else if (position == addToGroupButtonRow) {
                 try {
                     actionBar.getActionBarMenuOnItemClick().onItemClick(invite_to_group);
@@ -6278,10 +6283,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         }
         if (!isBot || MessagesController.isSupportUser(user)) {
             if (userBlocked) {
-                getMessagesController().unblockPeer(userId);
-                if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
-                    BulletinFactory.createBanBulletin(ProfileActivity.this, false).show();
-                }
+                getMessagesController().setPeerBlocked(userId, false, success -> {
+                    if (success) {
+                        if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
+                            BulletinFactory.createBanBulletin(ProfileActivity.this, false).show();
+                        }
+                    } else if (getParentActivity() != null) {
+                        Toast.makeText(getParentActivity(), "رفع مسدودسازی انجام نشد. اتصال را بررسی کنید.", Toast.LENGTH_SHORT).show();
+                    }
+                });
             } else {
                 if (reportSpam) {
                     AlertsCreator.showBlockReportSpamAlert(ProfileActivity.this, userId, user, null, currentEncryptedChat, false, null, param -> {
@@ -6299,10 +6309,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     builder.setTitle(LocaleController.getString(R.string.BlockUser));
                     builder.setMessage(AndroidUtilities.replaceTags(formatString("AreYouSureBlockContact2", R.string.AreYouSureBlockContact2, ContactsController.formatName(user.first_name, user.last_name))));
                     builder.setPositiveButton(LocaleController.getString(R.string.BlockContact), (dialogInterface, i) -> {
-                        getMessagesController().blockPeer(userId);
-                        if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
-                            BulletinFactory.createBanBulletin(ProfileActivity.this, true).show();
-                        }
+                        getMessagesController().setPeerBlocked(userId, true, success -> {
+                            if (success) {
+                                if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
+                                    BulletinFactory.createBanBulletin(ProfileActivity.this, true).show();
+                                }
+                            } else if (getParentActivity() != null) {
+                                Toast.makeText(getParentActivity(), "مسدودسازی انجام نشد. اتصال یا محدودیت حساب را بررسی کنید.", Toast.LENGTH_SHORT).show();
+                            }
+                        });
                     });
                     builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
                     AlertDialog dialog = builder.create();
@@ -6328,8 +6343,16 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     getNotificationCenter().postNotificationName(NotificationCenter.needDeleteDialog, dialogId, user, currentChat, param);
                 });
             } else {
-                getMessagesController().unblockPeer(userId, () -> getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of("/start", userId, null, null, null, false, null, null, null, true, 0, 0, null, false)));
-                finishFragment();
+                getMessagesController().setPeerBlocked(userId, false, success -> {
+                    if (!success) {
+                        if (getParentActivity() != null) {
+                            Toast.makeText(getParentActivity(), "رفع مسدودسازی انجام نشد. اتصال را بررسی کنید.", Toast.LENGTH_SHORT).show();
+                        }
+                        return;
+                    }
+                    getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of("/start", userId, null, null, null, false, null, null, null, true, 0, 0, null, false));
+                    finishFragment();
+                });
             }
         }
     }
