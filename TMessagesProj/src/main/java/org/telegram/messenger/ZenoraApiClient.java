@@ -476,24 +476,42 @@ public final class ZenoraApiClient {
         return request("chat_bulk_action.php", "POST", form);
     }
 
-    /** Block/unblock a DM peer using Zenora's authenticated API, not MTProto. */
+    /** Block or unblock a DM peer through Zenora's canonical user-block API. */
     public static void setDmBlocked(long otherUserId, boolean blocked, Callback callback) {
         executor.execute(() -> {
             try {
                 if (otherUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
-                String csrf = prefs().getString("csrf", "");
-                if (csrf.isEmpty()) {
-                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
-                    csrf = challenge.optString("csrf", "");
-                    if (csrf.isEmpty()) {
-                        throw new IllegalStateException("Authenticated CSRF token missing");
-                    }
-                    prefs().edit().putString("csrf", csrf).commit();
+                String form = "target_user_id=" + encode(String.valueOf(otherUserId))
+                        + "&blocked=" + (blocked ? "1" : "0");
+                JSONObject response = postWithCsrfRetry("user_block_toggle.php", form);
+                int expected = blocked ? 1 : 0;
+                if (response.optInt("blocked", -1) != expected
+                        || response.optInt("blocked_by_me", -1) != expected
+                        || response.optInt("blocked_me", -1) < 0) {
+                    throw new IllegalStateException("ZenoraChat returned an inconsistent user block state");
                 }
-                String form = "other_user_id=" + encode(String.valueOf(otherUserId))
-                        + "&action=" + encode(blocked ? "block" : "unblock")
-                        + "&csrf=" + encode(csrf);
-                JSONObject response = request("dm_block_toggle.php", "POST", form);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Fetch one page of the authenticated user's blocked accounts. */
+    public static void getBlockedUsers(int offset, int limit, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (offset < 0 || offset > 1000000 || limit < 1 || limit > 100) {
+                    throw new IllegalArgumentException("Invalid blocked-user pagination");
+                }
+                JSONObject response = request(
+                        "dm_blocked_list.php?offset=" + offset + "&limit=" + limit,
+                        "GET", null
+                );
+                JSONArray users = response.optJSONArray("users");
+                if (users == null || response.optInt("count", -1) < 0) {
+                    throw new IllegalStateException("ZenoraChat returned an invalid blocked-user list");
+                }
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
