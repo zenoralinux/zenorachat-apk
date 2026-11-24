@@ -241,7 +241,7 @@ public final class ZenoraUserBlockController {
                 if (statusError == null) {
                     try {
                         State state = parseState(statusResponse, targetUserId);
-                        if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, state);
+                        if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, actorGeneration, state);
                         if (state.blockedByMe == (blocked ? 1 : 0)) {
                             if (callback != null) callback.onComplete(getCachedState(targetUserId), null);
                             return;
@@ -330,7 +330,8 @@ public final class ZenoraUserBlockController {
                             }
                         }
                     });
-                }            } catch (Exception parseError) {
+                }
+            } catch (Exception parseError) {
                 finishSync(actorId, actorGeneration);
                 if (callback != null) callback.onComplete(anyChanged, parseError);
             }
