@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Cookie-backed transport for the ZenoraChat PHP API. */
 public final class ZenoraApiClient {
@@ -33,6 +34,7 @@ public final class ZenoraApiClient {
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Object cookieLock = new Object();
+    private static final AtomicLong sessionGeneration = new AtomicLong(1);
     // Accessed only from the serialized API executor.
     private static final Map<Long, Long> lastTypingUpdateMs = new HashMap<>();
 
@@ -100,6 +102,7 @@ public final class ZenoraApiClient {
 
     public static void enableSession(JSONObject profile) {
         if (profile == null || profile.optLong("id", 0) <= 0) return;
+        sessionGeneration.incrementAndGet();
         boolean saved = prefs().edit()
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
@@ -128,6 +131,7 @@ public final class ZenoraApiClient {
     }
 
     public static void clearSession() {
+        sessionGeneration.incrementAndGet();
         prefs().edit().clear().commit();
         executor.execute(lastTypingUpdateMs::clear);
         ZenoraChatController.clearSessionEphemeralState();
@@ -482,6 +486,11 @@ public final class ZenoraApiClient {
         return prefs().getLong("user_id", 0);
     }
 
+    /** Monotonic generation invalidates callbacks across logout and re-login, even for the same actor. */
+    public static long getSessionGeneration() {
+        return sessionGeneration.get();
+    }
+
     private static long requireZenoraActorId() {
         if (!isZenoraSessionEnabled()) {
             throw new IllegalStateException("ZENORA_SESSION_REQUIRED");
@@ -491,9 +500,9 @@ public final class ZenoraApiClient {
         return actorId;
     }
 
-    private static void ensureZenoraActor(long expectedActorId) {
-        if (expectedActorId <= 0 || !isZenoraSessionEnabled()
-                || prefs().getLong("user_id", 0) != expectedActorId) {
+    private static void ensureZenoraActor(long expectedActorId, long expectedGeneration) {
+        if (expectedActorId <= 0 || sessionGeneration.get() != expectedGeneration
+                || !isZenoraSessionEnabled() || prefs().getLong("user_id", 0) != expectedActorId) {
             throw new IllegalStateException("ZENORA_SESSION_CHANGED");
         }
     }
@@ -504,9 +513,10 @@ public final class ZenoraApiClient {
             try {
                 if (targetUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
                 long actorId = requireZenoraActorId();
+                long actorGeneration = getSessionGeneration();
                 JSONObject response = request("user_block_status.php?target_user_id="
                         + encode(String.valueOf(targetUserId)), "GET", null);
-                ensureZenoraActor(actorId);
+                ensureZenoraActor(actorId, actorGeneration);
                 JSONObject data = response.optJSONObject("data");
                 JSONObject state = data == null ? null : data.optJSONObject("state");
                 if (data == null || state == null
@@ -526,11 +536,12 @@ public final class ZenoraApiClient {
             try {
                 if (targetUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
                 long actorId = requireZenoraActorId();
+                long actorGeneration = getSessionGeneration();
                 String action = blocked ? "block" : "unblock";
                 String form = "action=" + encode(action)
                         + "&target_user_id=" + encode(String.valueOf(targetUserId));
                 JSONObject response = postWithCsrfRetry("user_block.php", form);
-                ensureZenoraActor(actorId);
+                ensureZenoraActor(actorId, actorGeneration);
                 JSONObject data = response.optJSONObject("data");
                 JSONObject state = data == null ? null : data.optJSONObject("state");
                 int expected = blocked ? 1 : 0;
@@ -561,11 +572,12 @@ public final class ZenoraApiClient {
                 String search = query == null ? "" : query.trim();
                 if (search.length() > 100) search = search.substring(0, 100);
                 long actorId = requireZenoraActorId();
+                long actorGeneration = getSessionGeneration();
                 String url = "blocked_users.php?page=" + page
                         + "&per_page=" + limit
                         + "&sort=blocked_at&order=desc&q=" + encode(search);
                 JSONObject response = request(url, "GET", null);
-                ensureZenoraActor(actorId);
+                ensureZenoraActor(actorId, actorGeneration);
                 if (response.optJSONArray("users") == null
                         || response.optJSONObject("pagination") == null) {
                     throw new IllegalStateException("ZenoraChat returned an invalid blocked-users page");
@@ -584,9 +596,10 @@ public final class ZenoraApiClient {
                 if (cursor < 0) throw new IllegalArgumentException("Invalid block event cursor");
                 int pageSize = Math.max(1, Math.min(100, limit));
                 long actorId = requireZenoraActorId();
+                long actorGeneration = getSessionGeneration();
                 JSONObject response = request("user_block_events.php?cursor=" + cursor
                         + "&limit=" + pageSize, "GET", null);
-                ensureZenoraActor(actorId);
+                ensureZenoraActor(actorId, actorGeneration);
                 if (response.optJSONArray("events") == null
                         || response.optLong("next_cursor", -1) < cursor) {
                     throw new IllegalStateException("ZenoraChat returned an invalid block event page");
