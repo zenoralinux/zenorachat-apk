@@ -25,6 +25,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.ZenoraChatController;
@@ -44,7 +45,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 /** Native Telegram-style directory backed exclusively by Zenora's Block API. */
-public class ZenoraBlockedUsersActivity extends BaseFragment {
+public class ZenoraBlockedUsersActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
     private static final int PAGE_SIZE = 30;
 
     private static final class BlockedUser {
@@ -80,6 +81,13 @@ public class ZenoraBlockedUsersActivity extends BaseFragment {
     private long requestGeneration;
     private final Runnable searchRunnable = () -> {
         query = searchField == null ? "" : searchField.getText().toString().trim();
+        requestGeneration++;
+        loading = false;
+        nextPage = 1;
+        hasMore = true;
+        users.clear();
+        if (adapter != null) adapter.notifyDataSetChanged();
+        if (emptyView != null) emptyView.showProgress();
         loadPage(true);
     };
 
@@ -87,6 +95,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment {
     public boolean onFragmentCreate() {
         super.onFragmentCreate();
         if (!ZenoraApiClient.isZenoraSessionEnabled()) return false;
+        NotificationCenter.getInstance(currentAccount).addWeakObserver(this, NotificationCenter.blockedUsersDidLoad);
         ZenoraUserBlockController.syncEvents((changed, error) -> {
             if (changed && getParentActivity() != null) {
                 refreshList();
@@ -98,6 +107,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment {
     @Override
     public void onFragmentDestroy() {
         super.onFragmentDestroy();
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.blockedUsersDidLoad);
         handler.removeCallbacks(searchRunnable);
         requestGeneration++;
     }
@@ -312,6 +322,20 @@ public class ZenoraBlockedUsersActivity extends BaseFragment {
             // Reconcile the page total and any changes made by another session.
             refreshList();
         });
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        refreshList();
+    }
+
+    @Override
+    public void didReceivedNotification(int id, int account, Object... args) {
+        if (id == NotificationCenter.blockedUsersDidLoad
+                && account == currentAccount && getParentActivity() != null) {
+            refreshList();
+        }
     }
 
     private class ListAdapter extends RecyclerListView.SelectionAdapter {
