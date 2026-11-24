@@ -558,7 +558,7 @@ public final class ZenoraApiClient {
      */
     public static void fetchMessages(long roomId, Long cursor, String direction,
                                      int limit, Long afterId, Long aroundId,
-                                     boolean includePinned, Callback callback) {
+                                     long syncAfter, boolean includePinned, Callback callback) {
         executor.execute(() -> {
             try {
                 if (roomId <= 0) throw new IllegalArgumentException("Invalid Zenora room id");
@@ -573,6 +573,10 @@ public final class ZenoraApiClient {
                 if (cursor != null && cursor > 0) path.append("&cursor=").append(cursor);
                 if (afterId != null && afterId >= 0) path.append("&after_id=").append(afterId);
                 if (aroundId != null && aroundId > 0) path.append("&around_id=").append(aroundId);
+                if (syncAfter > 0) {
+                    path.append("&sync_after=").append(syncAfter)
+                            .append("&include_edits=1&include_deleted=1");
+                }
                 if (includePinned) path.append("&include_pinned=1");
                 JSONObject response = request(path.toString(), "GET", null);
                 dispatch(callback, response, null);
