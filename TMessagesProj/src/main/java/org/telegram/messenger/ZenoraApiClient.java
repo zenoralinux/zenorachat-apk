@@ -102,7 +102,13 @@ public final class ZenoraApiClient {
 
     public static void enableSession(JSONObject profile) {
         if (profile == null || profile.optLong("id", 0) <= 0) return;
-        boolean saved = prefs().edit()
+        long newUserId = profile.optLong("id", 0);
+        long previousUserId = prefs().getLong("user_id", 0);
+        SharedPreferences.Editor sessionEditor = prefs().edit();
+        if (previousUserId > 0 && previousUserId != newUserId) {
+            sessionEditor.remove("blocked_user_ids").remove("block_events_cursor");
+        }
+        boolean saved = sessionEditor
                 .putBoolean("enabled", true)
                 .putString("username", profile.optString("username", ""))
                 .putString("display_name", profile.optString("display_name", ""))

@@ -232,6 +232,14 @@ public final class ZenoraChatController {
         config.setCurrentUser(self);
         config.saveConfig(true);
         MessagesController.getInstance(account).putUser(self, false, true);
+        // Prime native profile/settings state from the authoritative per-account Block snapshot.
+        ZenoraApiClient.syncBlockedUsers((response, error) -> {
+            if (error != null) {
+                FileLog.e("[ZenoraChat] initial block-state sync failed: " + error.getMessage());
+                return;
+            }
+            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.blockedUsersDidLoad);
+        });
     }
 
     public static void loadDialogs(AccountInstance accountInstance) {

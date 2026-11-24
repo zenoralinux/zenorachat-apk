@@ -1519,6 +1519,11 @@ public class AlertsCreator {
                     }
                     NotificationCenter.getInstance(accountInstance.getCurrentAccount())
                             .postNotificationName(NotificationCenter.blockedUsersDidLoad);
+                    if (cells != null && cells[0] != null && cells[0].isChecked()) {
+                        android.widget.Toast.makeText(fragment.getParentActivity(),
+                                "Spam reporting is not available for Zenora accounts yet.",
+                                android.widget.Toast.LENGTH_LONG).show();
+                    }
                     if (cells == null || cells[1].isChecked()) {
                         accountInstance.getMessagesController().deleteDialog(dialog_id, 0);
                         callback.run(1);

@@ -6297,6 +6297,18 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 && (!isBot || MessagesController.isSupportUser(user))) {
             if (userBlocked) {
                 setZenoraBlockState(false);
+            } else if (reportSpam) {
+                AlertsCreator.showBlockReportSpamAlert(ProfileActivity.this, userId, user, null,
+                        currentEncryptedChat, false, null, param -> {
+                            if (param == 1) {
+                                getNotificationCenter().removeObserver(ProfileActivity.this, NotificationCenter.closeChats);
+                                getNotificationCenter().postNotificationName(NotificationCenter.closeChats);
+                                playProfileAnimation = 0;
+                                finishFragment();
+                            } else {
+                                getNotificationCenter().postNotificationName(NotificationCenter.peerSettingsDidLoad, userId);
+                            }
+                        }, resourcesProvider);
             } else {
                 AlertDialog.Builder zenoraBuilder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
                 zenoraBuilder.setTitle(LocaleController.getString(R.string.BlockUser));
@@ -6372,7 +6384,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         ZenoraApiClient.setDmBlocked(userId, blocked, (response, error) -> {
             if (error != null || response == null) {
                 String message = error == null ? "Block operation failed" : error.getMessage();
-                Toast.makeText(getParentActivity(), message, Toast.LENGTH_LONG).show();
+                if (getParentActivity() != null) Toast.makeText(getParentActivity(), message, Toast.LENGTH_LONG).show();
                 return;
             }
             userBlocked = blocked;
