@@ -167,6 +167,8 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
+import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraUserBlockController;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.tgnet.ConnectionsManager;
@@ -479,6 +481,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     private long dialogId;
     private boolean creatingChat;
     private boolean userBlocked;
+    private boolean zenoraBlockRequestPending;
     private boolean reportSpam;
     private long mergeDialogId;
     private boolean expandPhoto;
@@ -2138,6 +2141,14 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             NotificationCenter.getGlobalInstance().addWeakObserver(this, NotificationCenter.reloadInterface);
 
             userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
+            if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                ZenoraUserBlockController.State cachedBlockState = ZenoraUserBlockController.getCachedState(userId);
+                if (cachedBlockState != null) {
+                    userBlocked = cachedBlockState.blockedByMe == 1;
+                }
+                ZenoraUserBlockController.syncEvents(null);
+                refreshZenoraBlockStatus();
+            }
             if (user.bot) {
                 isBot = true;
                 getMediaDataController().loadBotInfo(user.id, user.id, true, classGuid);
@@ -4434,9 +4445,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 onNotificationsClicked(false, x, y, view);
 
             } else if (position == unblockRow) {
-                getMessagesController().unblockPeer(userId);
-                if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
-                    BulletinFactory.createBanBulletin(ProfileActivity.this, false).show();
+                if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                    performZenoraBlockAction(false);
+                } else {
+                    getMessagesController().unblockPeer(userId);
+                    if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
+                        BulletinFactory.createBanBulletin(ProfileActivity.this, false).show();
+                    }
                 }
             } else if (position == addToGroupButtonRow) {
                 try {
@@ -6271,9 +6286,118 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+    private void refreshZenoraBlockStatus() {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || userId <= 0) return;
+        final long targetId = userId;
+        ZenoraUserBlockController.refreshStatus(targetId, (state, error) -> {
+            if (error != null || state == null || targetId != userId
+                    || !ZenoraApiClient.isZenoraSessionEnabled()) {
+                return;
+            }
+            boolean wasBlocked = userBlocked;
+            userBlocked = state.blockedByMe == 1;
+            if (wasBlocked != userBlocked) {
+                createActionBarMenu(true);
+                updateListAnimated(false);
+            }
+        });
+    }
+
+    private void performZenoraBlockAction(boolean blocked) {
+        if (zenoraBlockRequestPending || !ZenoraApiClient.isZenoraSessionEnabled()
+                || userId <= 0 || getParentActivity() == null) {
+            return;
+        }
+        zenoraBlockRequestPending = true;
+        final long targetId = userId;
+        ZenoraUserBlockController.setBlocked(targetId, blocked, (state, error) -> {
+            if (targetId != userId) return;
+            zenoraBlockRequestPending = false;
+            if (error != null || state == null) {
+                String message = "عملیات مسدودسازی در ZenoraChat انجام نشد.";
+                if (error instanceof ZenoraApiClient.ApiException) {
+                    String code = ((ZenoraApiClient.ApiException) error).errorCode;
+                    if ("OFFICIAL_ACCOUNT_CANNOT_BE_BLOCKED".equals(code)) {
+                        message = "حساب رسمی زنورا قابل مسدودسازی نیست.";
+                    } else if ("RATE_LIMITED".equals(code)) {
+                        message = "تعداد درخواست‌ها زیاد است؛ کمی بعد دوباره تلاش کنید.";
+                    } else if ("USER_UNAVAILABLE".equals(code) || "USER_NOT_FOUND".equals(code)) {
+                        message = "این حساب دیگر در دسترس نیست.";
+                    } else if ("AUTHENTICATION_REQUIRED".equals(code)) {
+                        message = "نشست ZenoraChat منقضی شده است؛ دوباره وارد شوید.";
+                    } else if ("BLOCK_OPERATION_PENDING".equals(code)) {
+                        message = "درخواست قبلی هنوز در حال انجام است.";
+                    }
+                }
+                if (getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(), message, Toast.LENGTH_LONG).show();
+                }
+                refreshZenoraBlockStatus();
+                return;
+            }
+            userBlocked = state.blockedByMe == 1;
+            createActionBarMenu(true);
+            updateListAnimated(false);
+            if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
+                BulletinFactory.createBanBulletin(ProfileActivity.this, blocked).show();
+            }
+        });
+    }
+
     private void onBlockContactClicked(boolean fromActions) {
         TLRPC.User user = getMessagesController().getUser(userId);
         if (user == null) {
+            return;
+        }
+        if (ZenoraApiClient.isZenoraSessionEnabled()
+                && (!isBot || MessagesController.isSupportUser(user))) {
+            if (zenoraBlockRequestPending) return;
+            ZenoraUserBlockController.State blockState = ZenoraUserBlockController.getCachedState(userId);
+            if (blockState == null) {
+                ZenoraUserBlockController.refreshStatus(userId, (state, error) -> {
+                    if (error != null || state == null) {
+                        if (getParentActivity() != null) {
+                            Toast.makeText(getParentActivity(),
+                                    "وضعیت مسدودسازی از سرور دریافت نشد؛ دوباره تلاش کنید.",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                        return;
+                    }
+                    userBlocked = state.blockedByMe == 1;
+                    createActionBarMenu(true);
+                    updateListAnimated(false);
+                    onBlockContactClicked(fromActions);
+                });
+                return;
+            }
+            if (blockState.blockedByMe == 1) {
+                performZenoraBlockAction(false);
+            } else if (reportSpam) {
+                AlertsCreator.showBlockReportSpamAlert(ProfileActivity.this, userId, user,
+                        null, currentEncryptedChat, false, null, param -> {
+                            if (param == 1) {
+                                getNotificationCenter().removeObserver(ProfileActivity.this, NotificationCenter.closeChats);
+                                getNotificationCenter().postNotificationName(NotificationCenter.closeChats);
+                                playProfileAnimation = 0;
+                                finishFragment();
+                            } else {
+                                getNotificationCenter().postNotificationName(NotificationCenter.peerSettingsDidLoad, userId);
+                            }
+                        }, resourcesProvider);
+            } else {
+                AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
+                builder.setTitle(LocaleController.getString(R.string.BlockUser));
+                builder.setMessage(AndroidUtilities.replaceTags(formatString("AreYouSureBlockContact2",
+                        R.string.AreYouSureBlockContact2,
+                        ContactsController.formatName(user.first_name, user.last_name))));
+                builder.setPositiveButton(LocaleController.getString(R.string.BlockContact),
+                        (dialogInterface, i) -> performZenoraBlockAction(true));
+                builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+                AlertDialog dialog = builder.create();
+                showDialog(dialog);
+                TextView button = (TextView) dialog.getButton(DialogInterface.BUTTON_POSITIVE);
+                if (button != null) ThemeBind.textColor(button, Theme.key_text_RedBold, resourcesProvider);
+            }
             return;
         }
         if (!isBot || MessagesController.isSupportUser(user)) {
@@ -9367,11 +9491,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 }
             }
         } else if (id == NotificationCenter.blockedUsersDidLoad) {
-            boolean oldValue = userBlocked;
-            userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
-            if (oldValue != userBlocked) {
-                createActionBarMenu(true);
-                updateListAnimated(false);
+            if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                refreshZenoraBlockStatus();
+            } else {
+                boolean oldValue = userBlocked;
+                userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
+                if (oldValue != userBlocked) {
+                    createActionBarMenu(true);
+                    updateListAnimated(false);
+                }
             }
         } else if (id == NotificationCenter.groupCallUpdated) {
             Long chatId = (Long) args[0];
