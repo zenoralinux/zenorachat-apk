@@ -266,7 +266,7 @@ jobs:
                echo "- Refresh keeps the last valid snapshot visible until the server confirms its replacement; pagination and unblock rows update incrementally."
                echo "- Profile/avatar interface updates rebind native user cells without an unnecessary network refresh."
                echo "- CI target: arm64-v8a only. Physical-device visual verification remains required."
-             elif if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-block-unblock-android-20261124" ]]; then
+             elif [[ "$GITHUB_REF" == "refs/heads/feat/zenora-block-unblock-android-20261124" ]]; then
               echo "Native Zenora Block/Unblock: profile status uses the standalone directional status API; Block and Unblock mutations use user_block.php; the native Blocked Users directory is API-backed and paginated."
               echo
               echo "- Web/API contract source: https://github.com/zenoralinux/zenorachat/tree/feat/zenora-block-api-completion-20261124"
