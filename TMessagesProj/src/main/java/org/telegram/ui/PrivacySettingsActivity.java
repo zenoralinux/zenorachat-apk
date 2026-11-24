@@ -98,6 +98,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
     private int privacySectionRow;
     @Keep
     private int blockedRow;
+    private int zenoraBlockedCount = -1;
     @Keep
     private int phoneNumberRow;
     @Keep
@@ -190,7 +191,11 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
         super.onFragmentCreate();
 
         getContactsController().loadPrivacySettings();
-        getMessagesController().getBlockedPeers(true);
+        if (ZenoraApiClient.isZenoraSessionEnabled()) {
+            loadZenoraBlockedCount();
+        } else {
+            getMessagesController().getBlockedPeers(true);
+        }
         currentSync = newSync = getUserConfig().syncContacts;
         currentSuggest = newSuggest = getUserConfig().suggestContacts;
         TLRPC.GlobalPrivacySettings privacySettings = getContactsController().getGlobalPrivacySettings();
@@ -231,6 +236,19 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
         webSessionsActivityPreload.loadSessions(false);
 
         return true;
+    }
+
+    private void loadZenoraBlockedCount() {
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) return;
+        ZenoraApiClient.getBlockedUsers(1, 1, "", (response, error) -> {
+            if (error != null || response == null) return;
+            org.json.JSONObject pagination = response.optJSONObject("pagination");
+            if (pagination == null) return;
+            zenoraBlockedCount = Math.max(0, pagination.optInt("total", 0));
+            if (listAdapter != null && blockedRow >= 0 && getParentActivity() != null) {
+                listAdapter.notifyItemChanged(blockedRow);
+            }
+        });
     }
 
     @Override
@@ -703,7 +721,11 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                 listAdapter.notifyDataSetChanged();
             }
         } else if (id == NotificationCenter.blockedUsersDidLoad) {
-            listAdapter.notifyItemChanged(blockedRow);
+            if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                loadZenoraBlockedCount();
+            } else if (listAdapter != null && blockedRow >= 0) {
+                listAdapter.notifyItemChanged(blockedRow);
+            }
         } else if (id == NotificationCenter.didSetOrRemoveTwoStepPassword) {
             if (args.length > 0) {
                 currentPassword = (TL_account.Password) args[0];
@@ -1392,7 +1414,8 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                         }
                         textCell2.setTextAndValueAndIcon(getString(R.string.Passcode), value, true, icon, true);
                     } else if (position == blockedRow) {
-                        int totalCount = getMessagesController().totalBlockedCount;
+                        int totalCount = ZenoraApiClient.isZenoraSessionEnabled()
+                                ? zenoraBlockedCount : getMessagesController().totalBlockedCount;
                         if (totalCount == 0) {
                             value = getString("BlockedEmpty", R.string.BlockedEmpty);
                         } else if (totalCount > 0) {
