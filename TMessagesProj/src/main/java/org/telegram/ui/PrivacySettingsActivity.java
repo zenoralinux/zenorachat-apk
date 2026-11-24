@@ -89,6 +89,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
     private ListAdapter listAdapter;
     private RecyclerListView listView;
     private AlertDialog progressDialog;
+    private boolean openingZenoraBlockedUsers;
     @SuppressWarnings("FieldCanBeLocal")
     private LinearLayoutManager layoutManager;
 
@@ -352,7 +353,10 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                 }
             } else if (position == blockedRow) {
                 if (ZenoraApiClient.isZenoraSessionEnabled()) {
-                    presentFragment(new ZenoraBlockedUsersActivity());
+                    if (!openingZenoraBlockedUsers) {
+                        openingZenoraBlockedUsers = true;
+                        presentFragment(new ZenoraBlockedUsersActivity());
+                    }
                 } else {
                     presentFragment(new PrivacyUsersActivity());
                 }
@@ -1047,6 +1051,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
     @Override
     public void onResume() {
         super.onResume();
+        openingZenoraBlockedUsers = false;
         if (listAdapter != null) {
             listAdapter.notifyDataSetChanged();
         }
