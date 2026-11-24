@@ -12547,10 +12547,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                                 otherItem.hideSubItem(bot_privacy);
                             }
                             otherItem.addSubItem(report, R.drawable.msg_report, LocaleController.getString(R.string.ReportBot)).setColorKeys(Theme.key_text_RedRegular, Theme.key_text_RedRegular);
-                            if (!userBlocked) {
-                                otherItem.addSubItem(block_contact, R.drawable.msg_block2, LocaleController.getString(R.string.DeleteAndBlock)).setColorKeys(Theme.key_text_RedRegular, Theme.key_text_RedRegular);
-                            } else {
-                                otherItem.addSubItem(block_contact, R.drawable.msg_retry, LocaleController.getString(R.string.BotRestart));
+                            if (zenoraBlockReady) {
+                                if (!userBlocked) {
+                                    otherItem.addSubItem(block_contact, R.drawable.msg_block2, LocaleController.getString(R.string.DeleteAndBlock)).setColorKeys(Theme.key_text_RedRegular, Theme.key_text_RedRegular);
+                                } else {
+                                    otherItem.addSubItem(block_contact, R.drawable.msg_retry, LocaleController.getString(R.string.BotRestart));
+                                }
                             }
                         } else if (zenoraBlockReady) {
                             otherItem.addSubItem(block_contact, R.drawable.msg_block,
