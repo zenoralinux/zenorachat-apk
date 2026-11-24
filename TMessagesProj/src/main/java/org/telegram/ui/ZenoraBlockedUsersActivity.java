@@ -1,0 +1,368 @@
+package org.telegram.ui;
+
+import android.content.Context;
+import android.graphics.PorterDuff;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.Toast;
+
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.FileLog;
+import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.R;
+import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraUserBlockController;
+import org.telegram.tgnet.TLRPC;
+import org.telegram.ui.ActionBar.ActionBar;
+import org.telegram.ui.ActionBar.BaseFragment;
+import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.Cells.ManageChatUserCell;
+import org.telegram.ui.Components.EmptyTextProgressView;
+import org.telegram.ui.Components.ItemOptions;
+import org.telegram.ui.Components.LayoutHelper;
+import org.telegram.ui.Components.RecyclerListView;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
+
+/** Native Telegram-style directory backed exclusively by Zenora's Block API. */
+public class ZenoraBlockedUsersActivity extends BaseFragment {
+    private static final int PAGE_SIZE = 30;
+
+    private static final class BlockedUser {
+        final long id;
+        final String username;
+        final String displayName;
+        final String avatarPath;
+        final TLRPC.User peer;
+
+        BlockedUser(long id, String username, String displayName, String avatarPath, TLRPC.User peer) {
+            this.id = id;
+            this.username = username;
+            this.displayName = displayName;
+            this.avatarPath = avatarPath;
+            this.peer = peer;
+        }
+    }
+
+    private final ArrayList<BlockedUser> users = new ArrayList<>();
+    private final Set<Long> pendingUnblocks = new HashSet<>();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+
+    private RecyclerListView listView;
+    private LinearLayoutManager layoutManager;
+    private ListAdapter adapter;
+    private EmptyTextProgressView emptyView;
+    private EditText searchField;
+
+    private String query = "";
+    private int nextPage = 1;
+    private boolean hasMore = true;
+    private boolean loading;
+    private long requestGeneration;
+    private final Runnable searchRunnable = () -> {
+        query = searchField == null ? "" : searchField.getText().toString().trim();
+        loadPage(true);
+    };
+
+    @Override
+    public boolean onFragmentCreate() {
+        super.onFragmentCreate();
+        if (!ZenoraApiClient.isZenoraSessionEnabled()) return false;
+        ZenoraUserBlockController.syncEvents((changed, error) -> {
+            if (changed && getParentActivity() != null) {
+                refreshList();
+            }
+        });
+        return true;
+    }
+
+    @Override
+    public void onFragmentDestroy() {
+        super.onFragmentDestroy();
+        handler.removeCallbacks(searchRunnable);
+        requestGeneration++;
+    }
+
+    @Override
+    protected boolean useSimpleActionBar() {
+        return true;
+    }
+
+    @Override
+    public View createView(Context context) {
+        setHasOwnBackground(true);
+        simpleActionBar.setBackButtonImage(R.drawable.ic_ab_back);
+        simpleActionBar.setTitle(LocaleController.getString(R.string.BlockedUsers));
+        simpleActionBar.setActionBarMenuOnItemClick(new ActionBar.ActionBarMenuOnItemClick() {
+            @Override
+            public void onItemClick(int id) {
+                if (id == -1) finishFragment();
+            }
+        });
+
+        FrameLayout root = new FrameLayout(context);
+        fragmentView = root;
+
+        LinearLayout searchRow = new LinearLayout(context);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setPadding(AndroidUtilities.dp(16), 0, AndroidUtilities.dp(8), 0);
+        searchField = new EditText(context);
+        searchField.setSingleLine(true);
+        searchField.setTextSize(16);
+        searchField.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+        searchField.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText));
+        searchField.setHint("Search blocked users");
+        searchField.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        searchField.setPadding(AndroidUtilities.dp(4), 0, AndroidUtilities.dp(4), 0);
+        searchRow.addView(searchField, new LinearLayout.LayoutParams(0,
+                AndroidUtilities.dp(48), 1f));
+
+        ImageView refreshButton = new ImageView(context);
+        refreshButton.setImageResource(R.drawable.msg_retry);
+        refreshButton.setScaleType(ImageView.ScaleType.CENTER);
+        refreshButton.setColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText), PorterDuff.Mode.SRC_IN);
+        refreshButton.setContentDescription("Refresh blocked users");
+        refreshButton.setOnClickListener(v -> refreshList());
+        searchRow.addView(refreshButton, new LinearLayout.LayoutParams(
+                AndroidUtilities.dp(48), AndroidUtilities.dp(48)));
+        root.addView(searchRow, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 52, Gravity.TOP));
+
+        listView = new RecyclerListView(context);
+        listView.setLayoutManager(layoutManager = new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
+        listView.setVerticalScrollBarEnabled(false);
+        listView.setAdapter(adapter = new ListAdapter(context));
+        listView.setEmptyView(emptyView = new EmptyTextProgressView(context));
+        emptyView.setText(LocaleController.getString(R.string.NoBlocked));
+        root.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT,
+                LayoutHelper.MATCH_PARENT, Gravity.TOP, 0, 52, 0, 0));
+        root.addView(emptyView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT,
+                LayoutHelper.MATCH_PARENT, Gravity.TOP, 0, 52, 0, 0));
+
+        searchField.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                handler.removeCallbacks(searchRunnable);
+                handler.postDelayed(searchRunnable, 350L);
+            }
+            @Override public void afterTextChanged(Editable s) { }
+        });
+
+        listView.setOnItemClickListener((view, position) -> {
+            if (position < 0 || position >= users.size()) return;
+            BlockedUser blocked = users.get(position);
+            Bundle args = new Bundle();
+            args.putLong("user_id", blocked.id);
+            presentFragment(new ProfileActivity(args));
+        });
+        listView.setOnItemLongClickListener((view, position) -> {
+            if (position < 0 || position >= users.size()) return false;
+            showUnblockOptions(users.get(position), view);
+            return true;
+        });
+        listView.setOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                if (!hasMore || loading || users.isEmpty()) return;
+                int last = layoutManager.findLastVisibleItemPosition();
+                if (last >= adapter.getItemCount() - 7) loadPage(false);
+            }
+        });
+
+        emptyView.showProgress();
+        loadPage(true);
+        return fragmentView;
+    }
+
+    private void refreshList() {
+        if (searchField != null) {
+            query = searchField.getText().toString().trim();
+        }
+        nextPage = 1;
+        hasMore = true;
+        loading = false;
+        requestGeneration++;
+        users.clear();
+        if (adapter != null) adapter.notifyDataSetChanged();
+        if (emptyView != null) emptyView.showProgress();
+        loadPage(true);
+        ZenoraUserBlockController.syncEvents((changed, error) -> {
+            if (changed && getParentActivity() != null) {
+                loadPage(true);
+            }
+        });
+    }
+
+    private void loadPage(boolean reset) {
+        if (!ZenoraApiClient.isZenoraSessionEnabled() || loading || (!hasMore && !reset)) return;
+        if (reset) {
+            nextPage = 1;
+            hasMore = true;
+        }
+        loading = true;
+        final int requestedPage = nextPage;
+        final long generation = ++requestGeneration;
+        if (users.isEmpty() && emptyView != null) emptyView.showProgress();
+
+        ZenoraApiClient.getBlockedUsers(requestedPage, PAGE_SIZE, query, (response, error) -> {
+            if (generation != requestGeneration || getParentActivity() == null
+                    || !ZenoraApiClient.isZenoraSessionEnabled()) return;
+            loading = false;
+            if (error != null) {
+                FileLog.e(error);
+                if (users.isEmpty() && emptyView != null) {
+                    emptyView.setText("Could not load blocked users. Tap refresh to retry.");
+                    emptyView.showTextView();
+                } else if (getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(), "Could not refresh blocked users.",
+                            Toast.LENGTH_SHORT).show();
+                }
+                return;
+            }
+
+            JSONArray rows = response.optJSONArray("users");
+            JSONObject pagination = response.optJSONObject("pagination");
+            if (rows == null || pagination == null) {
+                if (users.isEmpty() && emptyView != null) {
+                    emptyView.setText("The server returned an invalid blocked-users list.");
+                    emptyView.showTextView();
+                }
+                return;
+            }
+
+            if (reset) users.clear();
+            Set<Long> seen = new HashSet<>();
+            for (BlockedUser item : users) seen.add(item.id);
+            for (int i = 0; i < rows.length(); i++) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row == null) continue;
+                long id = row.optLong("id", 0);
+                if (id <= 0 || !seen.add(id)) continue;
+                String username = row.optString("username", "");
+                String displayName = row.optString("display_name", "");
+                String avatar = row.optString("avatar_path", "");
+                TLRPC.User peer = ZenoraChatController.ensureZenoraUser(
+                        currentAccount, id, username, displayName, avatar);
+                if (peer == null) continue;
+                users.add(new BlockedUser(id, username, displayName, avatar, peer));
+            }
+            nextPage = requestedPage + 1;
+            hasMore = pagination.optBoolean("has_more", false);
+            if (adapter != null) adapter.notifyDataSetChanged();
+            if (emptyView != null) {
+                if (users.isEmpty()) {
+                    emptyView.setText(LocaleController.getString(R.string.NoBlocked));
+                    emptyView.showTextView();
+                } else {
+                    emptyView.showTextView();
+                }
+            }
+        });
+    }
+
+    private void showUnblockOptions(BlockedUser user, View anchor) {
+        if (getParentActivity() == null || pendingUnblocks.contains(user.id)) return;
+        ItemOptions.makeOptions(this, anchor)
+                .setScrimViewBackground(new android.graphics.drawable.ColorDrawable(
+                        Theme.getColor(Theme.key_windowBackgroundWhite)))
+                .add(0, LocaleController.getString(R.string.Unblock), () -> unblock(user))
+                .setMinWidth(190)
+                .show();
+    }
+
+    private void unblock(BlockedUser user) {
+        if (pendingUnblocks.contains(user.id)) return;
+        pendingUnblocks.add(user.id);
+        ZenoraUserBlockController.setBlocked(user.id, false, (state, error) -> {
+            pendingUnblocks.remove(user.id);
+            if (error != null || state == null || state.blockedByMe != 0) {
+                if (getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(), "Could not unblock this user.",
+                            Toast.LENGTH_LONG).show();
+                }
+                return;
+            }
+            for (int i = users.size() - 1; i >= 0; i--) {
+                if (users.get(i).id == user.id) users.remove(i);
+            }
+            if (adapter != null) adapter.notifyDataSetChanged();
+            if (users.isEmpty() && emptyView != null) {
+                emptyView.setText(LocaleController.getString(R.string.NoBlocked));
+                emptyView.showTextView();
+            }
+            // Reconcile the page total and any changes made by another session.
+            refreshList();
+        });
+    }
+
+    private class ListAdapter extends RecyclerListView.SelectionAdapter {
+        private final Context context;
+
+        ListAdapter(Context context) {
+            this.context = context;
+        }
+
+        @Override
+        public int getItemCount() {
+            return users.size();
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            return 0;
+        }
+
+        @Override
+        public boolean isEnabled(RecyclerView.ViewHolder holder) {
+            return true;
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            ManageChatUserCell cell = new ManageChatUserCell(context, 7, 6, true);
+            cell.setDelegate((view, click) -> {
+                if (click && view.getTag() instanceof Long) {
+                    long id = (Long) view.getTag();
+                    for (BlockedUser user : users) {
+                        if (user.id == id) {
+                            showUnblockOptions(user, view);
+                            break;
+                        }
+                    }
+                }
+                return true;
+            });
+            return new RecyclerListView.Holder(cell);
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+            BlockedUser blocked = users.get(position);
+            ManageChatUserCell cell = (ManageChatUserCell) holder.itemView;
+            cell.setTag(blocked.id);
+            String subtitle = blocked.username == null || blocked.username.isEmpty()
+                    || "deleted_account".equals(blocked.username)
+                    ? "" : "@" + blocked.username;
+            cell.setData(blocked.peer, null, subtitle, position != users.size() - 1);
+        }
+    }
+}
