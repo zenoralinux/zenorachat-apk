@@ -1373,15 +1373,24 @@ public final class ZenoraChatController {
     public static TLRPC.User ensureZenoraUser(int account, long id, String username,
                                                String displayName, String avatarPath) {
         if (id <= 0) return null;
-        if (avatarPath != null && !avatarPath.trim().isEmpty()) {
-            ZenoraAvatarRegistry.setUserAvatar(account, id, ZenoraApiClient.resolvePublicUrl(avatarPath));
-        }
+        String resolvedAvatar = avatarPath == null || avatarPath.trim().isEmpty()
+                ? null : ZenoraApiClient.resolvePublicUrl(avatarPath);
+        // Replace or remove stale thumbnails, especially for anonymized/deleted accounts.
+        ZenoraAvatarRegistry.setUserAvatar(account, id, resolvedAvatar);
         MessagesController controller = MessagesController.getInstance(account);
         TLRPC.User user = controller.getUser(id);
         if (user == null) {
             user = makeUser(id, username, displayName, false, false);
-            if (user != null) controller.putUser(user, false, true);
+        } else {
+            // The blocked-users response is the current source for this Zenora directory.
+            user.username = username == null ? "" : username;
+            user.first_name = nonEmpty(displayName, nonEmpty(user.username, "ZenoraChat"));
+            user.last_name = "";
+            if ("deleted_account".equals(user.username)) {
+                user.photo = new TLRPC.TL_userProfilePhotoEmpty();
+            }
         }
+        if (user != null) controller.putUser(user, false, true);
         return user;
     }
 
