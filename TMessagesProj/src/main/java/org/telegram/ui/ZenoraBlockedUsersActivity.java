@@ -107,6 +107,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         super.onFragmentDestroy();
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.blockedUsersDidLoad);
         handler.removeCallbacks(searchRunnable);
+        handler.removeCallbacks(notificationRefreshRunnable);
         requestGeneration++;
     }
 
@@ -196,8 +197,9 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
             }
         });
 
+        // onResume() performs the single initial load. Starting a request here
+        // as well caused the first page to be cancelled and fetched twice.
         emptyView.showProgress();
-        loadPage(true);
         return fragmentView;
     }
 
@@ -312,8 +314,9 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
                 emptyView.setText(LocaleController.getString(R.string.NoBlocked));
                 emptyView.showTextView();
             }
-            // Reconcile the page total and any changes made by another session.
-            refreshList();
+            // The block controller posts blockedUsersDidLoad after its
+            // authoritative state is stored; the debounced observer refreshes
+            // the directory once, avoiding a second request here.
         });
     }
 
@@ -321,7 +324,19 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     public void onResume() {
         super.onResume();
         ZenoraUserBlockController.syncEvents(null);
-        refreshList();
+        if (adapter != null) {
+            refreshList();
+        }
+    }
+
+    @Override
+    protected RecyclerListView getListViewForSimpleGlass() {
+        return listView;
+    }
+
+    @Override
+    public boolean isSupportEdgeToEdge() {
+        return true;
     }
 
     @Override
