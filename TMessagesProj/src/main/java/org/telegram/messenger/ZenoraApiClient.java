@@ -552,6 +552,36 @@ public final class ZenoraApiClient {
         });
     }
 
+    /**
+     * Fetch a bounded Zenora message-history page. The server owns authorization,
+     * deletion visibility, personal DM-clear boundaries and cursor validation.
+     */
+    public static void fetchMessages(long roomId, Long cursor, String direction,
+                                     int limit, Long afterId, Long aroundId,
+                                     boolean includePinned, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (roomId <= 0) throw new IllegalArgumentException("Invalid Zenora room id");
+                if (!"older".equals(direction) && !"newer".equals(direction)) {
+                    throw new IllegalArgumentException("Invalid history direction");
+                }
+                int boundedLimit = Math.max(1, Math.min(200, limit));
+                StringBuilder path = new StringBuilder("messages_fetch.php?room_id=")
+                        .append(encode(String.valueOf(roomId)))
+                        .append("&limit=").append(boundedLimit)
+                        .append("&direction=").append(encode(direction));
+                if (cursor != null && cursor > 0) path.append("&cursor=").append(cursor);
+                if (afterId != null && afterId >= 0) path.append("&after_id=").append(afterId);
+                if (aroundId != null && aroundId > 0) path.append("&around_id=").append(aroundId);
+                if (includePinned) path.append("&include_pinned=1");
+                JSONObject response = request(path.toString(), "GET", null);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
     public static void fetchRooms(Callback callback) {
         executor.execute(() -> {
             try {
