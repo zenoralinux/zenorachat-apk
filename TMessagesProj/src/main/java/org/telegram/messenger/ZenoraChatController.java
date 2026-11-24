@@ -209,7 +209,7 @@ public final class ZenoraChatController {
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
-            blockedUsersByAccount.remove(account);
+                blockedUsersByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
             }
@@ -246,6 +246,7 @@ public final class ZenoraChatController {
                 savedDialogIds.remove(account);
                 typingDialogIdsByAccount.remove(account);
                 presenceUserIdsByAccount.remove(account);
+                blockedUsersByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
                 long generation = requestGenerations.containsKey(account)
