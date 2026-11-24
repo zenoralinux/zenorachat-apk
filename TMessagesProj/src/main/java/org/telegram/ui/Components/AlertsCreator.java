@@ -101,6 +101,8 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraUserBlockController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.Utilities;
@@ -1512,7 +1514,19 @@ public class AlertsCreator {
         }
         builder.setPositiveButton(reportText, (dialogInterface, i) -> {
             if (currentUser != null) {
-                accountInstance.getMessagesController().blockPeer(currentUser.id);
+                if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                    ZenoraUserBlockController.setBlocked(currentUser.id, true, (state, error) -> {
+                        if (error != null || state == null || state.blockedByMe != 1) {
+                            if (fragment.getParentActivity() != null) {
+                                Toast.makeText(fragment.getParentActivity(),
+                                        "مسدودسازی کاربر در ZenoraChat تأیید نشد.",
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        }
+                    });
+                } else {
+                    accountInstance.getMessagesController().blockPeer(currentUser.id);
+                }
             }
             if (cells == null || cells[0] != null && cells[0].isChecked()) {
                 accountInstance.getMessagesController().reportSpam(dialog_id, currentUser, currentChat, encryptedChat, currentChat != null && isLocation);
