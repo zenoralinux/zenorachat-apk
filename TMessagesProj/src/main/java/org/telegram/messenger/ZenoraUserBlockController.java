@@ -163,8 +163,9 @@ public final class ZenoraUserBlockController {
                     new IllegalStateException("ZENORA_SESSION_REQUIRED"));
             return;
         }
+        final String pendingKey = actorId + ":" + actorGeneration + ":" + targetUserId;
         synchronized (LOCK) {
-            if (PENDING.contains(actorId + ":" + targetUserId)) {
+            if (PENDING.contains(pendingKey)) {
                 if (callback != null) callback.onComplete(getCachedState(targetUserId),
                         new IllegalStateException("BLOCK_OPERATION_PENDING"));
                 return;
@@ -183,8 +184,13 @@ public final class ZenoraUserBlockController {
             }
             try {
                 State state = parseState(response, targetUserId);
-                if (isLatest(actorId, targetUserId, sequence)) storeState(actorId, actorGeneration, state);
-                if (callback != null) callback.onComplete(getCachedState(targetUserId), null);
+                if (!isLatest(actorId, targetUserId, sequence)) {
+                    if (callback != null) callback.onComplete(getCachedState(targetUserId),
+                            new IllegalStateException("STALE_BLOCK_STATUS_RESPONSE"));
+                    return;
+                }
+                storeState(actorId, actorGeneration, state);
+                if (callback != null) callback.onComplete(state, null);
             } catch (Exception parseError) {
                 if (callback != null) callback.onComplete(getCachedState(targetUserId), parseError);
             }
@@ -203,7 +209,7 @@ public final class ZenoraUserBlockController {
                     new IllegalStateException("ZENORA_SESSION_REQUIRED"));
             return;
         }
-        final String pendingKey = actorId + ":" + targetUserId;
+        final String pendingKey = actorId + ":" + actorGeneration + ":" + targetUserId;
         final long sequence = nextSequence(actorId, targetUserId);
         synchronized (LOCK) {
             if (!PENDING.add(pendingKey)) {
