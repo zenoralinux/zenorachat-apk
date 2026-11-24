@@ -244,7 +244,8 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     /**
      * BaseFragmentSimpleGlass owns the list's status-bar/action-bar/navigation
      * insets. The fixed search row and empty state must follow that exact content
-     * rectangle, not a second hard-coded top margin.
+     * rectangle: search starts after the action bar, and list/empty content
+     * starts after the search row.
      */
     private void updateGlassOverlayPositions() {
         if (rootView == null || listView == null || searchRow == null || emptyView == null
@@ -252,7 +253,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
             return;
         }
         int contentTop = listView.getTop() + listView.getPaddingTop();
-        int searchTop = Math.max(0, contentTop - AndroidUtilities.dp(SEARCH_ROW_HEIGHT_DP));
+        int searchTop = Math.max(0, contentTop);
 
         ViewGroup.LayoutParams searchRawParams = searchRow.getLayoutParams();
         if (searchRawParams instanceof FrameLayout.LayoutParams) {
@@ -266,7 +267,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         ViewGroup.LayoutParams emptyRawParams = emptyView.getLayoutParams();
         if (emptyRawParams instanceof FrameLayout.LayoutParams) {
             FrameLayout.LayoutParams emptyParams = (FrameLayout.LayoutParams) emptyRawParams;
-            int emptyTop = Math.max(0, contentTop);
+            int emptyTop = Math.max(0, contentTop + AndroidUtilities.dp(SEARCH_ROW_HEIGHT_DP));
             if (emptyParams.topMargin != emptyTop) {
                 emptyParams.topMargin = emptyTop;
                 emptyView.setLayoutParams(emptyParams);
