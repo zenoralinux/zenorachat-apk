@@ -79,6 +79,8 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     private boolean hasMore = true;
     private boolean loading;
     private long requestGeneration;
+    private final Runnable notificationRefreshRunnable = () -> refreshList();
+
     private final Runnable searchRunnable = () -> {
         query = searchField == null ? "" : searchField.getText().toString().trim();
         requestGeneration++;
@@ -96,11 +98,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         super.onFragmentCreate();
         if (!ZenoraApiClient.isZenoraSessionEnabled()) return false;
         NotificationCenter.getInstance(currentAccount).addWeakObserver(this, NotificationCenter.blockedUsersDidLoad);
-        ZenoraUserBlockController.syncEvents((changed, error) -> {
-            if (changed && getParentActivity() != null) {
-                refreshList();
-            }
-        });
+        ZenoraUserBlockController.syncEvents(null);
         return true;
     }
 
@@ -215,11 +213,6 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         if (adapter != null) adapter.notifyDataSetChanged();
         if (emptyView != null) emptyView.showProgress();
         loadPage(true);
-        ZenoraUserBlockController.syncEvents((changed, error) -> {
-            if (changed && getParentActivity() != null) {
-                loadPage(true);
-            }
-        });
     }
 
     private void loadPage(boolean reset) {
@@ -327,6 +320,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     @Override
     public void onResume() {
         super.onResume();
+        ZenoraUserBlockController.syncEvents(null);
         refreshList();
     }
 
@@ -334,7 +328,8 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     public void didReceivedNotification(int id, int account, Object... args) {
         if (id == NotificationCenter.blockedUsersDidLoad
                 && account == currentAccount && getParentActivity() != null) {
-            refreshList();
+            handler.removeCallbacks(notificationRefreshRunnable);
+            handler.postDelayed(notificationRefreshRunnable, 120L);
         }
     }
 
