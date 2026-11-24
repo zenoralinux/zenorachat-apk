@@ -8733,7 +8733,7 @@ public class MessagesController extends BaseController implements NotificationCe
         // All positive user peers in a Zenora session are managed by the Zenora
         // service. Keep group/chat blocking on Telegram's native path.
         if (id > 0 && ZenoraChatController.isZenoraEnabled()) {
-            if (blockePeers.indexOfKey(id) >= 0) return;
+            if (ZenoraApiClient.isDmBlockedByMe(id)) return;
             ZenoraApiClient.setDmBlocked(id, true, (response, error) -> {
                 if (error != null || response == null) {
                     FileLog.e(error == null ? new IllegalStateException("Zenora Block was not confirmed") : error);
@@ -8989,6 +8989,26 @@ public class MessagesController extends BaseController implements NotificationCe
         }));
     }
 
+    /** Replace only positive-user Block entries from a Zenora snapshot; retain native chat blocks. */
+    public void applyZenoraBlockedUsers(org.json.JSONArray users) {
+        if (users == null) users = new org.json.JSONArray();
+        ArrayList<Long> oldUserIds = new ArrayList<>();
+        for (int i = 0; i < blockePeers.size(); i++) {
+            long peerId = blockePeers.keyAt(i);
+            if (peerId > 0) oldUserIds.add(peerId);
+        }
+        for (Long peerId : oldUserIds) blockePeers.delete(peerId);
+        ZenoraChatController.cacheBlockedUsers(currentAccount, users);
+        for (int i = 0; i < users.length(); i++) {
+            org.json.JSONObject row = users.optJSONObject(i);
+            long userId = row == null ? 0 : row.optLong("id", 0);
+            if (userId > 0) blockePeers.put(userId, 1);
+        }
+        totalBlockedCount = blockePeers.size();
+        blockedEndReached = true;
+        getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+    }
+
     public void getBlockedPeers(boolean reset) {
         if (ZenoraChatController.isZenoraEnabled()) {
             if (loadingBlockedPeers) return;
@@ -9000,17 +9020,7 @@ public class MessagesController extends BaseController implements NotificationCe
                     return;
                 }
                 org.json.JSONArray users = response.optJSONArray("users");
-                if (users == null) users = new org.json.JSONArray();
-                ZenoraChatController.cacheBlockedUsers(currentAccount, users);
-                blockePeers.clear();
-                for (int i = 0; i < users.length(); i++) {
-                    org.json.JSONObject row = users.optJSONObject(i);
-                    long userId = row == null ? 0 : row.optLong("id", 0);
-                    if (userId > 0) blockePeers.put(userId, 1);
-                }
-                totalBlockedCount = blockePeers.size();
-                blockedEndReached = true;
-                getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+                applyZenoraBlockedUsers(users);
             });
             return;
         }

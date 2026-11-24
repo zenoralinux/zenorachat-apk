@@ -238,7 +238,7 @@ public final class ZenoraChatController {
                 FileLog.e("[ZenoraChat] initial block-state sync failed: " + error.getMessage());
                 return;
             }
-            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.blockedUsersDidLoad);
+            MessagesController.getInstance(account).applyZenoraBlockedUsers(response.optJSONArray("users"));
         });
     }
 
