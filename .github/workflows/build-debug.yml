@@ -215,7 +215,9 @@ jobs:
           VERSION_CODE="$(awk -F= '$1=="APP_VERSION_CODE" {print $2}' gradle.properties | tail -n1)"
           OUTPUT="dist/ZenoraChat-${VERSION_NAME}-${VERSION_CODE}-debug-${ZENORA_BUILD_MODE}.apk"
           cp "$APK_SOURCE" "$OUTPUT"
-          APP_PACKAGE="$APP_PACKAGE" EXPECTED_ABIS="$ZENORA_ABIS" bash scripts/validate-apk.sh debug "$OUTPUT"
+          APP_PACKAGE="$APP_PACKAGE" EXPECTED_ABIS="$ZENORA_ABIS" \
+          EXPECTED_VERSION_NAME="$VERSION_NAME" EXPECTED_VERSION_CODE="$VERSION_CODE" \
+          bash scripts/validate-apk.sh debug "$OUTPUT"
           if [[ "$ZENORA_BUILD_MODE" == "fast" ]]; then
             cp "$OUTPUT" dist/ZenoraChat-debug-arm64.apk
             sha256sum "$OUTPUT" dist/ZenoraChat-debug-arm64.apk > dist/SHA256SUMS
