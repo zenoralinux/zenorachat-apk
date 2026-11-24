@@ -6300,6 +6300,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         final long targetId = userId;
         ZenoraUserBlockController.refreshStatus(targetId, (state, error) -> {
             if (error != null || state == null || targetId != userId
+                    || getParentActivity() == null || fragmentView == null
                     || !ZenoraApiClient.isZenoraSessionEnabled()) {
                 return;
             }
@@ -6328,6 +6329,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         ZenoraUserBlockController.setBlocked(targetId, blocked, (state, error) -> {
             if (targetId != userId) return;
             zenoraBlockRequestPending = false;
+            if (getParentActivity() == null || fragmentView == null) return;
             if (error != null || state == null) {
                 String message = "عملیات مسدودسازی در ZenoraChat انجام نشد.";
                 if (error instanceof ZenoraApiClient.ApiException) {
