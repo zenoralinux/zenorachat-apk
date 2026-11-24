@@ -260,6 +260,15 @@ public final class ZenoraChatController {
         requestRooms(accountInstance, false);
     }
 
+    /** Resolve a native dialog ID to the authenticated Zenora room ID. */
+    public static long getRoomIdForDialog(int account, long dialogId) {
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            Long roomId = mappings == null ? null : mappings.get(dialogId);
+            return roomId == null ? 0L : roomId;
+        }
+    }
+
     /** Send native composer typing state to the currently mapped Zenora room. */
     public static void setTypingState(int account, long dialogId, boolean typing) {
         if (!ZenoraApiClient.isZenoraSessionEnabled() || dialogId == 0) return;
