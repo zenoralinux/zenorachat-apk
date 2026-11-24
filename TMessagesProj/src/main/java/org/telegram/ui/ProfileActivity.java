@@ -6274,6 +6274,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
 
     private void onCallClicked(boolean isVideoCall) {
         if (userId != 0) {
+            if (ZenoraChatController.isZenoraEnabled()) {
+                Toast.makeText(getParentActivity(),
+                        "Voice and video calls are not available for Zenora accounts yet.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
             TLRPC.User user = getMessagesController().getUser(userId);
             if (user != null) {
                 VoIPHelper.startCall(user, isVideoCall, userInfo != null && userInfo.video_calls_available, getParentActivity(), userInfo, getAccountInstance());
