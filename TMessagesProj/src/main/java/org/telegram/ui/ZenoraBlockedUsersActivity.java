@@ -47,6 +47,7 @@ import java.util.Set;
 /** Native Telegram-style directory backed exclusively by Zenora's Block API. */
 public class ZenoraBlockedUsersActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
     private static final int PAGE_SIZE = 30;
+    private static final int SEARCH_ROW_HEIGHT_DP = 52;
 
     private static final class BlockedUser {
         final long id;
@@ -73,16 +74,22 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     private ListAdapter adapter;
     private EmptyTextProgressView emptyView;
     private EditText searchField;
+    private LinearLayout searchRow;
+    private FrameLayout rootView;
 
     private String query = "";
     private int nextPage = 1;
     private boolean hasMore = true;
     private boolean loading;
+    private boolean initialLoadStarted;
+    private boolean glassSearchInsetApplied;
     private long requestGeneration;
     private final Runnable notificationRefreshRunnable = () -> refreshList();
 
     private final Runnable searchRunnable = () -> {
-        query = searchField == null ? "" : searchField.getText().toString().trim();
+        String nextQuery = searchField == null ? "" : searchField.getText().toString().trim();
+        if (nextQuery.equals(query)) return;
+        query = nextQuery;
         requestGeneration++;
         loading = false;
         nextPage = 1;
@@ -98,6 +105,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         super.onFragmentCreate();
         if (!ZenoraApiClient.isZenoraSessionEnabled()) return false;
         NotificationCenter.getInstance(currentAccount).addWeakObserver(this, NotificationCenter.blockedUsersDidLoad);
+        NotificationCenter.getInstance(currentAccount).addWeakObserver(this, NotificationCenter.updateInterfaces);
         ZenoraUserBlockController.syncEvents(null);
         return true;
     }
@@ -106,6 +114,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     public void onFragmentDestroy() {
         super.onFragmentDestroy();
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.blockedUsersDidLoad);
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.updateInterfaces);
         handler.removeCallbacks(searchRunnable);
         handler.removeCallbacks(notificationRefreshRunnable);
         requestGeneration++;
@@ -130,10 +139,13 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
 
         FrameLayout root = new FrameLayout(context);
         fragmentView = root;
+        rootView = root;
+        glassSearchInsetApplied = false;
 
         LinearLayout searchRow = new LinearLayout(context);
         searchRow.setOrientation(LinearLayout.HORIZONTAL);
         searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
         searchRow.setPadding(AndroidUtilities.dp(16), 0, AndroidUtilities.dp(8), 0);
         searchField = new EditText(context);
         searchField.setSingleLine(true);
@@ -154,7 +166,8 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         refreshButton.setOnClickListener(v -> refreshList());
         searchRow.addView(refreshButton, new LinearLayout.LayoutParams(
                 AndroidUtilities.dp(48), AndroidUtilities.dp(48)));
-        root.addView(searchRow, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 52, Gravity.TOP));
+        searchRow.setClipToPadding(false);
+        this.searchRow = searchRow;
 
         listView = new RecyclerListView(context);
         listView.setLayoutManager(layoutManager = new LinearLayoutManager(context, LinearLayoutManager.VERTICAL, false));
@@ -163,9 +176,14 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         listView.setEmptyView(emptyView = new EmptyTextProgressView(context));
         emptyView.setText(LocaleController.getString(R.string.NoBlocked));
         root.addView(listView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT,
-                LayoutHelper.MATCH_PARENT, Gravity.TOP, 0, 52, 0, 0));
+                LayoutHelper.MATCH_PARENT, Gravity.TOP));
         root.addView(emptyView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT,
-                LayoutHelper.MATCH_PARENT, Gravity.TOP, 0, 52, 0, 0));
+                LayoutHelper.MATCH_PARENT, Gravity.TOP));
+        // Keep search fixed below Telegram's glass action bar. BaseFragment applies
+        // the real system/action-bar insets to the list; onViewCreated aligns this
+        // overlay to the resulting content origin instead of guessing with 52dp.
+        root.addView(searchRow, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT,
+                SEARCH_ROW_HEIGHT_DP, Gravity.TOP));
 
         searchField.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
@@ -203,6 +221,63 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         return fragmentView;
     }
 
+    @Override
+    protected void onViewCreated(View view) {
+        super.onViewCreated(view);
+        if (listView == null || searchRow == null || emptyView == null || glassSearchInsetApplied) {
+            return;
+        }
+        int originalTop = listView.getPaddingTop();
+        listView.setPadding(listView.getPaddingLeft(),
+                originalTop + AndroidUtilities.dp(SEARCH_ROW_HEIGHT_DP),
+                listView.getPaddingRight(), listView.getPaddingBottom());
+        glassSearchInsetApplied = true;
+
+        View.OnLayoutChangeListener overlayLayoutListener = (v, left, top, right, bottom,
+                                                              oldLeft, oldTop, oldRight, oldBottom) ->
+                updateGlassOverlayPositions();
+        listView.addOnLayoutChangeListener(overlayLayoutListener);
+        view.addOnLayoutChangeListener(overlayLayoutListener);
+        listView.post(this::updateGlassOverlayPositions);
+    }
+
+    /**
+     * BaseFragmentSimpleGlass owns the list's status-bar/action-bar/navigation
+     * insets. The fixed search row and empty state must follow that exact content
+     * rectangle, not a second hard-coded top margin.
+     */
+    private void updateGlassOverlayPositions() {
+        if (rootView == null || listView == null || searchRow == null || emptyView == null
+                || rootView.getHeight() <= 0) {
+            return;
+        }
+        int contentTop = listView.getTop() + listView.getPaddingTop();
+        int searchTop = Math.max(0, contentTop - AndroidUtilities.dp(SEARCH_ROW_HEIGHT_DP));
+
+        ViewGroup.LayoutParams searchRawParams = searchRow.getLayoutParams();
+        if (searchRawParams instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams searchParams = (FrameLayout.LayoutParams) searchRawParams;
+            if (searchParams.topMargin != searchTop) {
+                searchParams.topMargin = searchTop;
+                searchRow.setLayoutParams(searchParams);
+            }
+        }
+
+        ViewGroup.LayoutParams emptyRawParams = emptyView.getLayoutParams();
+        if (emptyRawParams instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams emptyParams = (FrameLayout.LayoutParams) emptyRawParams;
+            int emptyTop = Math.max(0, contentTop);
+            if (emptyParams.topMargin != emptyTop) {
+                emptyParams.topMargin = emptyTop;
+                emptyView.setLayoutParams(emptyParams);
+            }
+        }
+        if (emptyView.getPaddingBottom() != listView.getPaddingBottom()) {
+            emptyView.setPadding(emptyView.getPaddingLeft(), emptyView.getPaddingTop(),
+                    emptyView.getPaddingRight(), listView.getPaddingBottom());
+        }
+    }
+
     private void refreshList() {
         if (searchField != null) {
             query = searchField.getText().toString().trim();
@@ -210,10 +285,8 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
         nextPage = 1;
         hasMore = true;
         loading = false;
-        requestGeneration++;
-        users.clear();
-        if (adapter != null) adapter.notifyDataSetChanged();
-        if (emptyView != null) emptyView.showProgress();
+        if (users.isEmpty() && emptyView != null) emptyView.showProgress();
+        // Keep the last valid snapshot visible until the replacement page succeeds.
         loadPage(true);
     }
 
@@ -232,7 +305,7 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
             if (generation != requestGeneration || getParentActivity() == null
                     || !ZenoraApiClient.isZenoraSessionEnabled()) return;
             loading = false;
-            if (error != null) {
+            if (error != null || response == null) {
                 FileLog.d("[ZenoraChat] Blocked-users API request failed.");
                 if (users.isEmpty() && emptyView != null) {
                     emptyView.setText("Could not load blocked users. Tap refresh to retry.");
@@ -250,13 +323,18 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
                 if (users.isEmpty() && emptyView != null) {
                     emptyView.setText("The server returned an invalid blocked-users list.");
                     emptyView.showTextView();
+                } else {
+                    Toast.makeText(getParentActivity(), "The server returned an invalid blocked-users list.",
+                            Toast.LENGTH_SHORT).show();
                 }
                 return;
             }
 
-            if (reset) users.clear();
+            ArrayList<BlockedUser> pageUsers = new ArrayList<>();
             Set<Long> seen = new HashSet<>();
-            for (BlockedUser item : users) seen.add(item.id);
+            if (!reset) {
+                for (BlockedUser item : users) seen.add(item.id);
+            }
             for (int i = 0; i < rows.length(); i++) {
                 JSONObject row = rows.optJSONObject(i);
                 if (row == null) continue;
@@ -268,18 +346,24 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
                 TLRPC.User peer = ZenoraChatController.ensureZenoraUser(
                         currentAccount, id, username, displayName, avatar);
                 if (peer == null) continue;
-                users.add(new BlockedUser(id, username, displayName, avatar, peer));
+                pageUsers.add(new BlockedUser(id, username, displayName, avatar, peer));
             }
+
+            int previousSize = users.size();
+            if (reset) users.clear();
+            users.addAll(pageUsers);
             nextPage = requestedPage + 1;
             hasMore = pagination.optBoolean("has_more", false);
-            if (adapter != null) adapter.notifyDataSetChanged();
-            if (emptyView != null) {
-                if (users.isEmpty()) {
-                    emptyView.setText(LocaleController.getString(R.string.NoBlocked));
-                    emptyView.showTextView();
-                } else {
-                    emptyView.showTextView();
+            if (adapter != null) {
+                if (reset) {
+                    adapter.notifyDataSetChanged();
+                } else if (!pageUsers.isEmpty()) {
+                    adapter.notifyItemRangeInserted(previousSize, pageUsers.size());
                 }
+            }
+            if (emptyView != null && users.isEmpty()) {
+                emptyView.setText(LocaleController.getString(R.string.NoBlocked));
+                emptyView.showTextView();
             }
         });
     }
@@ -306,10 +390,18 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
                 }
                 return;
             }
+            int removedPosition = -1;
             for (int i = users.size() - 1; i >= 0; i--) {
-                if (users.get(i).id == user.id) users.remove(i);
+                if (users.get(i).id == user.id) {
+                    users.remove(i);
+                    removedPosition = i;
+                    break;
+                }
             }
-            if (adapter != null) adapter.notifyDataSetChanged();
+            if (adapter != null && removedPosition >= 0) {
+                adapter.notifyItemRemoved(removedPosition);
+                if (removedPosition < users.size()) adapter.notifyItemChanged(removedPosition);
+            }
             if (users.isEmpty() && emptyView != null) {
                 emptyView.setText(LocaleController.getString(R.string.NoBlocked));
                 emptyView.showTextView();
@@ -323,8 +415,11 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
     @Override
     public void onResume() {
         super.onResume();
-        ZenoraUserBlockController.syncEvents(null);
-        if (adapter != null) {
+        // The event stream is started once when this Fragment is created.
+        // Reopening the screen after viewing a profile must not clear/re-fetch
+        // the directory or reset its scroll position.
+        if (adapter != null && !initialLoadStarted) {
+            initialLoadStarted = true;
             refreshList();
         }
     }
@@ -341,10 +436,13 @@ public class ZenoraBlockedUsersActivity extends BaseFragment implements Notifica
 
     @Override
     public void didReceivedNotification(int id, int account, Object... args) {
-        if (id == NotificationCenter.blockedUsersDidLoad
-                && account == currentAccount && getParentActivity() != null) {
+        if (account != currentAccount || getParentActivity() == null) return;
+        if (id == NotificationCenter.blockedUsersDidLoad) {
             handler.removeCallbacks(notificationRefreshRunnable);
             handler.postDelayed(notificationRefreshRunnable, 120L);
+        } else if (id == NotificationCenter.updateInterfaces && adapter != null) {
+            // Rebind profile changes locally without forcing another API request.
+            adapter.notifyDataSetChanged();
         }
     }
 
