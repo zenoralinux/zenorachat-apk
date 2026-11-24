@@ -232,6 +232,14 @@ public final class ZenoraChatController {
         config.setCurrentUser(self);
         config.saveConfig(true);
         MessagesController.getInstance(account).putUser(self, false, true);
+        // Prime native profile/settings state from the authoritative per-account Block snapshot.
+        ZenoraApiClient.syncBlockedUsers((response, error) -> {
+            if (error != null) {
+                FileLog.e("[ZenoraChat] initial block-state sync failed: " + error.getMessage());
+                return;
+            }
+            MessagesController.getInstance(account).applyZenoraBlockedUsers(response.optJSONArray("users"));
+        });
     }
 
     public static void loadDialogs(AccountInstance accountInstance) {
@@ -1339,6 +1347,24 @@ public final class ZenoraChatController {
                                     .postNotificationName(NotificationCenter.dialogsNeedReload));
         });
         return true;
+    }
+
+    /** Merge users returned by the Zenora blocked-users API into the native user cache. */
+    public static void cacheBlockedUsers(int account, JSONArray users) {
+        if (users == null) return;
+        MessagesController controller = MessagesController.getInstance(account);
+        for (int i = 0; i < users.length(); i++) {
+            JSONObject row = users.optJSONObject(i);
+            if (row == null) continue;
+            long id = row.optLong("id", 0);
+            if (id <= 0) continue;
+            TLRPC.User user = makeUser(id, row.optString("username", ""),
+                    row.optString("display_name", ""), false, row.optInt("is_verified", 0) == 1);
+            if (user != null) controller.getUsers().put(id, user);
+        }
+        NotificationCenter.getInstance(account).postNotificationName(
+                NotificationCenter.updateInterfaces,
+                MessagesController.UPDATE_MASK_NAME | MessagesController.UPDATE_MASK_AVATAR);
     }
 
     private static TLRPC.User makeUser(long id, String username, String displayName, boolean self) {

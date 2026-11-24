@@ -25,6 +25,10 @@ import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraChatController;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.tgnet.TLRPC;
@@ -66,6 +70,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
     private int deleteAllRow;
 
     private boolean blockedUsersActivity;
+    private final ArrayList<Long> zenoraBlockedUserIds = new ArrayList<>();
 
     private boolean isGroup;
     private ArrayList<Long> uidArray;
@@ -91,8 +96,61 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
     }
 
     public PrivacyUsersActivity loadBlocked() {
-        getMessagesController().getBlockedPeers(true);
+        if (ZenoraChatController.isZenoraEnabled()) refreshZenoraBlockedUsers();
+        else getMessagesController().getBlockedPeers(true);
         return this;
+    }
+
+    private boolean isZenoraBlockedMode() {
+        return currentType == TYPE_BLOCKED && ZenoraChatController.isZenoraEnabled();
+    }
+
+    private long getBlockedUserIdAt(int index) {
+        return isZenoraBlockedMode()
+                ? (index >= 0 && index < zenoraBlockedUserIds.size() ? zenoraBlockedUserIds.get(index) : 0)
+                : getMessagesController().blockePeers.keyAt(index);
+    }
+
+    private int getBlockedUsersCount() {
+        return isZenoraBlockedMode() ? zenoraBlockedUserIds.size() : getMessagesController().blockePeers.size();
+    }
+
+    private void refreshZenoraBlockedUsers() {
+        ZenoraApiClient.fetchBlockedUsers((response, error) -> {
+            if (error != null || response == null) {
+                if (getParentActivity() != null) android.widget.Toast.makeText(getParentActivity(),
+                        error == null ? "Unable to load blocked users" : error.getMessage(),
+                        android.widget.Toast.LENGTH_LONG).show();
+                if (emptyView != null) emptyView.showTextView();
+                return;
+            }
+            JSONArray users = response.optJSONArray("users");
+            zenoraBlockedUserIds.clear();
+            if (users != null) {
+                ZenoraChatController.cacheBlockedUsers(currentAccount, users);
+                for (int i = 0; i < users.length(); i++) {
+                    JSONObject user = users.optJSONObject(i);
+                    long id = user == null ? 0 : user.optLong("id", 0);
+                    if (id > 0 && !zenoraBlockedUserIds.contains(id)) zenoraBlockedUserIds.add(id);
+                }
+            }
+            if (emptyView != null) emptyView.showTextView();
+            updateRows();
+        });
+    }
+
+    private void unblockZenoraUser(long userId) {
+        if (userId <= 0) return;
+        ZenoraApiClient.setDmBlocked(userId, false, (response, error) -> {
+            if (error != null) {
+                if (getParentActivity() != null) android.widget.Toast.makeText(getParentActivity(),
+                        error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            zenoraBlockedUserIds.remove(userId);
+            updateRows();
+            NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.blockedUsersDidLoad);
+        });
     }
 
     public PrivacyUsersActivity(int type, ArrayList<Long> users, boolean group, boolean always) {
@@ -110,6 +168,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
         NotificationCenter.getInstance(currentAccount).addWeakObserver(this, NotificationCenter.updateInterfaces);
         if (currentType == TYPE_BLOCKED) {
             NotificationCenter.getInstance(currentAccount).addWeakObserver(this, NotificationCenter.blockedUsersDidLoad);
+            if (ZenoraChatController.isZenoraEnabled()) refreshZenoraBlockedUsers();
         }
         return true;
     }
@@ -238,7 +297,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
             } else if (position >= usersStartRow && position < usersEndRow) {
                 if (currentType == TYPE_BLOCKED) {
                     Bundle args = new Bundle();
-                    args.putLong("user_id", getMessagesController().blockePeers.keyAt(position - usersStartRow));
+                    args.putLong("user_id", getBlockedUserIdAt(position - usersStartRow));
                     presentFragment(new ProfileActivity(args));
                 } else {
                     Bundle args = new Bundle();
@@ -256,7 +315,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
         listView.setOnItemLongClickListener((view, position) -> {
             if (position >= usersStartRow && position < usersEndRow) {
                 if (currentType == TYPE_BLOCKED) {
-                    showUnblockAlert(getMessagesController().blockePeers.keyAt(position - usersStartRow), view);
+                    showUnblockAlert(getBlockedUserIdAt(position - usersStartRow), view);
                 } else {
                     showUnblockAlert(uidArray.get(position - usersStartRow), view);
                 }
@@ -269,7 +328,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
             listView.setOnScrollListener(new RecyclerView.OnScrollListener() {
                 @Override
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
-                    if (getMessagesController().blockedEndReached) {
+                    if (isZenoraBlockedMode() || getMessagesController().blockedEndReached) {
                         return;
                     }
                     int firstVisibleItem = layoutManager.findFirstVisibleItemPosition();
@@ -304,7 +363,10 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
         }
         ItemOptions.makeOptions(this, view)
             .setScrimViewBackground(new ColorDrawable(Theme.getColor(Theme.key_windowBackgroundWhite)))
-            .addIf(currentType == TYPE_BLOCKED, 0, LocaleController.getString(R.string.Unblock), () -> getMessagesController().unblockPeer(uid))
+            .addIf(currentType == TYPE_BLOCKED, 0, LocaleController.getString(R.string.Unblock), () -> {
+                if (isZenoraBlockedMode()) unblockZenoraUser(uid);
+                else getMessagesController().unblockPeer(uid);
+            })
             .addIf(currentType != TYPE_BLOCKED, currentType == TYPE_PRIVACY ? R.drawable.msg_user_remove : 0, LocaleController.getString(R.string.Remove), true, () -> {
                 uidArray.remove(uid);
                 updateRows();
@@ -333,7 +395,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
 
             int count;
             if (currentType == TYPE_BLOCKED) {
-                count = getMessagesController().blockePeers.size();
+                count = getBlockedUsersCount();
             } else {
                 count = uidArray.size();
             }
@@ -372,7 +434,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
             }
         } else if (id == NotificationCenter.blockedUsersDidLoad) {
             emptyView.showTextView();
-            updateRows();
+            if (!isZenoraBlockedMode()) updateRows();
         }
     }
 
@@ -392,6 +454,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
     @Override
     public void onResume() {
         super.onResume();
+        if (isZenoraBlockedMode()) refreshZenoraBlockedUsers();
         if (listViewAdapter != null) {
             listViewAdapter.notifyDataSetChanged();
         }
@@ -458,7 +521,7 @@ public class PrivacyUsersActivity extends BaseFragment implements NotificationCe
                     ManageChatUserCell userCell = (ManageChatUserCell) holder.itemView;
                     long uid;
                     if (currentType == TYPE_BLOCKED) {
-                        uid = getMessagesController().blockePeers.keyAt(position - usersStartRow);
+                        uid = getBlockedUserIdAt(position - usersStartRow);
                     } else {
                         uid = uidArray.get(position - usersStartRow);
                     }

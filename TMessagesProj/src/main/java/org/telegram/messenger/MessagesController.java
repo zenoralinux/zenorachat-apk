@@ -8730,6 +8730,28 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void blockPeer(long id) {
+        // All positive user peers in a Zenora session are managed by the Zenora
+        // service. Keep group/chat blocking on Telegram's native path.
+        if (id > 0 && ZenoraChatController.isZenoraEnabled()) {
+            if (ZenoraApiClient.isDmBlockedByMe(id)) return;
+            ZenoraApiClient.setDmBlocked(id, true, (response, error) -> {
+                if (error != null || response == null) {
+                    FileLog.e(error == null ? new IllegalStateException("Zenora Block was not confirmed") : error);
+                    return;
+                }
+                TLRPC.User blockedUser = getUser(id);
+                if (blockePeers.indexOfKey(id) < 0) {
+                    blockePeers.put(id, 1);
+                    if (totalBlockedCount >= 0) totalBlockedCount++;
+                }
+                if (blockedUser != null) {
+                    if (blockedUser.bot) getMediaDataController().removeInline(id);
+                    else getMediaDataController().removePeer(id);
+                }
+                getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+            });
+            return;
+        }
         TLRPC.User user = null;
         TLRPC.Chat chat = null;
         if (id > 0) {
@@ -8925,6 +8947,19 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void unblockPeer(long id, Runnable callback) {
+        if (id > 0 && ZenoraChatController.isZenoraEnabled()) {
+            ZenoraApiClient.setDmBlocked(id, false, (response, error) -> {
+                if (error != null || response == null) {
+                    FileLog.e(error == null ? new IllegalStateException("Zenora Unblock was not confirmed") : error);
+                    return;
+                }
+                blockePeers.delete(id);
+                if (totalBlockedCount > 0) totalBlockedCount--;
+                getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+                if (callback != null) callback.run();
+            });
+            return;
+        }
         TLRPC.TL_contacts_unblock req = new TLRPC.TL_contacts_unblock();
         TLRPC.User user = null;
         TLRPC.Chat chat = null;
@@ -8954,7 +8989,41 @@ public class MessagesController extends BaseController implements NotificationCe
         }));
     }
 
+    /** Replace only positive-user Block entries from a Zenora snapshot; retain native chat blocks. */
+    public void applyZenoraBlockedUsers(org.json.JSONArray users) {
+        if (users == null) users = new org.json.JSONArray();
+        ArrayList<Long> oldUserIds = new ArrayList<>();
+        for (int i = 0; i < blockePeers.size(); i++) {
+            long peerId = blockePeers.keyAt(i);
+            if (peerId > 0) oldUserIds.add(peerId);
+        }
+        for (Long peerId : oldUserIds) blockePeers.delete(peerId);
+        ZenoraChatController.cacheBlockedUsers(currentAccount, users);
+        for (int i = 0; i < users.length(); i++) {
+            org.json.JSONObject row = users.optJSONObject(i);
+            long userId = row == null ? 0 : row.optLong("id", 0);
+            if (userId > 0) blockePeers.put(userId, 1);
+        }
+        totalBlockedCount = blockePeers.size();
+        blockedEndReached = true;
+        getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+    }
+
     public void getBlockedPeers(boolean reset) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            if (loadingBlockedPeers) return;
+            loadingBlockedPeers = true;
+            ZenoraApiClient.fetchBlockedUsers((response, error) -> {
+                loadingBlockedPeers = false;
+                if (error != null || response == null) {
+                    FileLog.e(error == null ? new IllegalStateException("Zenora blocked-user snapshot is unavailable") : error);
+                    return;
+                }
+                org.json.JSONArray users = response.optJSONArray("users");
+                applyZenoraBlockedUsers(users);
+            });
+            return;
+        }
         if (!getUserConfig().isClientActivated() || loadingBlockedPeers) {
             return;
         }

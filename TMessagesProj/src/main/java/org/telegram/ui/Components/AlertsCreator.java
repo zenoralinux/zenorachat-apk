@@ -1511,6 +1511,28 @@ public class AlertsCreator {
             reportText = LocaleController.getString(R.string.ReportChat);
         }
         builder.setPositiveButton(reportText, (dialogInterface, i) -> {
+            if (currentUser != null && ZenoraApiClient.isZenoraSessionEnabled()) {
+                ZenoraApiClient.setDmBlocked(currentUser.id, true, (response, error) -> {
+                    if (error != null) {
+                        android.widget.Toast.makeText(fragment.getParentActivity(), error.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    NotificationCenter.getInstance(accountInstance.getCurrentAccount())
+                            .postNotificationName(NotificationCenter.blockedUsersDidLoad);
+                    if (cells != null && cells[0] != null && cells[0].isChecked()) {
+                        android.widget.Toast.makeText(fragment.getParentActivity(),
+                                "Spam reporting is not available for Zenora accounts yet.",
+                                android.widget.Toast.LENGTH_LONG).show();
+                    }
+                    if (cells == null || cells[1].isChecked()) {
+                        accountInstance.getMessagesController().deleteDialog(dialog_id, 0);
+                        callback.run(1);
+                    } else {
+                        callback.run(0);
+                    }
+                });
+                return;
+            }
             if (currentUser != null) {
                 accountInstance.getMessagesController().blockPeer(currentUser.id);
             }
