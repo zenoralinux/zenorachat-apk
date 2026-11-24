@@ -582,12 +582,12 @@ public final class ZenoraChatController {
         });
 
         if (blockPeerUserId > 0) {
-            ZenoraApiClient.setUserBlocked(blockPeerUserId, true, (blockResponse, blockError) -> {
-                if (blockError != null) {
-                    FileLog.e(blockError);
+            ZenoraUserBlockController.setBlocked(blockPeerUserId, true, (blockState, blockError) -> {
+                if (blockError != null || blockState == null || blockState.blockedByMe != 1) {
+                    if (blockError != null) FileLog.e(blockError);
                     blockFailure[0] = blockError instanceof ZenoraApiClient.ApiException
                             ? ((ZenoraApiClient.ApiException) blockError).errorCode
-                            : blockError.getClass().getSimpleName();
+                            : blockError == null ? "BLOCK_STATE_NOT_CONFIRMED" : blockError.getClass().getSimpleName();
                 } else {
                     blockSucceeded[0] = true;
                 }
