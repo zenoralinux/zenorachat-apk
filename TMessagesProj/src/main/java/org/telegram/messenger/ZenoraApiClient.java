@@ -18,7 +18,9 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -476,28 +478,156 @@ public final class ZenoraApiClient {
         return request("chat_bulk_action.php", "POST", form);
     }
 
-    /** Block/unblock a DM peer using Zenora's authenticated API, not MTProto. */
+    /** Block/unblock a DM peer using the canonical Zenora API, never MTProto. */
     public static void setDmBlocked(long otherUserId, boolean blocked, Callback callback) {
         executor.execute(() -> {
             try {
                 if (otherUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
-                String csrf = prefs().getString("csrf", "");
-                if (csrf.isEmpty()) {
-                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
-                    csrf = challenge.optString("csrf", "");
-                    if (csrf.isEmpty()) {
-                        throw new IllegalStateException("Authenticated CSRF token missing");
-                    }
-                    prefs().edit().putString("csrf", csrf).commit();
+                String action = blocked ? "block" : "unblock";
+                String form = "target_user_id=" + encode(String.valueOf(otherUserId))
+                        + "&action=" + encode(action);
+                JSONObject response = postWithCsrfRetry("user_block.php", form);
+                JSONObject state = response.optJSONObject("state");
+                if (!response.optBoolean("ok", false)
+                        || !action.equals(response.optString("action", ""))
+                        || response.optLong("target_user_id", 0) != otherUserId
+                        || state == null
+                        || state.optInt("blocked_by_me", -1) != (blocked ? 1 : 0)) {
+                    throw new IllegalStateException("ZenoraChat did not confirm the requested block state");
                 }
-                String form = "other_user_id=" + encode(String.valueOf(otherUserId))
-                        + "&action=" + encode(blocked ? "block" : "unblock")
-                        + "&csrf=" + encode(csrf);
-                JSONObject response = request("dm_block_toggle.php", "POST", form);
+                Set<Long> ids = readBlockedUserIds();
+                if (blocked) ids.add(otherUserId); else ids.remove(otherUserId);
+                saveBlockedUserIds(ids);
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
             }
+        });
+    }
+
+    /** Fast local read for native profile/menu rendering; server remains authoritative. */
+    public static boolean isDmBlockedByMe(long userId) {
+        return userId > 0 && readBlockedUserIds().contains(userId);
+    }
+
+    private static Set<Long> readBlockedUserIds() {
+        HashSet<Long> ids = new HashSet<>();
+        try {
+            JSONArray values = new JSONArray(prefs().getString("blocked_user_ids", "[]"));
+            for (int i = 0; i < values.length(); i++) {
+                long id = values.optLong(i, 0);
+                if (id > 0) ids.add(id);
+            }
+        } catch (Exception ignored) {
+            // Corrupt local cache is discarded; the server snapshot repairs it.
+        }
+        return ids;
+    }
+
+    private static void saveBlockedUserIds(Set<Long> ids) throws Exception {
+        JSONArray values = new JSONArray();
+        for (Long id : ids) if (id != null && id > 0) values.put(id);
+        if (!prefs().edit().putString("blocked_user_ids", values.toString()).commit()) {
+            throw new IllegalStateException("Unable to persist Zenora block state");
+        }
+    }
+
+    /** Fetch the complete paginated list and atomically replace the local cache. */
+    public static void fetchBlockedUsers(Callback callback) {
+        executor.execute(() -> {
+            try {
+                JSONArray allUsers = new JSONArray();
+                Set<Long> ids = new HashSet<>();
+                int page = 1;
+                while (page <= 100) {
+                    JSONObject response = request("blocked_users.php?page=" + page + "&per_page=100", "GET", null);
+                    if (!response.optBoolean("ok", false)) {
+                        throw new IllegalStateException("ZenoraChat rejected the blocked-users snapshot");
+                    }
+                    JSONArray users = response.optJSONArray("users");
+                    if (users != null) {
+                        for (int i = 0; i < users.length(); i++) {
+                            JSONObject user = users.optJSONObject(i);
+                            if (user == null) continue;
+                            long id = user.optLong("id", 0);
+                            if (id <= 0 || !ids.add(id)) continue;
+                            allUsers.put(user);
+                        }
+                    }
+                    JSONObject pagination = response.optJSONObject("pagination");
+                    if (pagination == null || !pagination.optBoolean("has_more", false)) break;
+                    page++;
+                }
+                if (page > 100) throw new IllegalStateException("Blocked-users pagination exceeded its safety limit");
+                saveBlockedUserIds(ids);
+                JSONObject result = new JSONObject();
+                result.put("ok", true);
+                result.put("users", allUsers);
+                result.put("count", allUsers.length());
+                dispatch(callback, result, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Apply actor-scoped Block/Unblock events since the last persisted cursor. */
+    public static void syncBlockEvents(Callback callback) {
+        executor.execute(() -> {
+            try {
+                long cursor = prefs().getLong("block_events_cursor", 0);
+                Set<Long> ids = readBlockedUserIds();
+                boolean hasMore;
+                int pages = 0;
+                do {
+                    JSONObject response = request("user_block_events.php?cursor=" + cursor + "&limit=100", "GET", null);
+                    if (!response.optBoolean("ok", false)) {
+                        throw new IllegalStateException("ZenoraChat block event sync failed");
+                    }
+                    JSONArray events = response.optJSONArray("events");
+                    hasMore = response.optBoolean("has_more", false);
+                    if (events != null) {
+                        for (int i = 0; i < events.length(); i++) {
+                            JSONObject event = events.optJSONObject(i);
+                            if (event == null) continue;
+                            long targetId = event.optLong("target_user_id", 0);
+                            long eventId = event.optLong("event_id", 0);
+                            String action = event.optString("action", "");
+                            if (targetId > 0 && eventId > cursor) {
+                                if ("block".equals(action)) ids.add(targetId);
+                                else if ("unblock".equals(action)) ids.remove(targetId);
+                                cursor = eventId;
+                            }
+                        }
+                    }
+                    if (++pages > 100) throw new IllegalStateException("Block event sync exceeded its safety limit");
+                } while (hasMore);
+                saveBlockedUserIds(ids);
+                if (!prefs().edit().putLong("block_events_cursor", cursor).commit()) {
+                    throw new IllegalStateException("Unable to persist block event cursor");
+                }
+                JSONObject result = new JSONObject();
+                result.put("ok", true);
+                result.put("cursor", cursor);
+                result.put("blocked_count", ids.size());
+                dispatch(callback, result, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Full snapshot first, then incremental events; safe for new and restored sessions. */
+    public static void syncBlockedUsers(Callback callback) {
+        fetchBlockedUsers((snapshot, snapshotError) -> {
+            if (snapshotError != null) {
+                dispatch(callback, null, snapshotError);
+                return;
+            }
+            syncBlockEvents((events, eventError) -> {
+                if (eventError != null) dispatch(callback, null, eventError);
+                else dispatch(callback, snapshot, null);
+            });
         });
     }
 
