@@ -482,6 +482,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     private boolean creatingChat;
     private boolean userBlocked;
     private boolean zenoraBlockRequestPending;
+    private boolean zenoraBlockStatusLoaded;
     private boolean reportSpam;
     private long mergeDialogId;
     private boolean expandPhoto;
@@ -2143,11 +2144,16 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             userBlocked = getMessagesController().blockePeers.indexOfKey(userId) >= 0;
             if (ZenoraApiClient.isZenoraSessionEnabled()) {
                 ZenoraUserBlockController.State cachedBlockState = ZenoraUserBlockController.getCachedState(userId);
-                if (cachedBlockState != null) {
-                    userBlocked = cachedBlockState.blockedByMe == 1;
-                }
-                ZenoraUserBlockController.syncEvents(null);
+                zenoraBlockStatusLoaded = cachedBlockState != null;
+                userBlocked = cachedBlockState != null && cachedBlockState.blockedByMe == 1;
+                ZenoraUserBlockController.syncEvents((changed, error) -> {
+                    if (changed && error == null) {
+                        ZenoraChatController.refreshDialogs(getAccountInstance());
+                    }
+                });
                 refreshZenoraBlockStatus();
+            } else {
+                zenoraBlockStatusLoaded = true;
             }
             if (user.bot) {
                 isBot = true;
@@ -6295,10 +6301,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 return;
             }
             boolean wasBlocked = userBlocked;
+            boolean wasLoaded = zenoraBlockStatusLoaded;
             userBlocked = state.blockedByMe == 1;
-            if (wasBlocked != userBlocked) {
-                createActionBarMenu(true);
-                updateListAnimated(false);
+            zenoraBlockStatusLoaded = true;
+            if (wasBlocked != userBlocked || !wasLoaded) {
+                if (actionBar != null) createActionBarMenu(true);
+                if (fragmentView != null) updateListAnimated(false);
             }
         });
     }
@@ -11269,7 +11277,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     secretSettingsSectionRow = rowCount++;
                 }
 
-                if (user != null && !isBot && currentEncryptedChat == null && user.id != getUserConfig().getClientUserId()) {
+                if (user != null && !isBot && currentEncryptedChat == null
+                        && user.id != getUserConfig().getClientUserId()
+                        && (!ZenoraApiClient.isZenoraSessionEnabled() || zenoraBlockStatusLoaded)) {
                     if (userBlocked) {
                         unblockRow = rowCount++;
                         lastSectionRow = rowCount++;
@@ -12441,6 +12451,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         videoCallItemVisible = false;
         canSearchMembers = false;
         boolean selfUser = false;
+        boolean zenoraBlockReady = !ZenoraApiClient.isZenoraSessionEnabled() || zenoraBlockStatusLoaded;
 
         boolean shareAction = false;
         boolean discussAction = false;
@@ -12519,8 +12530,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                             } else {
                                 otherItem.addSubItem(block_contact, R.drawable.msg_retry, LocaleController.getString(R.string.BotRestart));
                             }
-                        } else {
-                            otherItem.addSubItem(block_contact, !userBlocked ? R.drawable.msg_block : R.drawable.msg_block, !userBlocked ? LocaleController.getString(R.string.BlockContact) : LocaleController.getString(R.string.Unblock));
+                        } else if (zenoraBlockReady) {
+                            otherItem.addSubItem(block_contact, R.drawable.msg_block,
+                                    !userBlocked ? LocaleController.getString(R.string.BlockContact) : LocaleController.getString(R.string.Unblock));
                         }
                     }
                 } else {
@@ -12530,7 +12542,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     if (!TextUtils.isEmpty(user.phone)) {
                         otherItem.addSubItem(share_contact, R.drawable.msg_share, LocaleController.getString(R.string.ShareContact));
                     }
-                    otherItem.addSubItem(block_contact, !userBlocked ? R.drawable.msg_block : R.drawable.msg_block, !userBlocked ? LocaleController.getString(R.string.BlockContact) : LocaleController.getString(R.string.Unblock));
+                    if (zenoraBlockReady) {
+                        otherItem.addSubItem(block_contact, R.drawable.msg_block,
+                                !userBlocked ? LocaleController.getString(R.string.BlockContact) : LocaleController.getString(R.string.Unblock));
+                    }
                     otherItem.addSubItem(edit_contact, R.drawable.msg_edit, LocaleController.getString(R.string.EditContact));
                     otherItem.addSubItem(delete_contact, R.drawable.msg_delete, LocaleController.getString(R.string.DeleteContact));
                 }
