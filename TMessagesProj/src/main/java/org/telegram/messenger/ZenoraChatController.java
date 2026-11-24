@@ -137,6 +137,24 @@ public final class ZenoraChatController {
         return ZenoraApiClient.isZenoraSessionEnabled();
     }
 
+    public static long getRoomIdForDialog(int account, long dialogId) {
+        synchronized (loadLock) {
+            Map<Long, Long> mappings = dialogRoomIds.get(account);
+            Long roomId = mappings == null ? null : mappings.get(dialogId);
+            return roomId == null ? 0L : roomId;
+        }
+    }
+
+    public static TLRPC.User makeHistorySenderUser(long id, String username,
+                                                    String displayName, boolean verified) {
+        return makeUser(id, username, displayName, false, verified);
+    }
+
+    public static int parseHistoryDate(String value) {
+        return parseDate(value);
+    }
+
+
     private static void clearEphemeralState(int account) {
         Set<Long> peerIds;
         synchronized (loadLock) {
@@ -186,6 +204,7 @@ public final class ZenoraChatController {
                 presenceUserIdsByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
+                ZenoraHistoryController.clearAccount(account);
             }
             cacheExecutor.execute(() -> ZenoraDialogCache.delete(account));
             DialogsActivity.resetZenoraLoadState(account);
@@ -222,6 +241,7 @@ public final class ZenoraChatController {
                 presenceUserIdsByAccount.remove(account);
                 attentionReadMessageIds.remove(account);
                 attentionReadPending.remove(account);
+                ZenoraHistoryController.clearAccount(account);
                 long generation = requestGenerations.containsKey(account)
                         ? requestGenerations.get(account) + 1L : 1L;
                 requestGenerations.put(account, generation);

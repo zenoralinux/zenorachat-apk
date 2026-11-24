@@ -3241,6 +3241,14 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
         firstMessagesLoaded = true;
+        if (chatMode == MODE_DEFAULT
+                && ZenoraChatController.isZenoraDialog(currentAccount, dialog_id)) {
+            int zenoraLoadIndex = lastLoadIndex++;
+            waitingForLoad.add(zenoraLoadIndex);
+            ZenoraHistoryController.loadInitialHistory(
+                    currentAccount, dialog_id, classGuid, zenoraLoadIndex, 50);
+            return;
+        }
         final Runnable load = () -> {
             waitingForLoad.add(lastLoadIndex);
             if (chatMode == MODE_SEARCH) {

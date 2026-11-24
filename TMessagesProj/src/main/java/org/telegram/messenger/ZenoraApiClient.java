@@ -552,6 +552,34 @@ public final class ZenoraApiClient {
         });
     }
 
+    public static void fetchBasicTextHistory(long roomId, int limit, Callback callback) {
+        if (roomId <= 0) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora room ID"));
+            return;
+        }
+        final int safeLimit = Math.max(1, Math.min(100, limit));
+        executor.execute(() -> {
+            try {
+                JSONObject response = request("messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&limit=" + safeLimit, "GET", null);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    public static void fetchUsers(Callback callback) {
+        executor.execute(() -> {
+            try {
+                JSONObject response = request("users_list.php", "GET", null);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
     public static void fetchRooms(Callback callback) {
         executor.execute(() -> {
             try {
