@@ -6293,9 +6293,18 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         if (user == null) {
             return;
         }
-        if (ZenoraChatController.isZenoraEnabled() && userId > 0
-                && (!isBot || MessagesController.isSupportUser(user))) {
-            if (userBlocked) {
+        if (ZenoraChatController.isZenoraEnabled() && userId > 0) {
+            if (userBlocked && isBot && !MessagesController.isSupportUser(user)) {
+                ZenoraApiClient.setDmBlocked(userId, false, (response, error) -> {
+                    if (error != null) {
+                        if (getParentActivity() != null) Toast.makeText(getParentActivity(), error.getMessage(), Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of(
+                            "/start", userId, null, null, null, false, null, null, null, true, 0, 0, null, false));
+                    finishFragment();
+                });
+            } else if (userBlocked) {
                 setZenoraBlockState(false);
             } else if (reportSpam) {
                 AlertsCreator.showBlockReportSpamAlert(ProfileActivity.this, userId, user, null,
