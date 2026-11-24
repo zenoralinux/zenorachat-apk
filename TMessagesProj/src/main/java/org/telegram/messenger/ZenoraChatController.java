@@ -1363,6 +1363,22 @@ public final class ZenoraChatController {
         return true;
     }
 
+    /** Resolve a server-listed peer into Telegram's native user model for Zenora-only screens. */
+    public static TLRPC.User ensureZenoraUser(int account, long id, String username,
+                                               String displayName, String avatarPath) {
+        if (id <= 0) return null;
+        if (avatarPath != null && !avatarPath.trim().isEmpty()) {
+            ZenoraAvatarRegistry.setUserAvatar(account, id, ZenoraApiClient.resolvePublicUrl(avatarPath));
+        }
+        MessagesController controller = MessagesController.getInstance(account);
+        TLRPC.User user = controller.getUser(id);
+        if (user == null) {
+            user = makeUser(id, username, displayName, false, false);
+            if (user != null) controller.putUser(user, false, true);
+        }
+        return user;
+    }
+
     private static TLRPC.User makeUser(long id, String username, String displayName, boolean self) {
         return makeUser(id, username, displayName, self, false);
     }
