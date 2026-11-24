@@ -476,24 +476,121 @@ public final class ZenoraApiClient {
         return request("chat_bulk_action.php", "POST", form);
     }
 
-    /** Block/unblock a DM peer using Zenora's authenticated API, not MTProto. */
-    public static void setDmBlocked(long otherUserId, boolean blocked, Callback callback) {
+    /** Current authenticated Zenora actor. This is deliberately not the Telegram account id. */
+    public static long getAuthenticatedUserId() {
+        if (!isZenoraSessionEnabled()) return 0;
+        return prefs().getLong("user_id", 0);
+    }
+
+    private static long requireZenoraActorId() {
+        if (!isZenoraSessionEnabled()) {
+            throw new IllegalStateException("ZENORA_SESSION_REQUIRED");
+        }
+        long actorId = prefs().getLong("user_id", 0);
+        if (actorId <= 0) throw new IllegalStateException("ZENORA_SESSION_REQUIRED");
+        return actorId;
+    }
+
+    private static void ensureZenoraActor(long expectedActorId) {
+        if (expectedActorId <= 0 || !isZenoraSessionEnabled()
+                || prefs().getLong("user_id", 0) != expectedActorId) {
+            throw new IllegalStateException("ZENORA_SESSION_CHANGED");
+        }
+    }
+
+    /** Fetch the directional relationship without requiring an existing DM. */
+    public static void getUserBlockStatus(long targetUserId, Callback callback) {
         executor.execute(() -> {
             try {
-                if (otherUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
-                String csrf = prefs().getString("csrf", "");
-                if (csrf.isEmpty()) {
-                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
-                    csrf = challenge.optString("csrf", "");
-                    if (csrf.isEmpty()) {
-                        throw new IllegalStateException("Authenticated CSRF token missing");
-                    }
-                    prefs().edit().putString("csrf", csrf).commit();
+                if (targetUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
+                long actorId = requireZenoraActorId();
+                JSONObject response = request("user_block_status.php?target_user_id="
+                        + encode(String.valueOf(targetUserId)), "GET", null);
+                ensureZenoraActor(actorId);
+                JSONObject data = response.optJSONObject("data");
+                JSONObject state = data == null ? null : data.optJSONObject("state");
+                if (data == null || state == null
+                        || data.optLong("target_user_id", 0) != targetUserId) {
+                    throw new IllegalStateException("ZenoraChat returned an invalid block status");
                 }
-                String form = "other_user_id=" + encode(String.valueOf(otherUserId))
-                        + "&action=" + encode(blocked ? "block" : "unblock")
-                        + "&csrf=" + encode(csrf);
-                JSONObject response = request("dm_block_toggle.php", "POST", form);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Set only the authenticated user's directional Block relationship. */
+    public static void setUserBlocked(long targetUserId, boolean blocked, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (targetUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
+                long actorId = requireZenoraActorId();
+                String action = blocked ? "block" : "unblock";
+                String form = "action=" + encode(action)
+                        + "&target_user_id=" + encode(String.valueOf(targetUserId));
+                JSONObject response = postWithCsrfRetry("user_block.php", form);
+                ensureZenoraActor(actorId);
+                JSONObject data = response.optJSONObject("data");
+                JSONObject state = data == null ? null : data.optJSONObject("state");
+                int expected = blocked ? 1 : 0;
+                if (data == null || state == null
+                        || !action.equals(data.optString("action", ""))
+                        || data.optLong("target_user_id", 0) != targetUserId
+                        || state.optInt("blocked_by_me", -1) != expected) {
+                    throw new IllegalStateException("ZenoraChat did not confirm the requested Block state");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Compatibility entry point used by existing Zenora delete-and-block flows. */
+    public static void setDmBlocked(long otherUserId, boolean blocked, Callback callback) {
+        setUserBlocked(otherUserId, blocked, callback);
+    }
+
+    /** Fetch a server-authoritative page of users blocked by the current viewer. */
+    public static void getBlockedUsers(int page, int perPage, String query, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (page < 1) throw new IllegalArgumentException("Invalid blocked-users page");
+                int limit = Math.max(1, Math.min(100, perPage));
+                String search = query == null ? "" : query.trim();
+                if (search.length() > 100) search = search.substring(0, 100);
+                long actorId = requireZenoraActorId();
+                String url = "blocked_users.php?page=" + page
+                        + "&per_page=" + limit
+                        + "&sort=blocked_at&order=desc&q=" + encode(search);
+                JSONObject response = request(url, "GET", null);
+                ensureZenoraActor(actorId);
+                if (response.optJSONArray("users") == null
+                        || response.optJSONObject("pagination") == null) {
+                    throw new IllegalStateException("ZenoraChat returned an invalid blocked-users page");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
+    /** Actor-scoped synchronization feed; the caller owns and persists its cursor per actor. */
+    public static void getUserBlockEvents(long cursor, int limit, Callback callback) {
+        executor.execute(() -> {
+            try {
+                if (cursor < 0) throw new IllegalArgumentException("Invalid block event cursor");
+                int pageSize = Math.max(1, Math.min(100, limit));
+                long actorId = requireZenoraActorId();
+                JSONObject response = request("user_block_events.php?cursor=" + cursor
+                        + "&limit=" + pageSize, "GET", null);
+                ensureZenoraActor(actorId);
+                if (response.optJSONArray("events") == null
+                        || response.optLong("next_cursor", -1) < cursor) {
+                    throw new IllegalStateException("ZenoraChat returned an invalid block event page");
+                }
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
@@ -601,6 +698,8 @@ public final class ZenoraApiClient {
             connection.setUseCaches(false);
             connection.setDoInput(true);
             connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Cache-Control", "no-store, no-cache, must-revalidate");
+            connection.setRequestProperty("Pragma", "no-cache");
             connection.setRequestProperty("X-Requested-With", "XMLHttpRequest");
             connection.setRequestProperty("User-Agent", "ZenoraChat-Android/1.0");
             String cookie = cookies();
