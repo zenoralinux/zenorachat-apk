@@ -476,24 +476,27 @@ public final class ZenoraApiClient {
         return request("chat_bulk_action.php", "POST", form);
     }
 
-    /** Block/unblock a DM peer using Zenora's authenticated API, not MTProto. */
+    /** Block/unblock a DM peer through the canonical Zenora API, never MTProto. */
     public static void setDmBlocked(long otherUserId, boolean blocked, Callback callback) {
         executor.execute(() -> {
             try {
                 if (otherUserId <= 0) throw new IllegalArgumentException("Invalid peer id");
-                String csrf = prefs().getString("csrf", "");
-                if (csrf.isEmpty()) {
-                    JSONObject challenge = request("mobile_auth_challenge.php", "GET", null);
-                    csrf = challenge.optString("csrf", "");
-                    if (csrf.isEmpty()) {
-                        throw new IllegalStateException("Authenticated CSRF token missing");
-                    }
-                    prefs().edit().putString("csrf", csrf).commit();
+                String action = blocked ? "block" : "unblock";
+                String form = "target_user_id=" + encode(String.valueOf(otherUserId))
+                        + "&action=" + encode(action);
+                JSONObject response = postWithCsrfRetry("user_block.php", form);
+                if (!response.optBoolean("ok", false)
+                        || !action.equals(response.optString("action", ""))
+                        || response.optLong("target_user_id", 0) != otherUserId) {
+                    throw new IllegalStateException("ZenoraChat did not confirm the requested block operation");
                 }
-                String form = "other_user_id=" + encode(String.valueOf(otherUserId))
-                        + "&action=" + encode(blocked ? "block" : "unblock")
-                        + "&csrf=" + encode(csrf);
-                JSONObject response = request("dm_block_toggle.php", "POST", form);
+                JSONObject state = response.optJSONObject("state");
+                if (state == null) state = response.optJSONObject("data") == null
+                        ? null : response.optJSONObject("data").optJSONObject("state");
+                int expectedBlockedByMe = blocked ? 1 : 0;
+                if (state == null || state.optInt("blocked_by_me", -1) != expectedBlockedByMe) {
+                    throw new IllegalStateException("ZenoraChat returned an inconsistent block state");
+                }
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
