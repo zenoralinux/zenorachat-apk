@@ -131,7 +131,9 @@ public final class ZenoraApiClient {
     }
 
     public static void clearSession() {
+        long previousActorId = prefs().getLong("user_id", 0);
         sessionGeneration.incrementAndGet();
+        ZenoraUserBlockController.onSessionCleared(previousActorId);
         prefs().edit().clear().commit();
         executor.execute(lastTypingUpdateMs::clear);
         ZenoraChatController.clearSessionEphemeralState();
