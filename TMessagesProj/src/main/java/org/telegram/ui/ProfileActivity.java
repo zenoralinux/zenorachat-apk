@@ -6313,6 +6313,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void performZenoraBlockAction(boolean blocked) {
+        performZenoraBlockAction(blocked, null);
+    }
+
+    private void performZenoraBlockAction(boolean blocked, Runnable afterSuccess) {
         if (zenoraBlockRequestPending || !ZenoraApiClient.isZenoraSessionEnabled()
                 || userId <= 0 || getParentActivity() == null) {
             return;
@@ -6350,6 +6354,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             if (BulletinFactory.canShowBulletin(ProfileActivity.this)) {
                 BulletinFactory.createBanBulletin(ProfileActivity.this, blocked).show();
             }
+            if (afterSuccess != null) afterSuccess.run();
         });
     }
 
@@ -6461,8 +6466,20 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     getNotificationCenter().postNotificationName(NotificationCenter.needDeleteDialog, dialogId, user, currentChat, param);
                 });
             } else {
-                getMessagesController().unblockPeer(userId, () -> getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of("/start", userId, null, null, null, false, null, null, null, true, 0, 0, null, false)));
-                finishFragment();
+                if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                    performZenoraBlockAction(false, () -> {
+                        finishFragment();
+                        // Keep Telegram's native Bot Restart message behavior; only the
+                        // directional Block/Unblock state is routed through Zenora's API.
+                        getSendMessagesHelper().sendMessage(SendMessagesHelper.SendMessageParams.of(
+                                "/start", userId, null, null, null, false, null, null, null, true, 0, 0, null, false));
+                    });
+                } else {
+                    getMessagesController().unblockPeer(userId, () -> getSendMessagesHelper().sendMessage(
+                            SendMessagesHelper.SendMessageParams.of("/start", userId, null, null, null,
+                                    false, null, null, null, true, 0, 0, null, false)));
+                    finishFragment();
+                }
             }
         }
     }
