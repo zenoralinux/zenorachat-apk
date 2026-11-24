@@ -48,6 +48,7 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_account;
@@ -332,7 +333,11 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                     presentFragment(new AutoDeleteMessagesActivity());
                 }
             } else if (position == blockedRow) {
-                presentFragment(new PrivacyUsersActivity());
+                if (ZenoraApiClient.isZenoraSessionEnabled()) {
+                    presentFragment(new ZenoraBlockedUsersActivity());
+                } else {
+                    presentFragment(new PrivacyUsersActivity());
+                }
             } else if (position == sessionsRow) {
                 devicesActivityPreload.resetFragment();
                 presentFragment(devicesActivityPreload);
