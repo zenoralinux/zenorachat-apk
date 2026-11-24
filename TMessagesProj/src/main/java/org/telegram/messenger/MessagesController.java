@@ -8729,44 +8729,242 @@ public class MessagesController extends BaseController implements NotificationCe
         }
     }
 
+    /**
+     * Route user blocks through Zenora when this app is running on a Zenora
+     * session. Negative ids (groups/channels) and ordinary Telegram sessions
+     * retain the original MTProto implementation.
+     */
     public void blockPeer(long id) {
+        setPeerBlocked(id, true, null);
+    }
+
+    public void blockPeer(long id, Runnable callback) {
+        setPeerBlocked(id, true, success -> {
+            if (success && callback != null) callback.run();
+        });
+    }
+
+    public void unblockPeer(long id) {
+        setPeerBlocked(id, false, null);
+    }
+
+    public void unblockPeer(long id, Runnable callback) {
+        setPeerBlocked(id, false, success -> {
+            if (success && callback != null) callback.run();
+        });
+    }
+
+    /**
+     * Shared block/unblock entry point used by ProfileActivity, ChatActivity,
+     * privacy settings and delete-chat actions.
+     */
+    public void setPeerBlocked(long id, boolean blocked, Consumer<Boolean> callback) {
+        if (id == 0) {
+            if (callback != null) callback.accept(false);
+            return;
+        }
+
+        if (id > 0 && ZenoraApiClient.isZenoraSessionEnabled()) {
+            ZenoraApiClient.setDmBlocked(id, blocked, (response, error) -> {
+                if (error != null || response == null
+                        || response.optInt("blocked", -1) != (blocked ? 1 : 0)) {
+                    if (error != null) FileLog.e(error);
+                    if (callback != null) callback.accept(false);
+                    return;
+                }
+                applyZenoraBlockedPeerState(id, blocked);
+                if (callback != null) callback.accept(true);
+            });
+            return;
+        }
+
+        if (blocked) blockPeerNative(id, callback);
+        else unblockPeerNative(id, callback);
+    }
+
+    private void applyZenoraBlockedPeerState(long userId, boolean blocked) {
+        boolean wasBlocked = blockePeers.indexOfKey(userId) >= 0;
+        if (blocked && !wasBlocked) {
+            blockePeers.put(userId, 1);
+            if (totalBlockedCount >= 0) totalBlockedCount++;
+            TLRPC.User user = getUser(userId);
+            if (user != null) {
+                if (user.bot) getMediaDataController().removeInline(userId);
+                else getMediaDataController().removePeer(userId);
+            }
+        } else if (!blocked && wasBlocked) {
+            blockePeers.delete(userId);
+            if (totalBlockedCount >= 0) totalBlockedCount = Math.max(0, totalBlockedCount - 1);
+        }
+        getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+        ZenoraChatController.refreshDialogs(getAccountInstance());
+    }
+
+    private void blockPeerNative(long id, Consumer<Boolean> callback) {
         TLRPC.User user = null;
         TLRPC.Chat chat = null;
         if (id > 0) {
             user = getUser(id);
             if (user == null) {
+                if (callback != null) callback.accept(false);
                 return;
             }
         } else {
             chat = getChat(-id);
             if (chat == null) {
+                if (callback != null) callback.accept(false);
                 return;
             }
         }
         if (blockePeers.indexOfKey(id) >= 0) {
+            if (callback != null) callback.accept(true);
             return;
         }
         blockePeers.put(id, 1);
         if (user != null) {
-            if (user.bot) {
-                getMediaDataController().removeInline(id);
-            } else {
-                getMediaDataController().removePeer(id);
+            if (user.bot) getMediaDataController().removeInline(id);
+            else getMediaDataController().removePeer(id);
+        }
+        if (totalBlockedCount >= 0) totalBlockedCount++;
+        getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+
+        TLRPC.TL_contacts_block req = new TLRPC.TL_contacts_block();
+        req.id = user != null ? getInputPeer(user) : getInputPeer(chat);
+        getConnectionsManager().sendRequest(req, (response, error) ->
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) callback.accept(error == null);
+                }));
+    }
+
+    private void unblockPeerNative(long id, Consumer<Boolean> callback) {
+        TLRPC.TL_contacts_unblock req = new TLRPC.TL_contacts_unblock();
+        TLRPC.User user = null;
+        TLRPC.Chat chat = null;
+        if (id > 0) {
+            user = getUser(id);
+            if (user == null) {
+                if (callback != null) callback.accept(false);
+                return;
+            }
+        } else {
+            chat = getChat(-id);
+            if (chat == null) {
+                if (callback != null) callback.accept(false);
+                return;
             }
         }
-        if (totalBlockedCount >= 0) {
-            totalBlockedCount++;
-        }
+        if (totalBlockedCount >= 0) totalBlockedCount = Math.max(0, totalBlockedCount - 1);
+        blockePeers.delete(id);
+        req.id = user != null ? getInputPeer(user) : getInputPeer(chat);
         getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
-        TLRPC.TL_contacts_block req = new TLRPC.TL_contacts_block();
-        if (user != null) {
-            req.id = getInputPeer(user);
-        } else {
-            req.id = getInputPeer(chat);
-        }
-        getConnectionsManager().sendRequest(req, (response, error) -> {
+        getConnectionsManager().sendRequest(req, (response, error) ->
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) callback.accept(error == null);
+                }));
+    }
 
-        });
+    private int getZenoraBlockedPeerCount() {
+        int count = 0;
+        for (int i = 0; i < blockePeers.size(); i++) {
+            if (blockePeers.keyAt(i) > 0) count++;
+        }
+        return count;
+    }
+
+    private TLRPC.User createZenoraBlockedUser(org.json.JSONObject row) {
+        long id = row.optLong("id", 0);
+        if (id <= 0) return null;
+        TLRPC.TL_user user = new TLRPC.TL_user();
+        user.id = id;
+        user.username = row.optString("username", "");
+        String name = row.optString("display_name", "");
+        user.first_name = TextUtils.isEmpty(name)
+                ? (TextUtils.isEmpty(user.username) ? "ZenoraChat" : user.username) : name;
+        user.last_name = "";
+        user.phone = "";
+        user.photo = new TLRPC.TL_userProfilePhotoEmpty();
+        user.status = new TLRPC.TL_userStatusEmpty();
+        user.flags |= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6);
+        user.bot = user.username.toLowerCase(Locale.ROOT).endsWith("bot");
+        user.verified = row.optInt("is_verified", 0) == 1;
+        if (user.verified) user.flags |= 1 << 17;
+        return user;
+    }
+
+    public void getBlockedPeers(boolean reset) {
+        if (!getUserConfig().isClientActivated() || loadingBlockedPeers) return;
+        loadingBlockedPeers = true;
+
+        if (ZenoraApiClient.isZenoraSessionEnabled()) {
+            final int limit = 50;
+            final int offset = reset ? 0 : getZenoraBlockedPeerCount();
+            ZenoraApiClient.getBlockedUsers(offset, limit, (response, error) -> {
+                loadingBlockedPeers = false;
+                if (error != null || response == null) {
+                    if (error != null) FileLog.e(error);
+                    if (reset && totalBlockedCount < 0) totalBlockedCount = getZenoraBlockedPeerCount();
+                    blockedEndReached = true;
+                    getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+                    return;
+                }
+
+                org.json.JSONArray rows = response.optJSONArray("users");
+                if (rows == null) {
+                    blockedEndReached = true;
+                    totalBlockedCount = getZenoraBlockedPeerCount();
+                    getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+                    return;
+                }
+
+                if (reset) blockePeers.clear();
+                ArrayList<TLRPC.User> usersToStore = new ArrayList<>();
+                for (int i = 0; i < rows.length(); i++) {
+                    org.json.JSONObject row = rows.optJSONObject(i);
+                    if (row == null) continue;
+                    TLRPC.User user = createZenoraBlockedUser(row);
+                    if (user == null) continue;
+                    usersToStore.add(user);
+                    blockePeers.put(user.id, 1);
+                }
+
+                if (!usersToStore.isEmpty()) {
+                    putUsers(usersToStore, false);
+                    getMessagesStorage().putUsersAndChats(
+                            usersToStore, new ArrayList<TLRPC.Chat>(), true, true
+                    );
+                }
+
+                totalBlockedCount = Math.max(0, response.optInt("count", getZenoraBlockedPeerCount()));
+                blockedEndReached = !response.optBoolean("has_more",
+                        offset + rows.length() < totalBlockedCount);
+                getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+            });
+            return;
+        }
+
+        TLRPC.TL_contacts_getBlocked req = new TLRPC.TL_contacts_getBlocked();
+        req.offset = reset ? 0 : blockePeers.size();
+        req.limit = reset ? 20 : 100;
+        getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+            if (response != null) {
+                TLRPC.contacts_Blocked res = (TLRPC.contacts_Blocked) response;
+                putUsers(res.users, false);
+                putChats(res.chats, false);
+                getMessagesStorage().putUsersAndChats(res.users, res.chats, true, true);
+                if (reset) blockePeers.clear();
+                totalBlockedCount = Math.max(res.count, res.blocked.size());
+                blockedEndReached = res.blocked.size() < req.limit;
+                for (int a = 0, N = res.blocked.size(); a < N; a++) {
+                    TLRPC.TL_peerBlocked blocked = res.blocked.get(a);
+                    blockePeers.put(MessageObject.getPeerId(blocked.peer_id), 1);
+                }
+                loadingBlockedPeers = false;
+                getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+            } else {
+                loadingBlockedPeers = false;
+                if (error != null) FileLog.e(error);
+            }
+        }));
     }
 
     public void setParticipantBannedRole(long chatId, TLRPC.User user, TLRPC.Chat chat, TLRPC.TL_chatBannedRights rights, boolean isChannel, BaseFragment parentFragment) {
