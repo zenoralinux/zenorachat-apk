@@ -163,6 +163,13 @@ public final class ZenoraUserBlockController {
                     new IllegalStateException("ZENORA_SESSION_REQUIRED"));
             return;
         }
+        synchronized (LOCK) {
+            if (PENDING.contains(actorId + ":" + targetUserId)) {
+                if (callback != null) callback.onComplete(getCachedState(targetUserId),
+                        new IllegalStateException("BLOCK_OPERATION_PENDING"));
+                return;
+            }
+        }
         final long sequence = nextSequence(actorId, targetUserId);
         ZenoraApiClient.getUserBlockStatus(targetUserId, (response, error) -> {
             if (ZenoraApiClient.getAuthenticatedUserId() != actorId
@@ -360,8 +367,14 @@ public final class ZenoraUserBlockController {
         synchronized (LOCK) {
             CACHE.remove(actorId);
             SYNCING.remove(actorId);
-            PENDING.removeIf(key -> key.startsWith(actorId + ":"));
-            SEQUENCES.keySet().removeIf(key -> key.startsWith(actorId + ":"));
+            java.util.Iterator<String> pendingIterator = PENDING.iterator();
+            while (pendingIterator.hasNext()) {
+                if (pendingIterator.next().startsWith(actorId + ":")) pendingIterator.remove();
+            }
+            java.util.Iterator<String> sequenceIterator = SEQUENCES.keySet().iterator();
+            while (sequenceIterator.hasNext()) {
+                if (sequenceIterator.next().startsWith(actorId + ":")) sequenceIterator.remove();
+            }
         }
     }
     private static void finishSync(long actorId, long actorGeneration) {
