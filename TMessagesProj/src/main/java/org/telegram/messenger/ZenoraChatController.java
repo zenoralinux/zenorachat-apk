@@ -542,32 +542,54 @@ public final class ZenoraChatController {
         }
 
         AccountInstance instance = AccountInstance.getInstance(account);
+        // Delete and Block are independent server operations. Run Block first, but
+        // always attempt the delete even when Block fails, and report partial results.
+        final boolean[] blockSucceeded = { blockPeerUserId <= 0 };
+        final String[] blockFailure = { null };
         String operationId = UUID.randomUUID().toString();
-        ZenoraApiClient.deleteChats(roomIds, scopes, operationId, (response, error) -> {
-            if (error != null) {
-                FileLog.e(error);
-                requestRooms(instance, true);
-                if (callback != null) callback.onComplete(false, deleteOperationError(error));
+
+        Runnable deleteOperation = () -> ZenoraApiClient.deleteChats(roomIds, scopes, operationId, (response, deleteError) -> {
+            requestRooms(instance, true);
+            if (deleteError != null) {
+                FileLog.e(deleteError);
+                String deleteMessage = deleteOperationError(deleteError);
+                if (blockSucceeded[0]) {
+                    if (callback != null) callback.onComplete(false,
+                            "کاربر مسدود شد، اما حذف گفتگو انجام نشد: " + deleteMessage);
+                } else if (blockPeerUserId > 0) {
+                    if (callback != null) callback.onComplete(false,
+                            "حذف گفتگو و مسدودسازی کامل نشدند. خطای حذف: " + deleteMessage
+                                    + " خطای مسدودسازی: " + (blockFailure[0] == null ? "نامشخص" : blockFailure[0]));
+                } else if (callback != null) {
+                    callback.onComplete(false, deleteMessage);
+                }
                 return;
             }
 
-            if (blockPeerUserId > 0) {
-                ZenoraApiClient.setDmBlocked(blockPeerUserId, true, (blockResponse, blockError) -> {
-                    requestRooms(instance, true);
-                    if (blockError != null) {
-                        FileLog.e(blockError);
-                        if (callback != null) {
-                            callback.onComplete(false, "گفتگو حذف شد، اما مسدودسازی کاربر انجام نشد.");
-                        }
-                        return;
-                    }
-                    if (callback != null) callback.onComplete(true, null);
-                });
-            } else {
-                requestRooms(instance, true);
-                if (callback != null) callback.onComplete(true, null);
+            if (blockPeerUserId > 0 && !blockSucceeded[0]) {
+                if (callback != null) callback.onComplete(false,
+                        "گفتگو حذف شد، اما مسدودسازی کاربر انجام نشد: "
+                                + (blockFailure[0] == null ? "خطای نامشخص" : blockFailure[0]));
+                return;
             }
+            if (callback != null) callback.onComplete(true, null);
         });
+
+        if (blockPeerUserId > 0) {
+            ZenoraApiClient.setUserBlocked(blockPeerUserId, true, (blockResponse, blockError) -> {
+                if (blockError != null) {
+                    FileLog.e(blockError);
+                    blockFailure[0] = blockError instanceof ZenoraApiClient.ApiException
+                            ? ((ZenoraApiClient.ApiException) blockError).errorCode
+                            : blockError.getClass().getSimpleName();
+                } else {
+                    blockSucceeded[0] = true;
+                }
+                deleteOperation.run();
+            });
+        } else {
+            deleteOperation.run();
+        }
     }
 
     private static String deleteOperationError(Exception error) {
