@@ -54,7 +54,7 @@ concurrency:
 
 jobs:
   build-debug:
-    name: Build universal Debug APK
+    name: Build Debug APK (ARM64 by default)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -63,9 +63,9 @@ jobs:
       ANDROID_BUILD_TOOLS: '36.0.0'
       ANDROID_NDK_VERSION: '27.2.12479018'
       ANDROID_CMAKE_VERSION: '3.22.1'
-      ZENORA_FAST_DEBUG: ${{ github.ref == 'refs/heads/feat/zenora-block-unblock-android-20261124' && 'false' || (github.event_name != 'workflow_dispatch' || inputs.build_mode != 'universal') }}
-      ZENORA_BUILD_MODE: ${{ github.ref == 'refs/heads/feat/zenora-block-unblock-android-20261124' && 'universal' || (github.event_name == 'workflow_dispatch' && inputs.build_mode == 'universal' && 'universal' || 'fast') }}
-      ZENORA_ABIS: ${{ github.ref == 'refs/heads/feat/zenora-block-unblock-android-20261124' && 'armeabi-v7a,arm64-v8a,x86,x86_64' || (github.event_name == 'workflow_dispatch' && inputs.build_mode == 'universal' && 'armeabi-v7a,arm64-v8a,x86,x86_64' || 'arm64-v8a') }}
+      ZENORA_FAST_DEBUG: ${{ github.event_name != 'workflow_dispatch' || inputs.build_mode != 'universal' }}
+      ZENORA_BUILD_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mode == 'universal' && 'universal' || 'fast' }}
+      ZENORA_ABIS: ${{ github.event_name == 'workflow_dispatch' && inputs.build_mode == 'universal' && 'armeabi-v7a,arm64-v8a,x86,x86_64' || 'arm64-v8a' }}
     steps:
       - name: Checkout source and pinned submodules
         uses: actions/checkout@v7
