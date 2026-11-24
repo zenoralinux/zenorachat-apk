@@ -145,6 +145,11 @@ public final class ZenoraChatController {
         }
     }
 
+    public static boolean isZenoraDialog(int account, long dialogId) {
+        return dialogId != 0 && isZenoraEnabled()
+                && getRoomIdForDialog(account, dialogId) > 0;
+    }
+
     public static TLRPC.User makeHistorySenderUser(long id, String username,
                                                     String displayName, boolean verified) {
         return makeUser(id, username, displayName, false, verified);
