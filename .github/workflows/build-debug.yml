@@ -255,7 +255,13 @@ jobs:
           {
             echo "# ZenoraChat Debug Preview"
             echo
-            if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-text-message-send-20261125" ]]; then
+            if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-live-text-messaging-20261125" ]]; then
+              echo "ZenoraChat checks for new plain-text messages about every two seconds only while the active native conversation is foregrounded."
+              echo
+              echo "- Incoming rows are validated, deduplicated and appended through Telegram native message models and local storage."
+              echo "- Live after_message_id state is independent from the older-history before_message_id cursor; existing server-confirmed send reconciliation remains intact."
+              echo "- Companion API branch: https://github.com/zenoralinux/zenorachat/tree/feat/zenora-live-text-messaging-20261125"
+            elif [[ "$GITHUB_REF" == "refs/heads/feat/zenora-text-message-send-20261125" ]]; then
               echo "ZenoraChat text messages are sent through the authenticated PHP API; the native Telegram Composer remains in place and the server ID is used for the native message object."
               echo
               echo "- Failed or uncertain requests keep the draft; timeout reconciliation checks history instead of blindly resending."
@@ -392,7 +398,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-text-message-send-20261125" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/feat/zenora-live-text-messaging-20261125" ]]; then
+            TAG="zenora-live-text-messaging-android-20261125"
+          elif [[ "$GITHUB_REF" == "refs/heads/feat/zenora-text-message-send-20261125" ]]; then
             TAG="zenora-text-message-send-android-20261125"
           elif [[ "$GITHUB_REF" == "refs/heads/feat/zenora-older-history-pagination-20261125" ]]; then
             TAG="zenora-older-history-pagination-android-20261125"
