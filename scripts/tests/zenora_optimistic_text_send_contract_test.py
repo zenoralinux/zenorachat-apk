@@ -23,8 +23,9 @@ for fragment in (
     "message.random_id = randomId;",
     'message.params.put("zenora_client_message_id", clientMessageId);',
     "new MessageObject(account, message, false, true)",
-    "MessagesStorage.getInstance(account).putMessages(stored",
-    "controller.updateInterfaceWithMessages(dialogId, objects, 0)",
+    # The durable integration stores the message and outbox atomically before publication.
+    "MessagesStorage.getInstance(account).storeZenoraTextMessage(",
+    "controller.updateInterfaceWithMessages(dialogId,",
 ):
     require(fragment in HISTORY, "missing optimistic local publish contract: " + fragment)
 
@@ -40,7 +41,8 @@ require("pending.clientMessageId" in HISTORY, "the same client_message_id is not
 for fragment in (
     "message.id = serverId;",
     "pending.messageObject",
-    "storage.updateMessageStateAndId(",
+    # ID remap and outbox deletion now share one storage transaction.
+    "storage.acknowledgeZenoraTextMessage(",
     "NotificationCenter.messageReceivedByServer,",
     "NotificationCenter.messageReceivedByServer2,",
 ):
