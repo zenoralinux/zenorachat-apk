@@ -236,7 +236,7 @@ jobs:
           } > dist/BUILD-INFO.txt
 
       - name: Prepare rolling Debug Preview release notes
-        if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' || github.ref == 'refs/heads/fix/zenora-pin-operations-20261122' || github.ref == 'refs/heads/fix/zenora-delete-leave-android-20261122' || github.ref == 'refs/heads/fix/zenora-mute-verified-android-20261122' || github.ref == 'refs/heads/fix/zenora-mute-storage-flags-android-20261122' || github.ref == 'refs/heads/fix/zenora-permanent-mute-unmute-20261123' || github.ref == 'refs/heads/fix/zenora-verified-chat-mute-indicator-20261123' || github.ref == 'refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123' || github.ref == 'refs/heads/feat/zenora-presence-typing-unread-indicators-android-20261122' || github.ref == 'refs/heads/feat/zenora-native-media-previews-20261123' || github.ref == 'refs/heads/fix/zenora-media-preview-thumbnails-20261123' || github.ref == 'refs/heads/feat/zenora-read-unread-actions-20261124' || github.ref == 'refs/heads/feat/zenora-basic-text-chat-20261125' || github.ref == 'refs/heads/feat/zenora-older-history-pagination-20261125' || github.ref == 'refs/heads/feat/zenora-text-message-send-20261125' || github.ref == 'refs/heads/feat/zenora-live-text-messaging-20261125')
+        if: env.ZENORA_BUILD_MODE == 'fast' && github.ref != 'refs/heads/feat/zenora-live-text-messaging-20261125' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' || github.ref == 'refs/heads/fix/zenora-pin-operations-20261122' || github.ref == 'refs/heads/fix/zenora-delete-leave-android-20261122' || github.ref == 'refs/heads/fix/zenora-mute-verified-android-20261122' || github.ref == 'refs/heads/fix/zenora-mute-storage-flags-android-20261122' || github.ref == 'refs/heads/fix/zenora-permanent-mute-unmute-20261123' || github.ref == 'refs/heads/fix/zenora-verified-chat-mute-indicator-20261123' || github.ref == 'refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123' || github.ref == 'refs/heads/feat/zenora-presence-typing-unread-indicators-android-20261122' || github.ref == 'refs/heads/feat/zenora-native-media-previews-20261123' || github.ref == 'refs/heads/fix/zenora-media-preview-thumbnails-20261123' || github.ref == 'refs/heads/feat/zenora-read-unread-actions-20261124' || github.ref == 'refs/heads/feat/zenora-basic-text-chat-20261125' || github.ref == 'refs/heads/feat/zenora-older-history-pagination-20261125' || github.ref == 'refs/heads/feat/zenora-text-message-send-20261125' || github.ref == 'refs/heads/feat/zenora-live-text-messaging-20261125')
         shell: bash
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -449,6 +449,31 @@ jobs:
           else
             gh api --method POST "${API}/refs" -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" >/dev/null
           fi
+
+      - name: Publish live text ARM64 release with GitHub CLI
+        if: env.ZENORA_BUILD_MODE == 'fast' && github.ref == 'refs/heads/feat/zenora-live-text-messaging-20261125'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="zenora-live-text-messaging-android-20261125"
+          RELEASE_NAME="ZenoraChat Live Text Messaging (ARM64)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$RELEASE_NAME" --notes-file dist/debug-preview-notes.md --prerelease
+          else
+            gh release create "$TAG" \
+              --title "$RELEASE_NAME" \
+              --notes-file dist/debug-preview-notes.md \
+              --prerelease \
+              --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" \
+            dist/ZenoraChat-debug-arm64.apk \
+            dist/SHA256SUMS \
+            dist/BUILD-INFO.txt \
+            --clobber
+          gh release view "$TAG" --json assets -q '.assets[].name'
 
       - name: Publish rolling Debug Preview to GitHub Releases
         if: env.ZENORA_BUILD_MODE == 'fast' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/heads/fix/zenora-login-dialogs-stability-20261122' || github.ref == 'refs/heads/fix/zenora-session-rooms-stability-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-avatars-mute-sender-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-cache-20261122' || github.ref == 'refs/heads/fix/zenora-dialog-sync-fast-refresh-20261122' || github.ref == 'refs/heads/fix/zenora-archive-sync-20261122' || github.ref == 'refs/heads/fix/zenora-pin-operations-20261122' || github.ref == 'refs/heads/fix/zenora-delete-leave-android-20261122' || github.ref == 'refs/heads/fix/zenora-mute-verified-android-20261122' || github.ref == 'refs/heads/fix/zenora-mute-storage-flags-android-20261122' || github.ref == 'refs/heads/fix/zenora-permanent-mute-unmute-20261123' || github.ref == 'refs/heads/fix/zenora-verified-chat-mute-indicator-20261123' || github.ref == 'refs/heads/fix/zenora-chat-list-mute-indicator-refresh-20261123' || github.ref == 'refs/heads/feat/zenora-presence-typing-unread-indicators-android-20261122' || github.ref == 'refs/heads/feat/zenora-native-media-previews-20261123' || github.ref == 'refs/heads/fix/zenora-media-preview-thumbnails-20261123' || github.ref == 'refs/heads/feat/zenora-read-unread-actions-20261124' || github.ref == 'refs/heads/feat/zenora-basic-text-chat-20261125' || github.ref == 'refs/heads/feat/zenora-older-history-pagination-20261125' || github.ref == 'refs/heads/feat/zenora-text-message-send-20261125' || github.ref == 'refs/heads/feat/zenora-live-text-messaging-20261125')
