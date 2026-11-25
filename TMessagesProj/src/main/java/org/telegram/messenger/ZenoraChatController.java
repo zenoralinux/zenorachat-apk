@@ -96,14 +96,17 @@ public final class ZenoraChatController {
 
                 @Override
                 public void onActivityStarted(Activity activity) {
+                    boolean resumeLivePolling = false;
                     synchronized (loadLock) {
                         startedActivities++;
                         if (!appForeground) {
                             appForeground = true;
+                            resumeLivePolling = true;
                             lifecycleHandler.removeCallbacks(foregroundPoll);
                             lifecycleHandler.postDelayed(foregroundPoll, 2_000L);
                         }
                     }
+                    if (resumeLivePolling) ZenoraLiveTextController.resume();
                 }
 
                 @Override
@@ -114,13 +117,16 @@ public final class ZenoraChatController {
 
                 @Override
                 public void onActivityStopped(Activity activity) {
+                    boolean pauseLivePolling = false;
                     synchronized (loadLock) {
                         startedActivities = Math.max(0, startedActivities - 1);
                         if (startedActivities == 0) {
                             appForeground = false;
+                            pauseLivePolling = true;
                             lifecycleHandler.removeCallbacks(foregroundPoll);
                         }
                     }
+                    if (pauseLivePolling) ZenoraLiveTextController.pause();
                 }
 
                 @Override
