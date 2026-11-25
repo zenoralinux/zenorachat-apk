@@ -49,7 +49,9 @@ assert "committedIds.add(messageId);" not in live[live.index("isCompletedTextMes
 assert "pending.resolved.compareAndSet(false, true)" in ack
 assert "storage.acknowledgeZenoraTextMessage(" in ack
 assert "completed.put(pending.clientMessageId, serverId)" in ack
-assert "sentMessageIds" in ack
+assert "sentMessageIds" not in ack
+assert "state.seenMessageIds.add(serverId)" not in ack
+assert "ACK bookkeeping is not proof that the message exists" in ack
 
 # Reset the per-dialog applied-ID set for each new initial history publication;
 # don't clear completed-ID reconciliation metadata (which is now non-suppressing).
