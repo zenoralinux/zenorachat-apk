@@ -21,7 +21,9 @@ public final class ZenoraHistoryController {
     private static final Object lock = new Object();
     private static final Map<Integer, Map<Long, Snapshot>> cache = new HashMap<>();
     private static final Map<Integer, Map<Long, ArrayList<Target>>> inFlight = new HashMap<>();
+    private static final Map<Integer, Map<Long, OlderState>> olderStates = new HashMap<>();
     private static final long CACHE_TTL_MS = 30_000L;
+    private static final long RETRY_COOLDOWN_MS = 1_200L;
     private static final int CACHE_MAX_DIALOGS = 24;
 
     private ZenoraHistoryController() {
@@ -30,10 +32,21 @@ public final class ZenoraHistoryController {
     private static final class Target {
         final int classGuid;
         final int loadIndex;
+        final boolean olderPage;
+        final long beforeMessageId;
+        final boolean hasMoreOlder;
 
         Target(int classGuid, int loadIndex) {
+            this(classGuid, loadIndex, false, 0L, false);
+        }
+
+        Target(int classGuid, int loadIndex, boolean olderPage,
+               long beforeMessageId, boolean hasMoreOlder) {
             this.classGuid = classGuid;
             this.loadIndex = loadIndex;
+            this.olderPage = olderPage;
+            this.beforeMessageId = beforeMessageId;
+            this.hasMoreOlder = hasMoreOlder;
         }
     }
 
@@ -41,13 +54,37 @@ public final class ZenoraHistoryController {
         final long roomId;
         final JSONArray messages;
         final JSONArray users;
+        final boolean hasMoreOlder;
+        final long oldestMessageId;
         final long fetchedAt;
 
-        Snapshot(long roomId, JSONArray messages, JSONArray users) {
+        Snapshot(long roomId, JSONArray messages, JSONArray users,
+                 boolean hasMoreOlder, long oldestMessageId) {
             this.roomId = roomId;
             this.messages = messages;
             this.users = users;
+            this.hasMoreOlder = hasMoreOlder;
+            this.oldestMessageId = oldestMessageId;
             this.fetchedAt = SystemClock.elapsedRealtime();
+        }
+    }
+
+    private static final class OlderState {
+        final long roomId;
+        final HashSet<Integer> seenMessageIds = new HashSet<>();
+        JSONArray users;
+        long oldestMessageId;
+        long requestId;
+        long retryAfterMs;
+        boolean hasMoreOlder;
+        boolean loading;
+
+        OlderState(Snapshot snapshot) {
+            roomId = snapshot.roomId;
+            users = snapshot.users;
+            oldestMessageId = snapshot.oldestMessageId;
+            hasMoreOlder = snapshot.hasMoreOlder;
+            rememberMessageIds(seenMessageIds, snapshot.messages);
         }
     }
 
@@ -55,13 +92,14 @@ public final class ZenoraHistoryController {
         synchronized (lock) {
             cache.remove(account);
             inFlight.remove(account);
+            olderStates.remove(account);
         }
     }
 
     public static void loadInitialHistory(int account, long dialogId, int classGuid,
                                           int loadIndex, int requestedLimit) {
         final Target target = new Target(classGuid, loadIndex);
-        final int limit = Math.max(1, Math.min(100, requestedLimit));
+        final int limit = Math.max(1, Math.min(50, requestedLimit));
         final long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
         if (roomId <= 0 || !ZenoraChatController.isZenoraEnabled()) {
             publish(account, dialogId, 0, target, null,
@@ -79,6 +117,8 @@ public final class ZenoraHistoryController {
                 cachedSnapshot = candidate;
             } else {
                 if (candidate != null && accountCache != null) accountCache.remove(dialogId);
+                Map<Long, OlderState> accountOlder = olderStates.get(account);
+                if (accountOlder != null) accountOlder.remove(dialogId);
                 cachedSnapshot = null;
                 Map<Long, ArrayList<Target>> accountRequests =
                         inFlight.computeIfAbsent(account, ignored -> new HashMap<>());
@@ -93,6 +133,14 @@ public final class ZenoraHistoryController {
         }
 
         if (cachedSnapshot != null) {
+            synchronized (lock) {
+                Map<Long, OlderState> accountOlder =
+                        olderStates.computeIfAbsent(account, ignored -> new HashMap<>());
+                OlderState state = accountOlder.get(dialogId);
+                if (state == null || state.roomId != roomId) {
+                    accountOlder.put(dialogId, new OlderState(cachedSnapshot));
+                }
+            }
             publish(account, dialogId, roomId, target, cachedSnapshot, null, limit);
             return;
         }
@@ -106,11 +154,14 @@ public final class ZenoraHistoryController {
                 return;
             }
             JSONArray messages = response.optJSONArray("messages");
-            if (messages == null) {
+            JSONObject pagination = response.optJSONObject("pagination");
+            if (messages == null || !isValidBasicTextPage(messages, pagination, roomId, limit, 0L)) {
                 complete(account, dialogId, roomId, null,
-                        new IllegalStateException("History response has no messages array"), limit);
+                        new IllegalStateException("Initial text history page is malformed"), limit);
                 return;
             }
+            boolean hasMoreOlder = pagination.optBoolean("has_more_older", false);
+            long oldestMessageId = pagination.optLong("oldest_message_id", 0L);
 
             // Names are fetched separately because the stable text-history contract
             // intentionally returns sender IDs only. Failure here does not lose messages.
@@ -119,9 +170,168 @@ public final class ZenoraHistoryController {
                 if (usersError != null) {
                     FileLog.w("[ZenoraChat] Sender directory unavailable: " + usersError.getMessage());
                 }
-                complete(account, dialogId, roomId, new Snapshot(roomId, messages, users), null, limit);
+                complete(account, dialogId, roomId,
+                        new Snapshot(roomId, messages, users, hasMoreOlder, oldestMessageId), null, limit);
             });
         });
+    }
+
+    /**
+     * Starts one older-text page. Returning false means there is no eligible request;
+     * callers should keep Telegram's native loading gate untouched.
+     */
+    public static boolean loadOlderHistory(int account, long dialogId, int classGuid,
+                                           int loadIndex, int requestedLimit) {
+        final long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
+        if (roomId <= 0 || !ZenoraChatController.isZenoraEnabled()) return false;
+
+        final int limit = Math.max(1, Math.min(50, requestedLimit));
+        final OlderState state;
+        final long beforeMessageId;
+        final long requestId;
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            state = accountOlder == null ? null : accountOlder.get(dialogId);
+            long now = SystemClock.elapsedRealtime();
+            if (state == null || state.roomId != roomId || !state.hasMoreOlder
+                    || state.loading || now < state.retryAfterMs
+                    || state.oldestMessageId <= 0) {
+                return false;
+            }
+            state.loading = true;
+            state.requestId++;
+            requestId = state.requestId;
+            beforeMessageId = state.oldestMessageId;
+        }
+
+        ZenoraApiClient.fetchBasicTextHistory(roomId, limit, beforeMessageId, (response, error) -> {
+            if (!isCurrentOlderRequest(account, dialogId, roomId, state, requestId)) return;
+            if (error != null || response == null) {
+                finishOlderFailure(account, dialogId, roomId, classGuid, loadIndex,
+                        beforeMessageId, state, requestId,
+                        error != null ? error : new IllegalStateException("Older history response is empty"),
+                        limit);
+                return;
+            }
+
+            JSONArray messages = response.optJSONArray("messages");
+            JSONObject pagination = response.optJSONObject("pagination");
+            if (messages == null || !isValidBasicTextPage(
+                    messages, pagination, roomId, limit, beforeMessageId)) {
+                finishOlderFailure(account, dialogId, roomId, classGuid, loadIndex,
+                        beforeMessageId, state, requestId,
+                        new IllegalStateException("Older history page or cursor metadata is invalid"),
+                        limit);
+                return;
+            }
+
+            boolean hasMoreOlder = pagination.optBoolean("has_more_older", false);
+            long oldestMessageId = pagination.optLong("oldest_message_id", 0L);
+            Snapshot page = new Snapshot(roomId, messages, state.users,
+                    hasMoreOlder, oldestMessageId);
+            Target target = new Target(classGuid, loadIndex, true, beforeMessageId, hasMoreOlder);
+            boolean published = publish(account, dialogId, roomId, target, page, null, limit);
+            if (!published || !isCurrentOlderRequest(account, dialogId, roomId, state, requestId)) {
+                finishOlderFailure(account, dialogId, roomId, classGuid, loadIndex,
+                        beforeMessageId, state, requestId,
+                        new IllegalStateException("Older history page could not be applied to native history"),
+                        limit);
+                return;
+            }
+
+            synchronized (lock) {
+                Map<Long, OlderState> accountOlder = olderStates.get(account);
+                OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
+                if (current != state || current.requestId != requestId) return;
+                rememberMessageIds(current.seenMessageIds, messages);
+                if (messages.length() > 0) {
+                    current.oldestMessageId = oldestMessageId;
+                }
+                current.hasMoreOlder = hasMoreOlder;
+                current.loading = false;
+                current.retryAfterMs = 0L;
+            }
+            FileLog.d("[ZenoraChat] Older page committed; dialog=" + dialogId
+                    + ", before=" + beforeMessageId + ", oldest=" + oldestMessageId
+                    + ", count=" + messages.length() + ", more=" + hasMoreOlder);
+        });
+        return true;
+    }
+
+    private static boolean isCurrentOlderRequest(int account, long dialogId, long roomId,
+                                                 OlderState expectedState, long requestId) {
+        if (ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId
+                || !ZenoraChatController.isZenoraEnabled()) {
+            return false;
+        }
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
+            return current == expectedState && current.roomId == roomId
+                    && current.requestId == requestId && current.loading;
+        }
+    }
+
+    private static void finishOlderFailure(int account, long dialogId, long roomId,
+                                           int classGuid, int loadIndex, long beforeMessageId,
+                                           OlderState state, long requestId, Exception error,
+                                           int limit) {
+        if (!isCurrentOlderRequest(account, dialogId, roomId, state, requestId)) return;
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
+            if (current != state || current.requestId != requestId) return;
+            current.loading = false;
+            current.retryAfterMs = SystemClock.elapsedRealtime() + RETRY_COOLDOWN_MS;
+        }
+        FileLog.e(error);
+        // Use a non-terminal native history completion so Telegram clears its loading
+        // flag but does not mark the oldest boundary as exhausted.
+        publish(account, dialogId, roomId,
+                new Target(classGuid, loadIndex, true, beforeMessageId, true),
+                null, error, limit);
+        FileLog.w("[ZenoraChat] Older history request can be retried; dialog=" + dialogId);
+    }
+
+    private static boolean isValidBasicTextPage(JSONArray messages, JSONObject pagination,
+                                                long roomId, int limit, long beforeMessageId) {
+        if (pagination == null || messages.length() > limit) return false;
+        boolean hasMoreOlder = pagination.optBoolean("has_more_older", false);
+        long oldestMessageId = pagination.optLong("oldest_message_id", 0L);
+        if (messages.length() == 0) {
+            return !hasMoreOlder && oldestMessageId <= 0;
+        }
+        long previousId = 0L;
+        long firstId = 0L;
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject row = messages.optJSONObject(i);
+            if (row == null || row.optLong("room_id", 0L) != roomId
+                    || row.isNull("text")) return false;
+            long messageId = row.optLong("message_id", 0L);
+            if (messageId <= previousId || messageId > Integer.MAX_VALUE
+                    || beforeMessageId > 0 && messageId >= beforeMessageId
+                    || row.optLong("sender_id", 0L) <= 0
+                    || TextUtils.isEmpty(row.optString("text", "").trim())
+                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0) {
+                return false;
+            }
+            if (i == 0) firstId = messageId;
+            previousId = messageId;
+        }
+        return oldestMessageId == firstId
+                && (!hasMoreOlder || messages.length() == limit);
+    }
+
+    private static void rememberMessageIds(HashSet<Integer> destination, JSONArray messages) {
+        if (messages == null) return;
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject row = messages.optJSONObject(i);
+            if (row == null) continue;
+            long rawId = row.optLong("message_id", 0L);
+            if (rawId > 0 && rawId <= Integer.MAX_VALUE) {
+                destination.add((int) rawId);
+            }
+        }
     }
 
     private static void complete(int account, long dialogId, long roomId, Snapshot snapshot,
@@ -138,9 +348,13 @@ public final class ZenoraHistoryController {
                 Map<Long, Snapshot> accountCache =
                         cache.computeIfAbsent(account, ignored -> new HashMap<>());
                 accountCache.put(dialogId, snapshot);
+                Map<Long, OlderState> accountOlder =
+                        olderStates.computeIfAbsent(account, ignored -> new HashMap<>());
+                accountOlder.put(dialogId, new OlderState(snapshot));
                 while (accountCache.size() > CACHE_MAX_DIALOGS) {
                     Long firstKey = accountCache.keySet().iterator().next();
                     accountCache.remove(firstKey);
+                    accountOlder.remove(firstKey);
                 }
             }
         }
@@ -155,19 +369,19 @@ public final class ZenoraHistoryController {
         }
     }
 
-    private static void publish(int account, long dialogId, long roomId, Target target,
-                                Snapshot snapshot, Exception error, int limit) {
+    private static boolean publish(int account, long dialogId, long roomId, Target target,
+                                   Snapshot snapshot, Exception error, int limit) {
         if (snapshot != null && (snapshot.roomId != roomId
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId)) {
             FileLog.w("[ZenoraChat] Refusing cross-dialog history payload for " + dialogId);
-            return;
+            return false;
         }
 
         MessagesController messagesController = MessagesController.getInstance(account);
         TLRPC.Dialog dialog = messagesController.getDialog(dialogId);
         if (dialog == null || dialog.peer == null) {
             FileLog.w("[ZenoraChat] Native dialog peer is unavailable for " + dialogId);
-            return;
+            return false;
         }
         if (error != null) FileLog.e(error);
 
@@ -204,6 +418,16 @@ public final class ZenoraHistoryController {
             if (peer != null && includedUsers.add(peer.id)) result.users.add(peer);
         }
 
+        HashSet<Integer> previouslyLoadedIds = new HashSet<>();
+        if (target.olderPage) {
+            synchronized (lock) {
+                Map<Long, OlderState> accountOlder = olderStates.get(account);
+                OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
+                if (state != null && state.roomId == roomId) {
+                    previouslyLoadedIds.addAll(state.seenMessageIds);
+                }
+            }
+        }
         if (snapshot != null) {
             HashSet<Integer> seenIds = new HashSet<>();
             ArrayList<TLRPC.Message> mapped = new ArrayList<>();
@@ -216,7 +440,8 @@ public final class ZenoraHistoryController {
                 if (rawId <= 0 || rawId > Integer.MAX_VALUE
                         || senderId <= 0 || senderId > Integer.MAX_VALUE) continue;
                 int messageId = (int) rawId;
-                if (!seenIds.add(messageId)) continue;
+                if (!seenIds.add(messageId)
+                        || target.olderPage && previouslyLoadedIds.contains(messageId)) continue;
 
                 String body = row.optString("text", "");
                 if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) continue;
@@ -253,22 +478,42 @@ public final class ZenoraHistoryController {
         }
 
         result.count = result.messages.size();
+        int loadType;
+        int nativeCount;
+        boolean isEnd;
+        if (target.olderPage && error != null) {
+            // A failed older-page request must release ChatActivity's native loading
+            // gate without setting endReached; the scroll edge can retry after cooldown.
+            loadType = MessagesController.LOAD_FROM_UNREAD;
+            nativeCount = Math.max(1, Math.min(50, limit));
+            isEnd = false;
+        } else if (target.olderPage) {
+            loadType = MessagesController.LOAD_BACKWARD;
+            nativeCount = target.hasMoreOlder
+                    ? Math.max(1, Math.min(50, limit))
+                    : result.messages.size() + 1;
+            isEnd = false;
+        } else {
+            loadType = MessagesController.LOAD_FROM_UNREAD;
+            nativeCount = Math.max(1, Math.min(50, limit));
+            isEnd = true;
+        }
         messagesController.processLoadedMessages(
                 result,
                 result.messages.size(),
                 dialogId,
                 0,
-                Math.max(1, Math.min(100, limit)),
-                0,
+                nativeCount,
+                target.olderPage ? (int) Math.min(Integer.MAX_VALUE, target.beforeMessageId) : 0,
                 0,
                 false,
                 target.classGuid,
                 0,
                 0,
-                Math.max(0, dialog.unread_count),
-                dialog.last_message_date,
-                2,
-                true,
+                target.olderPage ? 0 : Math.max(0, dialog.unread_count),
+                target.olderPage ? 0 : dialog.last_message_date,
+                loadType,
+                isEnd,
                 0,
                 0L,
                 target.loadIndex,
@@ -278,8 +523,9 @@ public final class ZenoraHistoryController {
                 false,
                 null
         );
-        FileLog.d("[ZenoraChat] Native initial text history published; dialog="
+        FileLog.d("[ZenoraChat] Native text history page published; dialog="
                 + dialogId + ", count=" + result.messages.size()
-                + ", failed=" + (error != null));
+                + ", older=" + target.olderPage + ", failed=" + (error != null));
+        return true;
     }
 }
