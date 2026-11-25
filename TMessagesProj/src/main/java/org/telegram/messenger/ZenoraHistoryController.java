@@ -7,6 +7,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.tgnet.TLRPC;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -22,7 +23,11 @@ public final class ZenoraHistoryController {
     private static final Map<Integer, Map<Long, Snapshot>> cache = new HashMap<>();
     private static final Map<Integer, Map<Long, ArrayList<Target>>> inFlight = new HashMap<>();
     private static final Map<Integer, Map<Long, OlderState>> olderStates = new HashMap<>();
-    private static final Map<Integer, HashSet<Long>> pendingTextSends = new HashMap<>();
+    private static final Map<Integer, Map<Long, ArrayDeque<PendingTextSend>>> pendingTextQueues = new HashMap<>();
+    private static final Map<Integer, HashSet<Long>> activeTextSendRooms = new HashMap<>();
+    private static final Map<Integer, Map<Long, HashMap<String, PendingTextSend>>> pendingTextByClientId = new HashMap<>();
+    private static final Map<Integer, Map<Long, HashMap<String, Integer>>> completedTextByClientId = new HashMap<>();
+    private static final int MAX_PENDING_TEXT_SENDS_PER_ROOM = 64;
     private static final Map<Integer, Map<Long, HashSet<Long>>> sentMessageIds = new HashMap<>();
     private static final Map<Integer, Map<Long, HashSet<Long>>> pendingSentMessageIds = new HashMap<>();
     private static final long CACHE_TTL_MS = 30_000L;
@@ -31,6 +36,36 @@ public final class ZenoraHistoryController {
 
     public interface TextSendCallback {
         void onComplete(boolean success, String message);
+    }
+
+    private static final class PendingTextSend {
+        final int account;
+        final long dialogId;
+        final long roomId;
+        final int localId;
+        final long randomId;
+        final String clientMessageId;
+        final String body;
+        final MessageObject messageObject;
+        final TextSendCallback callback;
+        final java.util.concurrent.atomic.AtomicBoolean resolved =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        volatile boolean failed;
+        volatile boolean started;
+
+        PendingTextSend(int account, long dialogId, long roomId, int localId, long randomId,
+                        String clientMessageId, String body, MessageObject messageObject,
+                        TextSendCallback callback) {
+            this.account = account;
+            this.dialogId = dialogId;
+            this.roomId = roomId;
+            this.localId = localId;
+            this.randomId = randomId;
+            this.clientMessageId = clientMessageId;
+            this.body = body;
+            this.messageObject = messageObject;
+            this.callback = callback;
+        }
     }
 
     private ZenoraHistoryController() {
@@ -101,7 +136,10 @@ public final class ZenoraHistoryController {
             cache.remove(account);
             inFlight.remove(account);
             olderStates.remove(account);
-            pendingTextSends.remove(account);
+            pendingTextQueues.remove(account);
+            activeTextSendRooms.remove(account);
+            pendingTextByClientId.remove(account);
+            completedTextByClientId.remove(account);
             sentMessageIds.remove(account);
             pendingSentMessageIds.remove(account);
         }
@@ -285,178 +323,316 @@ public final class ZenoraHistoryController {
                 return;
             }
             boolean hasMoreOlder = pagination.optBoolean("has_more_older", false);
-            long oldestMessageId = pagination.optLong("oldest_message_id", 0L);
-            Snapshot page = new Snapshot(roomId, messages, state.users,
-                    hasMoreOlder, oldestMessageId);
-            Target target = new Target(classGuid, loadIndex, true, beforeMessageId, hasMoreOlder);
-            boolean published = publish(account, dialogId, roomId, target, page, null, limit);
-            if (!published || !isCurrentOlderRequest(account, dialogId, roomId, state, requestId)) {
-                finishOlderFailure(account, dialogId, roomId, classGuid, loadIndex,
-                        beforeMessageId, state, requestId,
-                        new IllegalStateException("Older history page could not be applied to native history"),
-                        limit);
-                return;
-            }
-
-            synchronized (lock) {
-                Map<Long, OlderState> accountOlder = olderStates.get(account);
-                OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
-                if (current != state || current.requestId != requestId) return;
-                rememberMessageIds(current.seenMessageIds, messages);
-                if (messages.length() > 0) {
-                    current.oldestMessageId = oldestMessageId;
-                }
-                current.hasMoreOlder = hasMoreOlder;
-                current.loading = false;
-                current.loadingClassGuid = 0;
-                current.retryAfterMs = 0L;
-            }
-            FileLog.d("[ZenoraChat] Older page committed; dialog=" + dialogId
-                    + ", before=" + beforeMessageId + ", oldest=" + oldestMessageId
-                    + ", count=" + messages.length() + ", more=" + hasMoreOlder);
-        });
-        return true;
-    }
-
-
-    /**
-     * Sends plain text to the mapped Zenora room. Publishes only the real server ID
-     * and never advances the before_message_id cursor used for older history.
-     */
+            long oldestMessageId = p
+    /** Optimistic local publish followed by a bounded per-room FIFO PHP send queue. */
     public static boolean sendTextMessage(int account, long dialogId, long roomId,
                                           String body, TextSendCallback callback) {
         if (dialogId == 0 || roomId <= 0 || body == null || body.trim().isEmpty()
                 || !ZenoraChatController.isZenoraEnabled()
-                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) return false;
+        MessagesController controller = MessagesController.getInstance(account);
+        TLRPC.Dialog dialog = controller.getDialog(dialogId);
+        long selfId = UserConfig.getInstance(account).getClientUserId();
+        if (dialog == null || dialog.peer == null || selfId <= 0 || selfId > Integer.MAX_VALUE) return false;
+
+        int localId = UserConfig.getInstance(account).getNewMessageId();
+        long randomId = Utilities.random.nextLong();
+        while (randomId == 0L) randomId = Utilities.random.nextLong();
+        String clientMessageId = java.util.UUID.randomUUID().toString();
+
+        TLRPC.TL_message message = new TLRPC.TL_message();
+        message.id = localId;
+        message.local_id = localId;
+        message.random_id = randomId;
+        message.dialog_id = dialogId;
+        message.peer_id = dialog.peer;
+        message.from_id = new TLRPC.TL_peerUser();
+        message.from_id.user_id = selfId;
+        message.date = ConnectionsManager.getInstance(account).getCurrentTime();
+        message.message = body;
+        message.media = new TLRPC.TL_messageMediaEmpty();
+        message.out = true;
+        message.unread = true;
+        message.flags |= 1 << 8;
+        message.flags |= 1 << 1;
+        message.send_state = MessageObject.MESSAGE_SEND_STATE_SENDING;
+        message.params = new HashMap<>();
+        message.params.put("zenora_client_message_id", clientMessageId);
+        message.params.put("zenora_room_id", String.valueOf(roomId));
+
+        MessageObject object = new MessageObject(account, message, false, true);
+        object.wasJustSent = true;
+        PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, localId,
+                randomId, clientMessageId, body, object, callback);
+        boolean startImmediately;
+        synchronized (lock) {
+            ArrayDeque<PendingTextSend> queue = pendingTextQueues
+                    .computeIfAbsent(account, ignored -> new HashMap<>())
+                    .computeIfAbsent(roomId, ignored -> new ArrayDeque<>());
+            if (queue.size() >= MAX_PENDING_TEXT_SENDS_PER_ROOM) return false;
+            queue.addLast(pending);
+            pendingTextByClientId.computeIfAbsent(account, ignored -> new HashMap<>())
+                    .computeIfAbsent(dialogId, ignored -> new HashMap<>()).put(clientMessageId, pending);
+            startImmediately = activeTextSendRooms.computeIfAbsent(account, ignored -> new HashSet<>())
+                    .add(roomId);
+        }
+        try {
+            ArrayList<TLRPC.Message> stored = new ArrayList<>();
+            stored.add(message);
+            MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
+            ArrayList<MessageObject> objects = new ArrayList<>();
+            objects.add(object);
+            controller.updateInterfaceWithMessages(dialogId, objects, 0);
+            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+            UserConfig.getInstance(account).saveConfig(false);
+        } catch (Exception error) {
+            FileLog.e(error);
+            removeQueuedTextSend(pending);
             return false;
         }
-        synchronized (lock) {
-            HashSet<Long> pending = pendingTextSends.computeIfAbsent(
-                    account, ignored -> new HashSet<>());
-            if (!pending.add(dialogId)) return false;
-        }
-
-        ZenoraApiClient.sendTextMessage(roomId, body, (response, error) -> {
-            boolean success = false;
-            String resultMessage = "";
-            try {
-                if (error != null) {
-                    resultMessage = error.getMessage() == null
-                            ? "ZenoraChat could not confirm the message send." : error.getMessage();
-                } else {
-                    long messageId = response == null ? 0L : response.optLong("id", 0L);
-                    if (messageId <= 0L || messageId > Integer.MAX_VALUE) {
-                        resultMessage = "ZenoraChat returned an invalid message ID.";
-                    } else if (!ZenoraChatController.isZenoraEnabled()
-                            || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
-                        resultMessage = "The Zenora conversation changed before the response arrived.";
-                    } else {
-                        boolean published = publishSentTextMessage(
-                                account, dialogId, roomId, (int) messageId, body);
-                        success = true; // the API has committed the message
-                        if (!published) {
-                            resultMessage = "Message sent. Reopen the conversation to refresh its display.";
-                        }
-                    }
-                }
-            } catch (Exception publishError) {
-                FileLog.e(publishError);
-                resultMessage = "Message sent, but the native conversation could not refresh.";
-                success = true;
-            } finally {
-                synchronized (lock) {
-                    HashSet<Long> pending = pendingTextSends.get(account);
-                    if (pending != null) {
-                        pending.remove(dialogId);
-                        if (pending.isEmpty()) pendingTextSends.remove(account);
-                    }
-                }
-            }
-            if (callback != null) callback.onComplete(success, resultMessage);
-        });
+        if (startImmediately) startTextSendRequest(pending);
         return true;
     }
 
-    private static boolean publishSentTextMessage(int account, long dialogId, long roomId,
-                                                  int messageId, String body) {
-        if (messageId <= 0 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
-            return false;
+    /** Intercepts Telegram's native retry gesture; Zenora messages never enter MTProto. */
+    public static boolean retryTextMessage(int account, MessageObject object) {
+        if (object == null || object.messageOwner == null) return false;
+        TLRPC.Message message = object.messageOwner;
+        long dialogId = object.getDialogId();
+        long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
+        String clientId = message.params == null ? null : message.params.get("zenora_client_message_id");
+        if (roomId <= 0 || TextUtils.isEmpty(clientId) || TextUtils.isEmpty(message.message)
+                || !(message.media instanceof TLRPC.TL_messageMediaEmpty)
+                || message.action != null || message.reply_to != null || object.scheduled) return false;
+        long randomId = message.random_id;
+        if (randomId == 0L) {
+            randomId = Utilities.random.nextLong();
+            while (randomId == 0L) randomId = Utilities.random.nextLong();
+            message.random_id = randomId;
         }
+        message.send_state = MessageObject.MESSAGE_SEND_STATE_SENDING;
+        object.forceUpdate = true;
+        PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, message.id,
+                randomId, clientId, message.message, object, null);
+        boolean startImmediately;
         synchronized (lock) {
-            Map<Long, Snapshot> accountCache = cache.get(account);
-            if (accountCache != null) accountCache.remove(dialogId);
-        }
-        MessagesController messagesController = MessagesController.getInstance(account);
-        TLRPC.Dialog dialog = messagesController.getDialog(dialogId);
-        if (dialog == null || dialog.peer == null) {
-            FileLog.w("[ZenoraChat] Sent text message has no native dialog: " + dialogId);
-            return false;
-        }
-        long selfId = UserConfig.getInstance(account).getClientUserId();
-        if (selfId <= 0 || selfId > Integer.MAX_VALUE) return false;
-
-        synchronized (lock) {
-            Map<Long, OlderState> accountOlder = olderStates.get(account);
-            OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
-            Map<Long, HashSet<Long>> accountSent = sentMessageIds.get(account);
-            HashSet<Long> appliedIds = accountSent == null ? null : accountSent.get(dialogId);
-            if ((state != null && state.roomId == roomId
-                    && state.seenMessageIds.contains(messageId))
-                    || (appliedIds != null && appliedIds.contains((long) messageId))) {
-                Map<Long, Snapshot> accountCache = cache.get(account);
-                if (accountCache != null) accountCache.remove(dialogId);
-                return true; // The active history/live session already published this server ID.
-            }
-
-            HashSet<Long> publishingIds = pendingSentMessageIds
+            Map<Long, HashMap<String, PendingTextSend>> pendingByDialog = pendingTextByClientId.get(account);
+            HashMap<String, PendingTextSend> existingMap =
+                    pendingByDialog == null ? null : pendingByDialog.get(dialogId);
+            PendingTextSend existing = existingMap == null ? null : existingMap.get(clientId);
+            if (existing != null && !existing.failed && !existing.resolved.get()) return false;
+            ArrayDeque<PendingTextSend> queue = pendingTextQueues
                     .computeIfAbsent(account, ignored -> new HashMap<>())
-                    .computeIfAbsent(dialogId, ignored -> new HashSet<>());
-            if (!publishingIds.add((long) messageId)) {
-                Map<Long, Snapshot> accountCache = cache.get(account);
-                if (accountCache != null) accountCache.remove(dialogId);
-                return true; // Another callback is already publishing the same server ID.
-            }
+                    .computeIfAbsent(roomId, ignored -> new ArrayDeque<>());
+            if (queue.size() >= MAX_PENDING_TEXT_SENDS_PER_ROOM) return false;
+            queue.addLast(pending);
+            pendingTextByClientId.computeIfAbsent(account, ignored -> new HashMap<>())
+                    .computeIfAbsent(dialogId, ignored -> new HashMap<>()).put(clientId, pending);
+            startImmediately = activeTextSendRooms.computeIfAbsent(account, ignored -> new HashSet<>())
+                    .add(roomId);
+        }
+        ArrayList<TLRPC.Message> stored = new ArrayList<>();
+        stored.add(message);
+        MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
+        ArrayList<MessageObject> objects = new ArrayList<>();
+        objects.add(object);
+        NotificationCenter.getInstance(account).postNotificationName(
+                NotificationCenter.replaceMessagesObjects, dialogId, objects);
+        if (startImmediately) startTextSendRequest(pending);
+        return true;
+    }
 
-            // The server has committed this message. Never let a pre-send cached page
-            // become the next activity's source of truth, even if native publication fails.
-            Map<Long, Snapshot> accountCache = cache.get(account);
-            if (accountCache != null) accountCache.remove(dialogId);
+    private static ArrayDeque<PendingTextSend> getTextQueueLocked(int account, long roomId) {
+        Map<Long, ArrayDeque<PendingTextSend>> queues = pendingTextQueues.get(account);
+        return queues == null ? null : queues.get(roomId);
+    }
+
+    private static void startTextSendRequest(PendingTextSend pending) {
+        if (pending == null || pending.resolved.get()) return;
+        synchronized (lock) {
+            ArrayDeque<PendingTextSend> queue = getTextQueueLocked(pending.account, pending.roomId);
+            if (queue == null || queue.peekFirst() != pending || pending.started) return;
+            pending.started = true;
+        }
+        ZenoraApiClient.sendTextMessage(pending.roomId, pending.body, pending.clientMessageId,
+                (response, error) -> {
+                    if (pending.resolved.get()) return;
+                    if (error != null) {
+                        failPendingTextSend(pending, error.getMessage());
+                        return;
+                    }
+                    JSONObject sent = response == null ? null : response.optJSONObject("message");
+                    long rawId = sent == null ? 0L : sent.optLong("message_id", 0L);
+                    String returnedClientId = sent == null ? "" : sent.optString("client_message_id", "");
+                    int serverDate = sent == null ? 0
+                            : ZenoraChatController.parseHistoryDate(sent.optString("created_at", ""));
+                    if (rawId <= 0L || rawId > Integer.MAX_VALUE
+                            || !pending.clientMessageId.equals(returnedClientId)
+                            || sent.optLong("room_id", 0L) != pending.roomId
+                            || !pending.body.equals(sent.optString("text", ""))
+                            || serverDate <= 0) {
+                        failPendingTextSend(pending, "Zenora returned an invalid message acknowledgment.");
+                        return;
+                    }
+                    acknowledgePendingTextSend(pending, (int) rawId, serverDate);
+                });
+    }
+
+    private static void removeQueuedTextSend(PendingTextSend pending) {
+        PendingTextSend next = null;
+        synchronized (lock) {
+            ArrayDeque<PendingTextSend> queue = getTextQueueLocked(pending.account, pending.roomId);
+            if (queue != null) {
+                boolean wasHead = queue.peekFirst() == pending;
+                queue.remove(pending);
+                if (queue.isEmpty()) {
+                    Map<Long, ArrayDeque<PendingTextSend>> queues = pendingTextQueues.get(pending.account);
+                    if (queues != null) {
+                        queues.remove(pending.roomId);
+                        if (queues.isEmpty()) pendingTextQueues.remove(pending.account);
+                    }
+                    HashSet<Long> active = activeTextSendRooms.get(pending.account);
+                    if (active != null) {
+                        active.remove(pending.roomId);
+                        if (active.isEmpty()) activeTextSendRooms.remove(pending.account);
+                    }
+                } else if (wasHead) next = queue.peekFirst();
+            }
+        }
+        if (next != null) startTextSendRequest(next);
+    }
+
+    private static void finishTextQueue(PendingTextSend pending) {
+        PendingTextSend next = null;
+        synchronized (lock) {
+            ArrayDeque<PendingTextSend> queue = getTextQueueLocked(pending.account, pending.roomId);
+            if (queue == null) return;
+            boolean wasHead = queue.peekFirst() == pending;
+            if (wasHead) queue.removeFirst();
+            else queue.remove(pending);
+            if (queue.isEmpty()) {
+                Map<Long, ArrayDeque<PendingTextSend>> queues = pendingTextQueues.get(pending.account);
+                if (queues != null) {
+                    queues.remove(pending.roomId);
+                    if (queues.isEmpty()) pendingTextQueues.remove(pending.account);
+                }
+                HashSet<Long> active = activeTextSendRooms.get(pending.account);
+                if (active != null) {
+                    active.remove(pending.roomId);
+                    if (active.isEmpty()) activeTextSendRooms.remove(pending.account);
+                }
+            } else if (wasHead) {
+                next = queue.peekFirst();
+                if (next != null) next.started = false;
+            }
+        }
+        if (next != null) startTextSendRequest(next);
+    }
+
+    private static void failPendingTextSend(PendingTextSend pending, String reason) {
+        if (pending == null || pending.resolved.get() || pending.failed) return;
+        pending.failed = true;
+        TLRPC.Message message = pending.messageObject.messageOwner;
+        message.send_state = MessageObject.MESSAGE_SEND_STATE_SEND_ERROR;
+        pending.messageObject.forceUpdate = true;
+        MessagesStorage.getInstance(pending.account).markMessageAsSendError(message, 0);
+        NotificationCenter center = NotificationCenter.getInstance(pending.account);
+        center.postNotificationName(NotificationCenter.messageSendError, pending.localId);
+        ArrayList<MessageObject> objects = new ArrayList<>();
+        objects.add(pending.messageObject);
+        center.postNotificationName(NotificationCenter.replaceMessagesObjects, pending.dialogId, objects);
+        finishTextQueue(pending);
+        if (pending.callback != null) {
+            pending.callback.onComplete(false, TextUtils.isEmpty(reason)
+                    ? "ZenoraChat could not confirm the message send." : reason);
+        }
+    }
+
+    private static boolean reconcilePendingTextMessage(int account, long dialogId, long roomId,
+                                                        String clientId, int serverId, int serverDate) {
+        if (TextUtils.isEmpty(clientId) || serverId <= 0 || serverDate <= 0) return false;
+        PendingTextSend pending;
+        synchronized (lock) {
+            Map<Long, HashMap<String, PendingTextSend>> pendingByDialog = pendingTextByClientId.get(account);
+            HashMap<String, PendingTextSend> dialogPending =
+                    pendingByDialog == null ? null : pendingByDialog.get(dialogId);
+            pending = dialogPending == null ? null : dialogPending.get(clientId);
+            if (pending == null || pending.roomId != roomId || pending.resolved.get()) return false;
+        }
+        acknowledgePendingTextSend(pending, serverId, serverDate);
+        return true;
+    }
+
+    private static boolean isCompletedTextMessage(int account, long dialogId, String clientId, int serverId) {
+        if (TextUtils.isEmpty(clientId)) return false;
+        synchronized (lock) {
+            Map<Long, HashMap<String, Integer>> accountCompleted = completedTextByClientId.get(account);
+            HashMap<String, Integer> completed =
+                    accountCompleted == null ? null : accountCompleted.get(dialogId);
+            Integer knownId = completed == null ? null : completed.get(clientId);
+            return knownId != null && knownId == serverId;
+        }
+    }
+
+    private static void acknowledgePendingTextSend(PendingTextSend pending, int serverId, int serverDate) {
+        if (pending == null || serverId <= 0 || serverDate <= 0
+                || !pending.resolved.compareAndSet(false, true)) return;
+        synchronized (lock) {
+            Map<Long, HashMap<String, PendingTextSend>> pendingByDialog = pendingTextByClientId.get(pending.account);
+            HashMap<String, PendingTextSend> dialogPending =
+                    pendingByDialog == null ? null : pendingByDialog.get(pending.dialogId);
+            if (dialogPending != null && dialogPending.get(pending.clientMessageId) == pending) {
+                dialogPending.remove(pending.clientMessageId);
+                if (dialogPending.isEmpty()) pendingByDialog.remove(pending.dialogId);
+                if (pendingByDialog.isEmpty()) pendingTextByClientId.remove(pending.account);
+            }
+            HashMap<String, Integer> completed = completedTextByClientId
+                    .computeIfAbsent(pending.account, ignored -> new HashMap<>())
+                    .computeIfAbsent(pending.dialogId, ignored -> new HashMap<>());
+            completed.put(pending.clientMessageId, serverId);
+            if (completed.size() > 512) completed.remove(completed.keySet().iterator().next());
+            sentMessageIds.computeIfAbsent(pending.account, ignored -> new HashMap<>())
+                    .computeIfAbsent(pending.dialogId, ignored -> new HashSet<>()).add((long) serverId);
+            Map<Long, OlderState> accountOlder = olderStates.get(pending.account);
+            OlderState state = accountOlder == null ? null : accountOlder.get(pending.dialogId);
+            if (state != null && state.roomId == pending.roomId) state.seenMessageIds.add(serverId);
+            Map<Long, Snapshot> accountCache = cache.get(pending.account);
+            if (accountCache != null) accountCache.remove(pending.dialogId);
         }
 
-        boolean published = false;
-        try {
-            TLRPC.TL_message message = new TLRPC.TL_message();
-            message.id = messageId;
-            message.date = (int) (System.currentTimeMillis() / 1000L);
-            message.dialog_id = dialogId;
-            message.peer_id = dialog.peer;
-            message.from_id = new TLRPC.TL_peerUser();
-            message.from_id.user_id = selfId;
-            message.message = body;
-            message.media = new TLRPC.TL_messageMediaEmpty();
-            message.out = true;
-            message.unread = false;
-            message.flags |= 1 << 8;
-            message.flags |= 1 << 1;
+        TLRPC.Message message = pending.messageObject.messageOwner;
+        message.id = serverId;
+        message.local_id = pending.localId;
+        message.date = serverDate;
+        message.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
+        pending.messageObject.forceUpdate = true;
+        NotificationCenter center = NotificationCenter.getInstance(pending.account);
+        ArrayList<MessageObject> objects = new ArrayList<>();
+        objects.add(pending.messageObject);
+        center.postNotificationName(NotificationCenter.replaceMessagesObjects, pending.dialogId, objects);
 
-            MessageObject object = new MessageObject(account, message, true, true);
-            ArrayList<MessageObject> objects = new ArrayList<>();
-            objects.add(object);
-            messagesController.updateInterfaceWithMessages(dialogId, objects, 0);
+        MessagesStorage storage = MessagesStorage.getInstance(pending.account);
+        storage.getStorageQueue().postRunnable(() -> {
+            long[] ids = storage.updateMessageStateAndId(
+                    pending.randomId, pending.dialogId, pending.localId, serverId, serverDate, false, 0, 0);
+            AndroidUtilities.runOnUIThread(() -> {
+                if (ids != null) {
+                    center.postNotificationName(NotificationCenter.messageReceivedByServer,
+                            pending.localId, serverId, null, pending.dialogId, 0L, -1, false);
+                    center.postNotificationName(NotificationCenter.messageReceivedByServer2,
+                            pending.localId, serverId, null, pending.dialogId, 0L, -1, false);
+                } else {
+                    FileLog.w("[ZenoraChat] Local row missing during ID remap: "
+                            + pending.localId + " -> " + serverId);
+                }
+                center.postNotificationName(NotificationCenter.dialogsNeedReload);
+                finishTextQueue(pending);
+                if (pending.callback != null) pending.callback.onComplete(true, "");
+            });
+        });
+    }
 
-            ArrayList<TLRPC.Message> stored = new ArrayList<>();
-            stored.add(message);
-            MessagesStorage.getInstance(account).putMessages(
-                    stored, false, true, false, 0, 0, 0);
-
-            published = true;
-            synchronized (lock) {
-                Map<Long, HashSet<Long>> accountPending = pendingSentMessageIds.get(account);
-                HashSet<Long> publishingIds = accountPending == null ? null : accountPending.get(dialogId);
-                if (publishingIds != null) {
-                    publishingIds.remove((long) messageId);
-                    if (publishingIds.isEmpty()) accountPending.remove(dialogId);
-                    if (accountPending.isEmpty()) pendingSentMessageIds.remove(account);
+()) pendingSentMessageIds.remove(account);
                 }
 
                 HashSet<Long> appliedIds = sentMessageIds
@@ -540,6 +716,7 @@ public final class ZenoraHistoryController {
         ArrayList<Integer> ids = new ArrayList<>();
         ArrayList<Long> senderIds = new ArrayList<>();
         ArrayList<String> bodies = new ArrayList<>();
+        ArrayList<String> clientMessageIds = new ArrayList<>();
         ArrayList<Integer> dates = new ArrayList<>();
         HashSet<Integer> pageIds = new HashSet<>();
         long previousId = afterMessageId;
@@ -561,6 +738,7 @@ public final class ZenoraHistoryController {
             ids.add((int) rawId);
             senderIds.add(senderId);
             bodies.add(body);
+            clientMessageIds.add(row.optString("client_message_id", ""));
             dates.add(date);
             previousId = rawId;
         }
@@ -608,6 +786,15 @@ public final class ZenoraHistoryController {
         for (int i = 0; i < ids.size(); i++) {
             int messageId = ids.get(i);
             long senderId = senderIds.get(i);
+            String clientMessageId = clientMessageIds.get(i);
+            if (!TextUtils.isEmpty(clientMessageId)
+                    && (reconcilePendingTextMessage(account, dialogId, roomId,
+                    clientMessageId, messageId, dates.get(i))
+                    || isCompletedTextMessage(account, dialogId, clientMessageId, messageId))) {
+                committedIds.add(messageId);
+                committedCursor = messageId;
+                continue;
+            }
             boolean alreadyApplied;
             boolean publishingLocally;
             synchronized (lock) {
@@ -891,6 +1078,12 @@ public final class ZenoraHistoryController {
                 if (rawId <= 0 || rawId > Integer.MAX_VALUE
                         || senderId <= 0 || senderId > Integer.MAX_VALUE) continue;
                 int messageId = (int) rawId;
+                String clientMessageId = row.optString("client_message_id", "");
+                int serverDate = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+                if (!TextUtils.isEmpty(clientMessageId)
+                        && (reconcilePendingTextMessage(account, dialogId, roomId,
+                        clientMessageId, messageId, serverDate)
+                        || isCompletedTextMessage(account, dialogId, clientMessageId, messageId))) continue;
                 if (!seenIds.add(messageId) || isSentMessageAlreadyApplied(account, dialogId, messageId)) continue;
 
                 String body = row.optString("text", "");

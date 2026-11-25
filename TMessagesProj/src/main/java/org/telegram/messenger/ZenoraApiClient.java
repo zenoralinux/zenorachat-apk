@@ -32,6 +32,10 @@ public final class ZenoraApiClient {
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private static final ExecutorService textSendExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            3, 3, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(128),
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Object cookieLock = new Object();
     // Accessed only from the serialized API executor.
@@ -600,15 +604,22 @@ public final class ZenoraApiClient {
     }
 
 
-    /** Sends one plain-text message with a stable key for every retry. */
+    /** Backward-compatible wrapper. */
     public static void sendTextMessage(long roomId, String body, Callback callback) {
+        sendTextMessage(roomId, body, UUID.randomUUID().toString(), callback);
+    }
+
+    /** Text POST transport is separate from history/live polling and uses the stable operation key. */
+    public static void sendTextMessage(long roomId, String body, String clientMessageId, Callback callback) {
         final String safeBody = body == null ? "" : body;
-        final String clientMessageId = UUID.randomUUID().toString();
-        if (roomId <= 0 || safeBody.trim().isEmpty() || !isZenoraSessionEnabled()) {
+        if (roomId <= 0 || safeBody.trim().isEmpty()
+                || clientMessageId == null || !clientMessageId.matches("[A-Za-z0-9._:-]{8,64}")
+                || !isZenoraSessionEnabled()) {
             dispatch(callback, null, new IllegalArgumentException("Invalid Zenora text-send request"));
             return;
         }
-        executor.execute(() -> {
+        try {
+            textSendExecutor.execute(() -> {
             try {
                 long selfUserId = prefs().getLong("user_id", 0L);
                 if (selfUserId <= 0) {
@@ -639,7 +650,11 @@ public final class ZenoraApiClient {
             } catch (Exception error) {
                 dispatch(callback, null, error);
             }
-        });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            dispatch(callback, null, new IllegalStateException(
+                    "Zenora text-send queue is full; retry this message.", rejected));
+        }
     }
 
     /**

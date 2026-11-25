@@ -184,6 +184,7 @@ public final class ZenoraLiveMessageSyncController {
         long previousId = requestedCursor;
         long lastId = 0L;
         HashSet<Long> pageIds = new HashSet<>();
+        HashSet<String> pageClientMessageIds = new HashSet<>();
         for (int i = 0; i < messages.length(); i++) {
             JSONObject row = messages.optJSONObject(i);
             if (row == null || row.optLong("room_id", 0L) != session.roomId || row.isNull("text")) {
@@ -193,10 +194,14 @@ public final class ZenoraLiveMessageSyncController {
             long id = row.optLong("message_id", 0L);
             long senderId = row.optLong("sender_id", 0L);
             String body = row.optString("text", "");
+            String clientMessageId = row.optString("client_message_id", "");
             if (id <= previousId || id > Integer.MAX_VALUE || !pageIds.add(id)
                     || senderId <= 0L || senderId > Integer.MAX_VALUE
                     || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
-                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0) {
+                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0
+                    || !TextUtils.isEmpty(clientMessageId)
+                    && (!clientMessageId.matches("[A-Za-z0-9._:-]{8,64}")
+                    || !pageClientMessageIds.add(clientMessageId))) {
                 fail(session, new IllegalStateException("Live message failed validation"));
                 return;
             }

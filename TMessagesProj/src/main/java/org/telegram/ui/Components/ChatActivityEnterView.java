@@ -7923,40 +7923,29 @@ public class ChatActivityEnterView extends FrameLayout implements
             return false;
         }
 
-        boolean started = ZenoraHistoryController.sendTextMessage(
+        boolean queued = ZenoraHistoryController.sendTextMessage(
                 currentAccount, dialog_id, roomId, body, (success, resultMessage) -> {
-                    if (success) {
-                        CharSequence currentText = messageEditText == null
-                                ? null : messageEditText.getTextToUse();
-                        boolean composerStillContainsSentText = currentText != null
-                                && TextUtils.equals(AndroidUtilities.getTrimmedString(currentText), body);
-                        if (composerStillContainsSentText && messageEditText != null) {
-                            messageEditText.setText("");
-                            messageEditText.setSelection(0);
-                        }
-                        if (delegate != null) {
-                            delegate.onMessageSend(body, notify, 0, 0, 0);
-                        }
-                        checkSendButton(true);
-                        if (resultMessage != null && !resultMessage.isEmpty()) {
-                            android.widget.Toast.makeText(getContext(), resultMessage,
-                                    android.widget.Toast.LENGTH_LONG).show();
-                        }
-                    } else {
-                        // Never clear the field for failed, offline or uncertain outcomes.
+                    if (!success) {
                         FileLog.w("[ZenoraChat] Text send failed: " + resultMessage);
                         android.widget.Toast.makeText(getContext(),
-                                "Message was not confirmed. Your text is still in the composer. "
-                                        + "Check the conversation before retrying.",
+                                "Message failed to send. Use Telegram's retry action to retry the same Zenora message.",
                                 android.widget.Toast.LENGTH_LONG).show();
                     }
                 });
-        if (!started) {
+        if (!queued) {
             android.widget.Toast.makeText(getContext(),
-                    "A Zenora text message is already being sent in this conversation.",
+                    "ZenoraChat could not queue this message. Your text was kept.",
                     android.widget.Toast.LENGTH_SHORT).show();
+            return false;
         }
-        // Returning false prevents SendMessagesHelper/MTProto from handling this text.
+        // Clear only after optimistic local publication is accepted.
+        if (messageEditText != null) {
+            messageEditText.setText("");
+            messageEditText.setSelection(0);
+        }
+        if (delegate != null) delegate.onMessageSend(body, notify, 0, 0, 0);
+        checkSendButton(true);
+        // Zenora must never enter SendMessagesHelper/MTProto.
         return false;
     }
 

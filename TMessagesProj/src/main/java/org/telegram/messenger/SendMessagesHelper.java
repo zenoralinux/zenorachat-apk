@@ -1713,6 +1713,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
+        if (messageObject != null && messageObject.messageOwner != null
+                && ZenoraChatController.getRoomIdForDialog(currentAccount, messageObject.getDialogId()) > 0) {
+            return ZenoraHistoryController.retryTextMessage(currentAccount, messageObject);
+        }
         if (messageObject.getId() >= 0) {
             if (messageObject.isEditing()) {
                 editMessage(messageObject, null, null, null, null, null, null, true, messageObject.hasMediaSpoilers(), messageObject);
