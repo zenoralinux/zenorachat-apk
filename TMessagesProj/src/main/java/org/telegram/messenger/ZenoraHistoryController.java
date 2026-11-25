@@ -426,6 +426,13 @@ public final class ZenoraHistoryController {
                                 "Unable to save the message to the local outbox.");
                         return;
                     }
+                    // A late storage callback may outlive Logout or an account switch.
+                    // Keep the row durable, but never submit it with a different session.
+                    if (ZenoraApiClient.getCurrentUserId() != zenoraUserId
+                            || UserConfig.getInstance(account).getClientUserId() != zenoraUserId
+                            || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+                        return;
+                    }
                     boolean startImmediately = enqueuePendingTextSend(pending);
                     controller.updateInterfaceWithMessages(dialogId,
                             new ArrayList<>(Collections.singletonList(object)), 0);
@@ -455,9 +462,7 @@ public final class ZenoraHistoryController {
         if (randomId == 0L) return false;
         message.send_state = MessageObject.MESSAGE_SEND_STATE_SENDING;
         object.forceUpdate = true;
-        PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, message.id,
-                randomId, zenoraUserId, clientId, message.message, object, null,
-                Math.max(0L, (long) message.date * 1000L));
+        long createdAt = Math.max(0L, (long) message.date * 1000L);
 
         synchronized (lock) {
             Map<Long, HashMap<String, PendingTextSend>> pendingByDialog = pendingTextByClientId.get(account);
@@ -465,7 +470,10 @@ public final class ZenoraHistoryController {
                     pendingByDialog == null ? null : pendingByDialog.get(dialogId);
             PendingTextSend existing = existingMap == null ? null : existingMap.get(clientId);
             if (existing != null && !existing.failed && !existing.resolved.get()) return false;
+            if (existing != null) createdAt = existing.createdAt;
         }
+        PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, message.id,
+                randomId, zenoraUserId, clientId, message.message, object, null, createdAt);
 
         MessagesStorage.getInstance(account).prepareZenoraOutboxRetry(
                 message, roomId, zenoraUserId, clientId, error -> {
