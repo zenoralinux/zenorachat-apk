@@ -556,6 +556,26 @@ public final class ZenoraApiClient {
         fetchBasicTextHistory(roomId, limit, 0L, callback);
     }
 
+    /** Fetch a bounded page of newer text messages. */
+    public static void fetchBasicTextMessagesAfter(long roomId, int limit, long afterMessageId, Callback callback) {
+        if (roomId <= 0 || afterMessageId < 0) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora live cursor"));
+            return;
+        }
+        final int safeLimit = Math.max(1, Math.min(50, limit));
+        executor.execute(() -> {
+            try {
+                String path = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&limit=" + safeLimit
+                        + "&after_message_id=" + afterMessageId;
+                JSONObject response = request(path, "GET", null);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
+
     public static void fetchBasicTextHistory(long roomId, int limit, long beforeMessageId,
                                              Callback callback) {
         if (roomId <= 0 || beforeMessageId < 0) {
