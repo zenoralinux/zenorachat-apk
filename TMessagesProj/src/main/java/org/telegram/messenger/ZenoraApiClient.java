@@ -553,15 +553,24 @@ public final class ZenoraApiClient {
     }
 
     public static void fetchBasicTextHistory(long roomId, int limit, Callback callback) {
-        if (roomId <= 0) {
-            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora room ID"));
+        fetchBasicTextHistory(roomId, limit, 0L, callback);
+    }
+
+    public static void fetchBasicTextHistory(long roomId, int limit, long beforeMessageId,
+                                             Callback callback) {
+        if (roomId <= 0 || beforeMessageId < 0) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora history cursor"));
             return;
         }
-        final int safeLimit = Math.max(1, Math.min(100, limit));
+        final int safeLimit = Math.max(1, Math.min(50, limit));
         executor.execute(() -> {
             try {
-                JSONObject response = request("messages_fetch.php?room_id=" + roomId
-                        + "&format=basic_text&limit=" + safeLimit, "GET", null);
+                String path = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&limit=" + safeLimit;
+                if (beforeMessageId > 0) {
+                    path += "&before_message_id=" + beforeMessageId;
+                }
+                JSONObject response = request(path, "GET", null);
                 dispatch(callback, response, null);
             } catch (Exception e) {
                 dispatch(callback, null, e);
