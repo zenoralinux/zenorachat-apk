@@ -46,6 +46,9 @@ assert "prefs().getLong(\"user_id\", 0L) != expectedUserId" in api
 assert 'request("message_send.php", "POST", form, true, expectedUserId)' in api
 assert "saveCookies(connection, preserveAuthCookieOnUnauthorized && status == 401, expectedUserId)" in api
 assert '"CSRF_INVALID".equals(error.errorCode)' in api
+assert "getMuteActionCsrfToken(expectedUserId)" in api
+assert "refreshMuteActionCsrfToken(expectedUserId)" in api
+assert 'request("mobile_auth_challenge.php", "GET", null, true, expectedUserId)' in api
 assert "client_message_id=" in api
 
 # Native Retry is consumed by the Zenora integration before Telegram's MTProto path.
