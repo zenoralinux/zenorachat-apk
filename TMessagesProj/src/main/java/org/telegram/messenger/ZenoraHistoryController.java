@@ -323,7 +323,40 @@ public final class ZenoraHistoryController {
                 return;
             }
             boolean hasMoreOlder = pagination.optBoolean("has_more_older", false);
-            long oldestMessageId = p
+            long oldestMessageId = pagination.optLong("oldest_message_id", 0L);
+            Snapshot page = new Snapshot(roomId, messages, state.users,
+                    hasMoreOlder, oldestMessageId);
+            Target target = new Target(classGuid, loadIndex, true, beforeMessageId, hasMoreOlder);
+            boolean published = publish(account, dialogId, roomId, target, page, null, limit);
+            if (!published || !isCurrentOlderRequest(account, dialogId, roomId, state, requestId)) {
+                finishOlderFailure(account, dialogId, roomId, classGuid, loadIndex,
+                        beforeMessageId, state, requestId,
+                        new IllegalStateException("Older history page could not be applied to native history"),
+                        limit);
+                return;
+            }
+
+            synchronized (lock) {
+                Map<Long, OlderState> accountOlder = olderStates.get(account);
+                OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
+                if (current != state || current.requestId != requestId) return;
+                rememberMessageIds(current.seenMessageIds, messages);
+                if (messages.length() > 0) {
+                    current.oldestMessageId = oldestMessageId;
+                }
+                current.hasMoreOlder = hasMoreOlder;
+                current.loading = false;
+                current.loadingClassGuid = 0;
+                current.retryAfterMs = 0L;
+            }
+            FileLog.d("[ZenoraChat] Older page committed; dialog=" + dialogId
+                    + ", before=" + beforeMessageId + ", oldest=" + oldestMessageId
+                    + ", count=" + messages.length() + ", more=" + hasMoreOlder);
+        });
+        return true;
+    }
+
+
     /** Optimistic local publish followed by a bounded per-room FIFO PHP send queue. */
     public static boolean sendTextMessage(int account, long dialogId, long roomId,
                                           String body, TextSendCallback callback) {
