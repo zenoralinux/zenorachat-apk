@@ -578,6 +578,98 @@ public final class ZenoraApiClient {
         });
     }
 
+
+    /**
+     * Sends one plain-text message to Zenora. A baseline is captured before POST
+     * so a lost response can be reconciled by server ID without blindly resending.
+     */
+    public static void sendTextMessage(long roomId, String body, Callback callback) {
+        final String safeBody = body == null ? "" : body;
+        if (roomId <= 0 || safeBody.trim().isEmpty() || !isZenoraSessionEnabled()) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora text-send request"));
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                long selfUserId = prefs().getLong("user_id", 0L);
+                if (selfUserId <= 0) {
+                    throw new IllegalStateException("Zenora account identity is unavailable");
+                }
+                String historyPath = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&limit=50";
+                JSONObject before = request(historyPath, "GET", null);
+                JSONArray beforeMessages = before.optJSONArray("messages");
+                if (beforeMessages == null) {
+                    throw new IllegalStateException("Unable to establish the Zenora send baseline");
+                }
+                long baselineMaxMessageId = 0L;
+                for (int i = 0; i < beforeMessages.length(); i++) {
+                    JSONObject row = beforeMessages.optJSONObject(i);
+                    if (row != null && row.optLong("room_id", 0L) == roomId) {
+                        baselineMaxMessageId = Math.max(
+                                baselineMaxMessageId, row.optLong("message_id", 0L));
+                    }
+                }
+
+                String form = "room_id=" + encode(String.valueOf(roomId))
+                        + "&body=" + encode(safeBody);
+                try {
+                    JSONObject response = postWithCsrfRetry("message_send.php", form);
+                    long messageId = response.optLong("id", 0L);
+                    if (messageId <= 0L || messageId > Integer.MAX_VALUE) {
+                        throw new IllegalStateException("Zenora returned an invalid message ID");
+                    }
+                    response.put("room_id", roomId);
+                    response.put("id", messageId);
+                    dispatch(callback, response, null);
+                    return;
+                } catch (Exception sendError) {
+                    // A 4xx response is an explicit rejection; no reconciliation or retry.
+                    if (sendError instanceof ApiException
+                            && ((ApiException) sendError).statusCode < 500) {
+                        throw sendError;
+                    }
+
+                    // The server may have committed before the connection timed out.
+                    // Query once and accept only one new matching message by this user.
+                    JSONObject after = request(historyPath, "GET", null);
+                    JSONArray afterMessages = after.optJSONArray("messages");
+                    JSONObject match = null;
+                    if (afterMessages != null) {
+                        for (int i = 0; i < afterMessages.length(); i++) {
+                            JSONObject row = afterMessages.optJSONObject(i);
+                            if (row == null || row.optLong("room_id", 0L) != roomId
+                                    || row.optLong("sender_id", 0L) != selfUserId
+                                    || row.optLong("message_id", 0L) <= baselineMaxMessageId
+                                    || !safeBody.equals(row.optString("text", ""))) {
+                                continue;
+                            }
+                            if (match != null) {
+                                throw new IllegalStateException(
+                                        "Send outcome is ambiguous; the draft was kept", sendError);
+                            }
+                            match = row;
+                        }
+                    }
+                    if (match == null) {
+                        throw new IllegalStateException(
+                                "Send outcome could not be confirmed; the draft was kept. "
+                                        + "Check the conversation before retrying.", sendError);
+                    }
+                    JSONObject recovered = new JSONObject();
+                    recovered.put("ok", true);
+                    recovered.put("id", match.optLong("message_id", 0L));
+                    recovered.put("room_id", roomId);
+                    recovered.put("reconciled", true);
+                    recovered.put("created_at", match.optString("created_at", ""));
+                    dispatch(callback, recovered, null);
+                }
+            } catch (Exception error) {
+                dispatch(callback, null, error);
+            }
+        });
+    }
+
     public static void fetchUsers(Callback callback) {
         executor.execute(() -> {
             try {

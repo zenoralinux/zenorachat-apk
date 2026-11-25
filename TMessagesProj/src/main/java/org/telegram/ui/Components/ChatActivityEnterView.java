@@ -147,6 +147,8 @@ import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraHistoryController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -7387,6 +7389,14 @@ public class ChatActivityEnterView extends FrameLayout implements
         final boolean allowConfirmFinal = allowConfirm && !animatorEphemeralMessageVisibility.getValue();
 
         final Runnable send = () -> {
+            if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0
+                    && (videoToSendMessageObject != null || audioToSend != null
+                    || richDraftActive && richDraftMessage != null)) {
+                android.widget.Toast.makeText(getContext(),
+                        "Only plain-text messages are available in Zenora chats.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
             if (slowModeTimer == Integer.MAX_VALUE && !isInScheduleMode()) {
                 if (delegate != null) {
                     delegate.scrollToSendingMessage();
@@ -7876,7 +7886,75 @@ public class ChatActivityEnterView extends FrameLayout implements
         setEditingMessageObject(null, null, false);
     }
 
+
+    private boolean processZenoraTextMessage(CharSequence text, boolean notify,
+                                             int scheduleDate, int scheduleRepeatPeriod,
+                                             long payStars) {
+        final long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        final String body = AndroidUtilities.getTrimmedString(text).toString();
+        if (roomId <= 0 || body.isEmpty()) return false;
+        if (!ZenoraChatController.isZenoraEnabled()) {
+            android.widget.Toast.makeText(getContext(),
+                    "ZenoraChat session is unavailable. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0
+                || delegate != null && delegate.hasForwardingMessages()
+                || replyingMessageObject != null || replyingQuote != null) {
+            android.widget.Toast.makeText(getContext(),
+                    "Scheduling, forwarding and replies are not available for Zenora text messages yet.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (body.length() > accountInstance.getMessagesController().getMaxMessageLength()) {
+            android.widget.Toast.makeText(getContext(),
+                    "The message is too long to send in ZenoraChat.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+
+        boolean started = ZenoraHistoryController.sendTextMessage(
+                currentAccount, dialog_id, roomId, body, (success, resultMessage) -> {
+                    if (success) {
+                        CharSequence currentText = messageEditText == null
+                                ? null : messageEditText.getTextToUse();
+                        boolean composerStillContainsSentText = currentText != null
+                                && TextUtils.equals(AndroidUtilities.getTrimmedString(currentText), body);
+                        if (composerStillContainsSentText && messageEditText != null) {
+                            messageEditText.setText("");
+                            messageEditText.setSelection(0);
+                        }
+                        if (delegate != null) {
+                            delegate.onMessageSend(body, notify, 0, 0, 0);
+                        }
+                        checkSendButton(true);
+                        if (resultMessage != null && !resultMessage.isEmpty()) {
+                            android.widget.Toast.makeText(getContext(), resultMessage,
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
+                    } else {
+                        // Never clear the field for failed, offline or uncertain outcomes.
+                        FileLog.w("[ZenoraChat] Text send failed: " + resultMessage);
+                        android.widget.Toast.makeText(getContext(),
+                                "Message was not confirmed. Your text is still in the composer. "
+                                        + "Check the conversation before retrying.",
+                                android.widget.Toast.LENGTH_LONG).show();
+                    }
+                });
+        if (!started) {
+            android.widget.Toast.makeText(getContext(),
+                    "A Zenora text message is already being sent in this conversation.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+        }
+        // Returning false prevents SendMessagesHelper/MTProto from handling this text.
+        return false;
+    }
+
     public boolean processSendingText(CharSequence text, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long payStars) {
+        if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0) {
+            return processZenoraTextMessage(text, notify, scheduleDate, scheduleRepeatPeriod, payStars);
+        }
         if (replyingQuote != null && parentFragment != null && replyingQuote.outdated) {
             parentFragment.showQuoteMessageUpdate();
             return false;
