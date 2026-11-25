@@ -181,9 +181,11 @@ public final class ZenoraHistoryController {
                 // must also restart at that page's oldest ID (not a prior visit's cursor).
                 accountOlder.put(dialogId, new OlderState(cachedSnapshot));
             }
-            publish(account, dialogId, roomId, target, cachedSnapshot, null, limit);
-            ZenoraLiveTextController.start(account, dialogId, roomId,
-                    newestMessageId(cachedSnapshot.messages));
+            boolean published = publish(account, dialogId, roomId, target, cachedSnapshot, null, limit);
+            if (published) {
+                ZenoraLiveTextController.start(account, dialogId, roomId,
+                        newestMessageId(cachedSnapshot.messages));
+            }
             return;
         }
         if (!startRequest) return;
@@ -574,8 +576,8 @@ public final class ZenoraHistoryController {
             if (!stillCurrent) {
                 FileLog.w("[ZenoraChat] Dropped stale history response for dialog " + dialogId);
             } else {
-                publish(account, dialogId, roomId, target, snapshot, error, limit);
-                if (snapshot != null && error == null && !target.olderPage) {
+                boolean published = publish(account, dialogId, roomId, target, snapshot, error, limit);
+                if (published && snapshot != null && error == null && !target.olderPage) {
                     ZenoraLiveTextController.start(account, dialogId, roomId,
                             newestMessageId(snapshot.messages));
                 }
