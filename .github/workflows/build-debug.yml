@@ -110,9 +110,7 @@ jobs:
           set -euo pipefail
           TEST_CLASSES="$RUNNER_TEMP/zenora-outbox-policy-tests"
           mkdir -p "$TEST_CLASSES"
-          javac -d "$TEST_CLASSES" \\
-            TMessagesProj/src/main/java/org/telegram/messenger/ZenoraOutboxPolicy.java \\
-            scripts/tests/ZenoraOutboxPolicyTest.java
+          javac -d "$TEST_CLASSES" TMessagesProj/src/main/java/org/telegram/messenger/ZenoraOutboxPolicy.java scripts/tests/ZenoraOutboxPolicyTest.java
           java -cp "$TEST_CLASSES" org.telegram.messenger.ZenoraOutboxPolicyTest
           python3 scripts/tests/ZenoraOutboxMigrationTest.py
           python3 scripts/tests/ZenoraOutboxContractTest.py
