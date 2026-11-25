@@ -614,6 +614,13 @@ public final class ZenoraHistoryController {
                             .computeIfAbsent(record.dialogId, ignored -> new HashMap<>())
                             .put(record.clientMessageId, restoredPending);
                 }
+
+                // Rehydrate the optimistic bubble itself, not just the network queue.
+                // This also restores a FAILED bubble so the existing native Retry gesture remains usable.
+                controller.updateInterfaceWithMessages(record.dialogId,
+                        new ArrayList<>(Collections.singletonList(object)), 0);
+                NotificationCenter.getInstance(account).postNotificationName(
+                        NotificationCenter.dialogsNeedReload);
                 if (restoredPending.failed) continue;
 
                 // A process death leaves SENDING ambiguous: convert it to UNKNOWN and
