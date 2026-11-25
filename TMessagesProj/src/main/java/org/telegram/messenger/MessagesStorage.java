@@ -338,7 +338,7 @@ public class MessagesStorage extends BaseController {
             SQLiteCursor cursor = null;
             try {
                 cursor = database.queryFinalized(
-                        "SELECT client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count FROM zenora_outbox ORDER BY room_id ASC, created_at ASC, local_message_id ASC");
+                        "SELECT client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count FROM zenora_outbox ORDER BY room_id ASC, created_at ASC, local_message_id DESC");
                 while (cursor.next()) {
                     records.add(new ZenoraOutboxRecord(
                             cursor.stringValue(0), cursor.longValue(1), cursor.longValue(2),
@@ -364,8 +364,11 @@ public class MessagesStorage extends BaseController {
                                         long nextAttemptAt, boolean incrementAttempt,
                                         boolean updateLocalSendState) {
         storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
             SQLitePreparedStatement state = null;
             try {
+                database.beginTransaction();
+                inTransaction = true;
                 state = database.executeFast(
                         "UPDATE zenora_outbox SET status = ?, next_attempt_at = ?, attempt_count = attempt_count + ? WHERE client_message_id = ?");
                 state.bindString(1, status);
@@ -379,12 +382,23 @@ public class MessagesStorage extends BaseController {
                 if (updateLocalSendState) {
                     int sendState = "FAILED".equals(status) ? MessageObject.MESSAGE_SEND_STATE_SEND_ERROR
                             : MessageObject.MESSAGE_SEND_STATE_SENDING;
-                    database.executeFast("UPDATE messages_v2 SET send_state = " + sendState
-                            + " WHERE mid = (SELECT local_message_id FROM zenora_outbox WHERE client_message_id = "
-                            + "'" + clientMessageId.replace("'", "''") + "') AND uid = (SELECT dialog_id FROM zenora_outbox WHERE client_message_id = "
-                            + "'" + clientMessageId.replace("'", "''") + "')").stepThis().dispose();
+                    SQLitePreparedStatement messageState = database.executeFast(
+                            "UPDATE messages_v2 SET send_state = ? WHERE mid = "
+                                    + "(SELECT local_message_id FROM zenora_outbox WHERE client_message_id = ?) "
+                                    + "AND uid = (SELECT dialog_id FROM zenora_outbox WHERE client_message_id = ?)");
+                    try {
+                        messageState.bindInteger(1, sendState);
+                        messageState.bindString(2, clientMessageId);
+                        messageState.bindString(3, clientMessageId);
+                        messageState.step();
+                    } finally {
+                        messageState.dispose();
+                    }
                 }
+                database.commitTransaction();
+                inTransaction = false;
             } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
                 FileLog.e(error);
             } finally {
                 if (state != null) state.dispose();
@@ -1047,7 +1061,7 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE widget_heights(uid INTEGER, mid INTEGER, width INTEGER, height INTEGER, date INTEGER, anchor INTEGER default 0, PRIMARY KEY(uid, mid, width));").stepThis().dispose();
 
         database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
-        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
 
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
