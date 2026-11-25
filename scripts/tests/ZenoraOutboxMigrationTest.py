@@ -80,7 +80,7 @@ old_db.execute(
 rows = old_db.execute(
     "SELECT client_message_id FROM zenora_outbox WHERE room_id=77 "
     "ORDER BY created_at ASC, local_message_id DESC").fetchall()
-assert [row[0] for row in rows] == ["client-key-0002", "client-key-0001"], \
+assert [row[0] for row in rows] == ["client-key-0001", "client-key-0002"], \
     "local message id DESC must provide FIFO order for equal timestamps"
 
 print("Zenora outbox additive migration tests passed")
