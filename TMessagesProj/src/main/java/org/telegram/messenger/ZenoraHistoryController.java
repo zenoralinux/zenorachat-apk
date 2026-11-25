@@ -103,6 +103,7 @@ public final class ZenoraHistoryController {
             pendingTextSends.remove(account);
             sentMessageIds.remove(account);
         }
+        ZenoraLiveTextController.stopAccount(account);
     }
 
     /**
@@ -129,6 +130,7 @@ public final class ZenoraHistoryController {
                 state.loadingClassGuid = 0;
             }
         }
+        ZenoraLiveTextController.stop(account, dialogId);
     }
 
     public static void loadInitialHistory(int account, long dialogId, int classGuid,
@@ -180,6 +182,8 @@ public final class ZenoraHistoryController {
                 accountOlder.put(dialogId, new OlderState(cachedSnapshot));
             }
             publish(account, dialogId, roomId, target, cachedSnapshot, null, limit);
+            ZenoraLiveTextController.start(account, dialogId, roomId,
+                    newestMessageId(cachedSnapshot.messages));
             return;
         }
         if (!startRequest) return;
@@ -381,8 +385,9 @@ public final class ZenoraHistoryController {
         synchronized (lock) {
             Map<Long, OlderState> accountOlder = olderStates.get(account);
             OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
-            if (state != null && state.roomId == roomId
-                    && state.seenMessageIds.contains(messageId)) {
+            if ((state != null && state.roomId == roomId
+                    && state.seenMessageIds.contains(messageId))
+                    || messagesController.dialogMessagesByIds.containsKey(messageId)) {
                 sentMessageIds.computeIfAbsent(account, ignored -> new HashMap<>())
                         .computeIfAbsent(dialogId, ignored -> new HashSet<>()).add((long) messageId);
                 Map<Long, Snapshot> accountCache = cache.get(account);
@@ -570,6 +575,10 @@ public final class ZenoraHistoryController {
                 FileLog.w("[ZenoraChat] Dropped stale history response for dialog " + dialogId);
             } else {
                 publish(account, dialogId, roomId, target, snapshot, error, limit);
+                if (snapshot != null && error == null && !target.olderPage) {
+                    ZenoraLiveTextController.start(account, dialogId, roomId,
+                            newestMessageId(snapshot.messages));
+                }
             }
         }
     }
@@ -723,4 +732,24 @@ public final class ZenoraHistoryController {
                 + ", older=" + target.olderPage + ", failed=" + (error != null));
         return true;
     }
+
+    /** Returns the newest server ID without touching the older-history cursor. */
+    public static long newestMessageId(JSONArray messages) {
+        long newest = 0L;
+        if (messages == null) return newest;
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject row = messages.optJSONObject(i);
+            if (row != null) newest = Math.max(newest, row.optLong("message_id", 0L));
+        }
+        return newest;
+    }
+
+    /** Invalidate a cached initial snapshot after live delivery updates native storage. */
+    public static void invalidateCachedSnapshot(int account, long dialogId) {
+        synchronized (lock) {
+            Map<Long, Snapshot> accountCache = cache.get(account);
+            if (accountCache != null) accountCache.remove(dialogId);
+        }
+    }
+
 }
