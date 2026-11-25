@@ -1719,6 +1719,16 @@ public class DatabaseMigrationHelper {
             version = 181;
         }
 
+
+        if (version == 181) {
+            // Additive Zenora outbox migration; existing message and dialog rows stay untouched.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id);").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 182").stepThis().dispose();
+            version = 182;
+        }
+
         return version;
     }
 
