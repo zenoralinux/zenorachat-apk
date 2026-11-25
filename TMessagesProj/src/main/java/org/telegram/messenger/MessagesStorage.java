@@ -890,7 +890,6 @@ public class MessagesStorage extends BaseController {
 
     public final static String[] DATABASE_TABLES = new String[] {
             "messages_holes",
-            "zenora_outbox",
             "zenora_history_state",
             "media_holes_v2",
             "scheduled_messages_v2",

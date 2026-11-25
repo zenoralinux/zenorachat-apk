@@ -1798,11 +1798,16 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION) {
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 182) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
             }
             HashSet<String> excludeTables = new HashSet<>();
+            // Version 182 predates durable Zenora history state. The new database
+            // already has the version-183 table; skip copying the absent old table.
+            if (version == 182) {
+                excludeTables.add("zenora_history_state");
+            }
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
             excludeTables.add("scheduled_messages_v2");

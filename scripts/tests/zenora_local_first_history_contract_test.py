@@ -98,6 +98,13 @@ expect(OUTBOX_REGRESSION.exists(),
        "stage-1 re-entry regression test must remain in the repository")
 expect("zenora_outbox" in STORAGE and "loadZenoraOutbox(" in STORAGE,
        "persistent Outbox storage and restore must remain intact")
+tables = STORAGE.split("DATABASE_TABLES", 1)[1].split("};", 1)[0]
+expect(tables.count('"zenora_outbox"') == 1 and tables.count('"zenora_history_state"') == 1,
+       "recovery table list must include each Zenora table exactly once")
+expect('version != MessagesStorage.LAST_DB_VERSION && version != 182' in MIGRATION,
+       "database recovery must accept the previous version-182 schema")
+expect('excludeTables.add("zenora_history_state")' in MIGRATION,
+       "version-182 recovery must skip only the newly introduced table")
 
 branch = "fix/zenora-offline-history-cache-first-android-20261126"
 tag = "zenora-offline-history-cache-first-android-20261126"
