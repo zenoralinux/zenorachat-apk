@@ -616,6 +616,8 @@ public class MessagesStorage extends BaseController {
                                        long proposedOlderCursor, boolean hasMoreOlder,
                                        boolean coverageValid) {
         storageQueue.postRunnable(() -> {
+            boolean persistedHasMoreOlder = hasMoreOlder;
+            boolean persistedCoverageValid = coverageValid;
             SQLiteCursor cursor = null;
             SQLitePreparedStatement state = null;
             try {
@@ -637,8 +639,8 @@ public class MessagesStorage extends BaseController {
                         currentCursor, proposedOlderCursor);
                 if (currentCursor > 0 && olderCursor == currentCursor
                         && proposedOlderCursor > currentCursor) {
-                    hasMoreOlder = currentHasMore == 1;
-                    coverageValid = currentCoverageValid;
+                    persistedHasMoreOlder = currentHasMore == 1;
+                    persistedCoverageValid = currentCoverageValid;
                 }
 
                 long oldestLocal = 0L;
@@ -661,8 +663,8 @@ public class MessagesStorage extends BaseController {
                 state.bindLong(4, oldestLocal);
                 state.bindLong(5, newestLocal);
                 state.bindLong(6, olderCursor);
-                state.bindInteger(7, hasMoreOlder ? 1 : 0);
-                state.bindInteger(8, coverageValid ? 1 : 0);
+                state.bindInteger(7, persistedHasMoreOlder ? 1 : 0);
+                state.bindInteger(8, persistedCoverageValid ? 1 : 0);
                 state.bindLong(9, System.currentTimeMillis());
                 state.step();
             } catch (Exception error) {

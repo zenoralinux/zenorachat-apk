@@ -237,7 +237,7 @@ public final class ZenoraHistoryController {
         final long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
         final long zenoraUserId = ZenoraApiClient.getCurrentUserId();
         if (roomId <= 0 || !ZenoraChatController.isZenoraEnabled()) {
-            publish(account, dialogId, 0, target,
+            publish(account, dialogId, 0, target, null,
                     new IllegalStateException("Zenora dialog is no longer available"), limit);
             return;
         }
