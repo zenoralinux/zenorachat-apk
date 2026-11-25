@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -599,12 +600,10 @@ public final class ZenoraApiClient {
     }
 
 
-    /**
-     * Sends one plain-text message to Zenora. A baseline is captured before POST
-     * so a lost response can be reconciled by server ID without blindly resending.
-     */
+    /** Sends one plain-text message with a stable key for every retry. */
     public static void sendTextMessage(long roomId, String body, Callback callback) {
         final String safeBody = body == null ? "" : body;
+        final String clientMessageId = UUID.randomUUID().toString();
         if (roomId <= 0 || safeBody.trim().isEmpty() || !isZenoraSessionEnabled()) {
             dispatch(callback, null, new IllegalArgumentException("Invalid Zenora text-send request"));
             return;
@@ -615,79 +614,80 @@ public final class ZenoraApiClient {
                 if (selfUserId <= 0) {
                     throw new IllegalStateException("Zenora account identity is unavailable");
                 }
-                String historyPath = "messages_fetch.php?room_id=" + roomId
-                        + "&format=basic_text&limit=50";
-                JSONObject before = request(historyPath, "GET", null);
-                JSONArray beforeMessages = before.optJSONArray("messages");
-                if (beforeMessages == null) {
-                    throw new IllegalStateException("Unable to establish the Zenora send baseline");
+
+                JSONObject response = sendTextMessageWithRetry(roomId, safeBody, clientMessageId);
+                JSONObject message = response.optJSONObject("message");
+                if (message == null) {
+                    throw new IllegalStateException("Zenora returned an incomplete sent-message response");
                 }
-                long baselineMaxMessageId = 0L;
-                for (int i = 0; i < beforeMessages.length(); i++) {
-                    JSONObject row = beforeMessages.optJSONObject(i);
-                    if (row != null && row.optLong("room_id", 0L) == roomId) {
-                        baselineMaxMessageId = Math.max(
-                                baselineMaxMessageId, row.optLong("message_id", 0L));
-                    }
+                long messageId = message.optLong("message_id", 0L);
+                String createdAt = message.optString("created_at", "");
+                if (messageId <= 0L || messageId > Integer.MAX_VALUE
+                        || message.optLong("room_id", 0L) != roomId
+                        || message.optLong("sender_id", 0L) != selfUserId
+                        || !safeBody.equals(message.optString("text", ""))
+                        || !clientMessageId.equals(message.optString("client_message_id", ""))
+                        || createdAt.isEmpty()) {
+                    throw new IllegalStateException("Zenora returned a mismatched sent-message record");
                 }
 
-                String form = "room_id=" + encode(String.valueOf(roomId))
-                        + "&body=" + encode(safeBody);
-                try {
-                    JSONObject response = postWithCsrfRetry("message_send.php", form);
-                    long messageId = response.optLong("id", 0L);
-                    if (messageId <= 0L || messageId > Integer.MAX_VALUE) {
-                        throw new IllegalStateException("Zenora returned an invalid message ID");
-                    }
-                    response.put("room_id", roomId);
-                    response.put("id", messageId);
-                    dispatch(callback, response, null);
-                    return;
-                } catch (Exception sendError) {
-                    // A 4xx response is an explicit rejection; no reconciliation or retry.
-                    if (sendError instanceof ApiException
-                            && ((ApiException) sendError).statusCode < 500) {
-                        throw sendError;
-                    }
-
-                    // The server may have committed before the connection timed out.
-                    // Query once and accept only one new matching message by this user.
-                    JSONObject after = request(historyPath, "GET", null);
-                    JSONArray afterMessages = after.optJSONArray("messages");
-                    JSONObject match = null;
-                    if (afterMessages != null) {
-                        for (int i = 0; i < afterMessages.length(); i++) {
-                            JSONObject row = afterMessages.optJSONObject(i);
-                            if (row == null || row.optLong("room_id", 0L) != roomId
-                                    || row.optLong("sender_id", 0L) != selfUserId
-                                    || row.optLong("message_id", 0L) <= baselineMaxMessageId
-                                    || !safeBody.equals(row.optString("text", ""))) {
-                                continue;
-                            }
-                            if (match != null) {
-                                throw new IllegalStateException(
-                                        "Send outcome is ambiguous; the draft was kept", sendError);
-                            }
-                            match = row;
-                        }
-                    }
-                    if (match == null) {
-                        throw new IllegalStateException(
-                                "Send outcome could not be confirmed; the draft was kept. "
-                                        + "Check the conversation before retrying.", sendError);
-                    }
-                    JSONObject recovered = new JSONObject();
-                    recovered.put("ok", true);
-                    recovered.put("id", match.optLong("message_id", 0L));
-                    recovered.put("room_id", roomId);
-                    recovered.put("reconciled", true);
-                    recovered.put("created_at", match.optString("created_at", ""));
-                    dispatch(callback, recovered, null);
-                }
+                // The existing native message path is still invoked only after
+                // the API confirms the committed server message and timestamp.
+                response.put("id", messageId);
+                response.put("room_id", roomId);
+                dispatch(callback, response, null);
             } catch (Exception error) {
                 dispatch(callback, null, error);
             }
         });
+    }
+
+    /**
+     * Retries only network I/O failures and HTTP 5xx responses. The body and
+     * client_message_id never change during this send operation.
+     */
+    private static JSONObject sendTextMessageWithRetry(long roomId, String body,
+                                                       String clientMessageId) throws Exception {
+        String formWithoutCsrf = "room_id=" + encode(String.valueOf(roomId))
+                + "&body=" + encode(body)
+                + "&client_message_id=" + encode(clientMessageId);
+        String csrf = getMuteActionCsrfToken();
+        int transientRetries = 0;
+        boolean csrfRetryUsed = false;
+
+        while (true) {
+            String form = formWithoutCsrf + "&csrf=" + encode(csrf);
+            try {
+                return request("message_send.php", "POST", form);
+            } catch (ApiException error) {
+                if ("CSRF_INVALID".equals(error.errorCode) && !csrfRetryUsed) {
+                    FileLog.w("[ZenoraChat] message_send.php rejected CSRF; refreshing and retrying the same message key.");
+                    csrf = refreshMuteActionCsrfToken();
+                    csrfRetryUsed = true;
+                    continue;
+                }
+                if (error.statusCode < 500 || transientRetries >= 2) {
+                    throw error;
+                }
+                transientRetries++;
+                FileLog.w("[ZenoraChat] message_send.php returned HTTP " + error.statusCode
+                        + "; retry " + transientRetries + " with the same client_message_id.");
+            } catch (IOException error) {
+                if (transientRetries >= 2) {
+                    throw error;
+                }
+                transientRetries++;
+                FileLog.w("[ZenoraChat] message_send.php network failure; retry "
+                        + transientRetries + " with the same client_message_id.");
+            }
+
+            try {
+                Thread.sleep(350L * transientRetries);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Text-message retry was interrupted", interrupted);
+            }
+        }
     }
 
     public static void fetchUsers(Callback callback) {
