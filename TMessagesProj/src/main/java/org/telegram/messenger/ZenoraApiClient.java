@@ -353,6 +353,36 @@ public final class ZenoraApiClient {
         return csrf;
     }
 
+    /** Account-bound CSRF refresh used by durable text-send retries. */
+    private static String refreshMuteActionCsrfToken(long expectedUserId) throws Exception {
+        JSONObject challenge = request("mobile_auth_challenge.php", "GET", null,
+                true, expectedUserId);
+        String csrf = challenge.optString("csrf", "");
+        if (csrf.isEmpty()) {
+            throw new IllegalStateException("Authenticated CSRF token missing");
+        }
+        synchronized (cookieLock) {
+            if (prefs().getLong("user_id", 0L) != expectedUserId) {
+                throw new IllegalStateException("Zenora account changed during CSRF refresh");
+            }
+            if (!prefs().edit().putString("csrf", csrf).commit()) {
+                throw new IllegalStateException("Unable to persist authenticated CSRF token");
+            }
+        }
+        return csrf;
+    }
+
+    private static String getMuteActionCsrfToken(long expectedUserId) throws Exception {
+        synchronized (cookieLock) {
+            if (prefs().getLong("user_id", 0L) != expectedUserId) {
+                throw new IllegalStateException("Zenora account changed before CSRF lookup");
+            }
+            String csrf = prefs().getString("csrf", "");
+            if (!csrf.isEmpty()) return csrf;
+        }
+        return refreshMuteActionCsrfToken(expectedUserId);
+    }
+
     private static String buildMuteActionForm(long roomId, String action,
                                               int muteSeconds, String csrf) throws Exception {
         return "room_ids=" + encode("[" + roomId + "]")
@@ -688,7 +718,7 @@ public final class ZenoraApiClient {
         String formWithoutCsrf = "room_id=" + encode(String.valueOf(roomId))
                 + "&body=" + encode(body)
                 + "&client_message_id=" + encode(clientMessageId);
-        String csrf = getMuteActionCsrfToken();
+        String csrf = getMuteActionCsrfToken(expectedUserId);
         int transientRetries = 0;
         boolean csrfRetryUsed = false;
 
@@ -702,7 +732,7 @@ public final class ZenoraApiClient {
             } catch (ApiException error) {
                 if ("CSRF_INVALID".equals(error.errorCode) && !csrfRetryUsed) {
                     FileLog.w("[ZenoraChat] message_send.php rejected CSRF; refreshing and retrying the same message key.");
-                    csrf = refreshMuteActionCsrfToken();
+                    csrf = refreshMuteActionCsrfToken(expectedUserId);
                     csrfRetryUsed = true;
                     continue;
                 }
