@@ -503,7 +503,7 @@ public final class ZenoraHistoryController {
                 Collections.sort(ordered, (left, right) -> {
                     int createdOrder = Long.compare(left.createdAt, right.createdAt);
                     return createdOrder != 0 ? createdOrder
-                            : Integer.compare(left.localId, right.localId);
+                            : Integer.compare(right.localId, left.localId);
                 });
                 queue.clear();
                 queue.addAll(ordered);
