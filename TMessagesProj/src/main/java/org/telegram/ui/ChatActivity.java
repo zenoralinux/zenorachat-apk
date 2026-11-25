@@ -2349,6 +2349,12 @@ public class ChatActivity extends BaseFragment implements
 
         @Override
         public void didPressAttachButton() {
+            if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0) {
+                android.widget.Toast.makeText(ChatActivity.this,
+                        "Only text messages are available in Zenora chats.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
             if (chatAttachAlert != null) {
                 chatAttachAlert.setEditingMessageObject(0, null);
             }

@@ -7534,7 +7534,8 @@ public class ChatActivityEnterView extends FrameLayout implements
                     }, 200);
                 }
                 lastTypingTimeSend = 0;
-            } else if (forceShowSendButton) {
+            } else if (forceShowSendButton
+                    && ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) <= 0) {
                 if (delegate != null) {
                     delegate.onMessageSend(null, notify, scheduleDate, scheduleRepeatPeriod, payStars);
                 }
