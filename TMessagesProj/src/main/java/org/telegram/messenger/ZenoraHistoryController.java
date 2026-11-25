@@ -665,42 +665,6 @@ public final class ZenoraHistoryController {
         });
     }
 
-()) pendingSentMessageIds.remove(account);
-                }
-
-                HashSet<Long> appliedIds = sentMessageIds
-                        .computeIfAbsent(account, ignored -> new HashMap<>())
-                        .computeIfAbsent(dialogId, ignored -> new HashSet<>());
-                appliedIds.add((long) messageId);
-                if (appliedIds.size() > 512) {
-                    appliedIds.clear();
-                    appliedIds.add((long) messageId);
-                }
-
-                Map<Long, OlderState> accountOlder = olderStates.get(account);
-                OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
-                if (current != null && current.roomId == roomId) {
-                    current.seenMessageIds.add(messageId);
-                    // Keep oldestMessageId/hasMoreOlder unchanged; only older pages own that cursor.
-                }
-            }
-            FileLog.d("[ZenoraChat] Text send committed; dialog=" + dialogId
-                    + ", room=" + roomId + ", message=" + messageId);
-            return true;
-        } finally {
-            if (!published) {
-                synchronized (lock) {
-                    Map<Long, HashSet<Long>> accountPending = pendingSentMessageIds.get(account);
-                    HashSet<Long> publishingIds = accountPending == null ? null : accountPending.get(dialogId);
-                    if (publishingIds != null) {
-                        publishingIds.remove((long) messageId);
-                        if (publishingIds.isEmpty()) accountPending.remove(dialogId);
-                        if (accountPending.isEmpty()) pendingSentMessageIds.remove(account);
-                    }
-                }
-            }
-        }
-    }
 
     /**
      * Returns the newest message ID already loaded or published for this dialog.
