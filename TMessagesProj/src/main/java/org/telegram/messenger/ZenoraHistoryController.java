@@ -387,7 +387,7 @@ public final class ZenoraHistoryController {
             OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
             if ((state != null && state.roomId == roomId
                     && state.seenMessageIds.contains(messageId))
-                    || messagesController.dialogMessagesByIds.containsKey(messageId)) {
+                    || messagesController.dialogMessagesByIds.get(messageId) != null) {
                 sentMessageIds.computeIfAbsent(account, ignored -> new HashMap<>())
                         .computeIfAbsent(dialogId, ignored -> new HashSet<>()).add((long) messageId);
                 Map<Long, Snapshot> accountCache = cache.get(account);
