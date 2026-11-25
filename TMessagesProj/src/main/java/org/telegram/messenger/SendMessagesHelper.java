@@ -1713,9 +1713,17 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
-        if (messageObject != null && messageObject.messageOwner != null
-                && ZenoraChatController.getRoomIdForDialog(currentAccount, messageObject.getDialogId()) > 0) {
-            return ZenoraHistoryController.retryTextMessage(currentAccount, messageObject);
+        if (messageObject != null && messageObject.messageOwner != null) {
+            // The durable client key identifies Zenora bubbles even before the
+            // room map has been restored. Never fall through to MTProto on Retry.
+            TLRPC.Message owner = messageObject.messageOwner;
+            boolean zenoraOutboxMessage = owner.params != null
+                    && !TextUtils.isEmpty(owner.params.get("zenora_client_message_id"));
+            if (zenoraOutboxMessage
+                    || ZenoraChatController.getRoomIdForDialog(
+                    currentAccount, messageObject.getDialogId()) > 0) {
+                return ZenoraHistoryController.retryTextMessage(currentAccount, messageObject);
+            }
         }
         if (messageObject.getId() >= 0) {
             if (messageObject.isEditing()) {
