@@ -78,6 +78,7 @@ public final class ZenoraHistoryController {
         long retryAfterMs;
         boolean hasMoreOlder;
         boolean loading;
+        int loadingClassGuid;
 
         OlderState(Snapshot snapshot) {
             roomId = snapshot.roomId;
@@ -93,6 +94,32 @@ public final class ZenoraHistoryController {
             cache.remove(account);
             inFlight.remove(account);
             olderStates.remove(account);
+        }
+    }
+
+    /**
+     * Invalidates callbacks owned by a ChatActivity that is being destroyed.
+     * Other waiters for a coalesced initial request are left intact.
+     */
+    public static void cancelDialogRequests(int account, long dialogId, int classGuid) {
+        synchronized (lock) {
+            Map<Long, ArrayList<Target>> accountRequests = inFlight.get(account);
+            ArrayList<Target> waiters = accountRequests == null ? null : accountRequests.get(dialogId);
+            if (waiters != null) {
+                for (int i = waiters.size() - 1; i >= 0; i--) {
+                    if (waiters.get(i).classGuid == classGuid) waiters.remove(i);
+                }
+                if (waiters.isEmpty()) accountRequests.remove(dialogId);
+                if (accountRequests.isEmpty()) inFlight.remove(account);
+            }
+
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
+            if (state != null && state.loading && state.loadingClassGuid == classGuid) {
+                state.requestId++;
+                state.loading = false;
+                state.loadingClassGuid = 0;
+            }
         }
     }
 
@@ -136,10 +163,9 @@ public final class ZenoraHistoryController {
             synchronized (lock) {
                 Map<Long, OlderState> accountOlder =
                         olderStates.computeIfAbsent(account, ignored -> new HashMap<>());
-                OlderState state = accountOlder.get(dialogId);
-                if (state == null || state.roomId != roomId) {
-                    accountOlder.put(dialogId, new OlderState(cachedSnapshot));
-                }
+                // A fresh ChatActivity receives the cached initial page, so its cursor
+                // must also restart at that page's oldest ID (not a prior visit's cursor).
+                accountOlder.put(dialogId, new OlderState(cachedSnapshot));
             }
             publish(account, dialogId, roomId, target, cachedSnapshot, null, limit);
             return;
@@ -199,6 +225,7 @@ public final class ZenoraHistoryController {
                 return false;
             }
             state.loading = true;
+            state.loadingClassGuid = classGuid;
             state.requestId++;
             requestId = state.requestId;
             beforeMessageId = state.oldestMessageId;
@@ -225,6 +252,13 @@ public final class ZenoraHistoryController {
                 return;
             }
 
+            if (pageOverlapsLoadedState(account, dialogId, state, messages)) {
+                finishOlderFailure(account, dialogId, roomId, classGuid, loadIndex,
+                        beforeMessageId, state, requestId,
+                        new IllegalStateException("Older history page overlaps previously loaded message IDs"),
+                        limit);
+                return;
+            }
             boolean hasMoreOlder = pagination.optBoolean("has_more_older", false);
             long oldestMessageId = pagination.optLong("oldest_message_id", 0L);
             Snapshot page = new Snapshot(roomId, messages, state.users,
@@ -249,6 +283,7 @@ public final class ZenoraHistoryController {
                 }
                 current.hasMoreOlder = hasMoreOlder;
                 current.loading = false;
+                current.loadingClassGuid = 0;
                 current.retryAfterMs = 0L;
             }
             FileLog.d("[ZenoraChat] Older page committed; dialog=" + dialogId
@@ -282,6 +317,7 @@ public final class ZenoraHistoryController {
             OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
             if (current != state || current.requestId != requestId) return;
             current.loading = false;
+            current.loadingClassGuid = 0;
             current.retryAfterMs = SystemClock.elapsedRealtime() + RETRY_COOLDOWN_MS;
         }
         FileLog.e(error);
@@ -291,6 +327,25 @@ public final class ZenoraHistoryController {
                 new Target(classGuid, loadIndex, true, beforeMessageId, true),
                 null, error, limit);
         FileLog.w("[ZenoraChat] Older history request can be retried; dialog=" + dialogId);
+    }
+
+    private static boolean pageOverlapsLoadedState(int account, long dialogId,
+                                                    OlderState expectedState, JSONArray messages) {
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
+            if (current != expectedState) return true;
+            for (int i = 0; i < messages.length(); i++) {
+                JSONObject row = messages.optJSONObject(i);
+                if (row == null) return true;
+                long rawId = row.optLong("message_id", 0L);
+                if (rawId > 0 && rawId <= Integer.MAX_VALUE
+                        && current.seenMessageIds.contains((int) rawId)) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     private static boolean isValidBasicTextPage(JSONArray messages, JSONObject pagination,
@@ -311,6 +366,7 @@ public final class ZenoraHistoryController {
             if (messageId <= previousId || messageId > Integer.MAX_VALUE
                     || beforeMessageId > 0 && messageId >= beforeMessageId
                     || row.optLong("sender_id", 0L) <= 0
+                    || row.optLong("sender_id", 0L) > Integer.MAX_VALUE
                     || TextUtils.isEmpty(row.optString("text", "").trim())
                     || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0) {
                 return false;
@@ -418,16 +474,6 @@ public final class ZenoraHistoryController {
             if (peer != null && includedUsers.add(peer.id)) result.users.add(peer);
         }
 
-        HashSet<Integer> previouslyLoadedIds = new HashSet<>();
-        if (target.olderPage) {
-            synchronized (lock) {
-                Map<Long, OlderState> accountOlder = olderStates.get(account);
-                OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
-                if (state != null && state.roomId == roomId) {
-                    previouslyLoadedIds.addAll(state.seenMessageIds);
-                }
-            }
-        }
         if (snapshot != null) {
             HashSet<Integer> seenIds = new HashSet<>();
             ArrayList<TLRPC.Message> mapped = new ArrayList<>();
@@ -440,8 +486,7 @@ public final class ZenoraHistoryController {
                 if (rawId <= 0 || rawId > Integer.MAX_VALUE
                         || senderId <= 0 || senderId > Integer.MAX_VALUE) continue;
                 int messageId = (int) rawId;
-                if (!seenIds.add(messageId)
-                        || target.olderPage && previouslyLoadedIds.contains(messageId)) continue;
+                if (!seenIds.add(messageId)) continue;
 
                 String body = row.optString("text", "");
                 if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) continue;
@@ -504,7 +549,8 @@ public final class ZenoraHistoryController {
                 dialogId,
                 0,
                 nativeCount,
-                target.olderPage ? (int) Math.min(Integer.MAX_VALUE, target.beforeMessageId) : 0,
+                target.olderPage && error == null
+                    ? (int) Math.min(Integer.MAX_VALUE, target.beforeMessageId) : 0,
                 0,
                 false,
                 target.classGuid,
