@@ -1059,13 +1059,12 @@ public final class ZenoraHistoryController {
             int messageId = ids.get(i);
             long senderId = senderIds.get(i);
             String clientMessageId = clientMessageIds.get(i);
-            if (!TextUtils.isEmpty(clientMessageId)
-                    && (reconcilePendingTextMessage(account, dialogId, roomId,
-                    clientMessageId, messageId, dates.get(i))
-                    || isCompletedTextMessage(account, dialogId, clientMessageId, messageId))) {
-                committedIds.add(messageId);
-                committedCursor = messageId;
-                continue;
+            if (!TextUtils.isEmpty(clientMessageId)) {
+                // ACK and live history may race. Reconciliation is idempotent; do not
+                // skip the server row just because the ACK was already committed.
+                reconcilePendingTextMessage(account, dialogId, roomId,
+                        clientMessageId, messageId, dates.get(i));
+                isCompletedTextMessage(account, dialogId, clientMessageId, messageId);
             }
             boolean alreadyApplied;
             boolean publishingLocally;
@@ -1352,10 +1351,14 @@ public final class ZenoraHistoryController {
                 int messageId = (int) rawId;
                 String clientMessageId = (row.isNull("client_message_id") ? "" : row.optString("client_message_id", ""));
                 int serverDate = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
-                if (!TextUtils.isEmpty(clientMessageId)
-                        && (reconcilePendingTextMessage(account, dialogId, roomId,
-                        clientMessageId, messageId, serverDate)
-                        || isCompletedTextMessage(account, dialogId, clientMessageId, messageId))) continue;
+                if (!TextUtils.isEmpty(clientMessageId)) {
+                    // Reconcile any still-pending local bubble with the server identity.
+                    // A completed client ID is historical metadata, not a reason to
+                    // suppress a server row for a newly created ChatActivity.
+                    reconcilePendingTextMessage(account, dialogId, roomId,
+                            clientMessageId, messageId, serverDate);
+                    isCompletedTextMessage(account, dialogId, clientMessageId, messageId);
+                }
                 if (!seenIds.add(messageId) || isSentMessageAlreadyApplied(account, dialogId, messageId)) continue;
 
                 String body = row.optString("text", "");
