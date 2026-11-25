@@ -7512,6 +7512,10 @@ public class ChatActivityEnterView extends FrameLayout implements
             if (checkPremiumAnimatedEmoji(currentAccount, dialog_id, parentFragment, null, message)) {
                 return;
             }
+            // Zenora clears the Composer synchronously after its optimistic local row is stored.
+            // Do not let Telegram's 200 ms send-animation callback erase text typed afterwards.
+            final boolean zenoraOptimisticText = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0
+                    && !TextUtils.isEmpty(message);
             if (processSendingText(message, notify, scheduleDate, scheduleRepeatPeriod, payStars)) {
                 if (delegate.hasForwardingMessages() || (scheduleDate != 0 && !isInScheduleMode()) || isInScheduleMode()) {
                     if (messageEditText != null) {
@@ -7525,7 +7529,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     AndroidUtilities.runOnUIThread(moveToSendStateRunnable = () -> {
                         moveToSendStateRunnable = null;
                         hideTopView(true);
-                        if (messageEditText != null) {
+                        if (messageEditText != null && !zenoraOptimisticText) {
                             messageEditText.setText("");
                         }
                         if (delegate != null) {
