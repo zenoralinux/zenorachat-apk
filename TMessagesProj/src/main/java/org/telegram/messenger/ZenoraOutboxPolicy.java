@@ -34,6 +34,6 @@ public final class ZenoraOutboxPolicy {
     }
 
     public static boolean shouldAutomaticallyRetry(String status, long nextAttemptAt, long nowMs) {
-        return UNKNOWN.equals(status) || SENDING.equals(status) && nextAttemptAt <= nowMs;
+        return (UNKNOWN.equals(status) || SENDING.equals(status)) && nextAttemptAt <= nowMs;
     }
 }
