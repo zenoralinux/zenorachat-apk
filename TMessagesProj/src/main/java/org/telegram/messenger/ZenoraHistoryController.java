@@ -1057,12 +1057,14 @@ public final class ZenoraHistoryController {
             int messageId = ids.get(i);
             long senderId = senderIds.get(i);
             String clientMessageId = clientMessageIds.get(i);
+            boolean reconciledClientMessage = false;
             if (!TextUtils.isEmpty(clientMessageId)) {
                 // ACK and live history may race. Reconciliation is idempotent; do not
                 // skip the server row just because the ACK was already committed.
-                reconcilePendingTextMessage(account, dialogId, roomId,
+                reconciledClientMessage = reconcilePendingTextMessage(account, dialogId, roomId,
                         clientMessageId, messageId, dates.get(i));
-                isCompletedTextMessage(account, dialogId, clientMessageId, messageId);
+                reconciledClientMessage |= isCompletedTextMessage(
+                        account, dialogId, clientMessageId, messageId);
             }
             boolean alreadyApplied;
             boolean publishingLocally;
@@ -1108,6 +1110,11 @@ public final class ZenoraHistoryController {
             message.unread = false;
             message.flags |= 1 << 8;
             if (message.out) message.flags |= 1 << 1;
+            if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
+                message.params = new HashMap<>();
+                message.params.put("zenora_client_message_id", clientMessageId);
+                message.params.put("zenora_room_id", String.valueOf(roomId));
+            }
             objects.add(new MessageObject(account, message, true, true));
             stored.add(message);
             committedIds.add(messageId);
@@ -1349,13 +1356,15 @@ public final class ZenoraHistoryController {
                 int messageId = (int) rawId;
                 String clientMessageId = (row.isNull("client_message_id") ? "" : row.optString("client_message_id", ""));
                 int serverDate = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+                boolean reconciledClientMessage = false;
                 if (!TextUtils.isEmpty(clientMessageId)) {
                     // Reconcile any still-pending local bubble with the server identity.
                     // A completed client ID is historical metadata, not a reason to
                     // suppress a server row for a newly created ChatActivity.
-                    reconcilePendingTextMessage(account, dialogId, roomId,
+                    reconciledClientMessage = reconcilePendingTextMessage(account, dialogId, roomId,
                             clientMessageId, messageId, serverDate);
-                    isCompletedTextMessage(account, dialogId, clientMessageId, messageId);
+                    reconciledClientMessage |= isCompletedTextMessage(
+                            account, dialogId, clientMessageId, messageId);
                 }
                 if (!seenIds.add(messageId) || isSentMessageAlreadyApplied(account, dialogId, messageId)) continue;
 
@@ -1385,6 +1394,11 @@ public final class ZenoraHistoryController {
                 message.from_id = fromPeer;
                 message.flags |= 1 << 8;
                 if (message.out) message.flags |= 1 << 1;
+                if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
+                    message.params = new HashMap<>();
+                    message.params.put("zenora_client_message_id", clientMessageId);
+                    message.params.put("zenora_room_id", String.valueOf(roomId));
+                }
                 mapped.add(message);
             }
 
