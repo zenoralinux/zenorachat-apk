@@ -1714,7 +1714,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
         if (messageObject != null && messageObject.messageOwner != null
-                && ZenoraChatController.getRoomIdForDialog(currentAccount, messageObject.getDialogId()) > 0) {
+                && (ZenoraChatController.getRoomIdForDialog(currentAccount, messageObject.getDialogId()) > 0
+                || messageObject.messageOwner.params != null
+                && messageObject.messageOwner.params.containsKey("zenora_client_message_id"))) {
+            // The persisted Zenora marker is authoritative even before rooms.php has
+            // restored the dialog-to-room map. Never fall through to MTProto retry.
             return ZenoraHistoryController.retryTextMessage(currentAccount, messageObject);
         }
         if (messageObject.getId() >= 0) {

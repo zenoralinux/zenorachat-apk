@@ -104,6 +104,9 @@ jobs:
           grep -F '.setImage(location, "30_30"' TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
           grep -F 'attachment.chatListThumbnailUrl' TMessagesProj/src/main/java/org/telegram/ui/Cells/DialogCell.java
 
+        - name: Test Zenora optimistic text-send contract
+          run: python3 scripts/tests/zenora_optimistic_text_send_contract_test.py
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.4
 
