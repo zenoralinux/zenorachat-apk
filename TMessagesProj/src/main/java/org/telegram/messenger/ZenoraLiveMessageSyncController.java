@@ -194,7 +194,8 @@ public final class ZenoraLiveMessageSyncController {
             long id = row.optLong("message_id", 0L);
             long senderId = row.optLong("sender_id", 0L);
             String body = row.optString("text", "");
-            String clientMessageId = row.optString("client_message_id", "");
+            String clientMessageId = row.isNull("client_message_id")
+                    ? "" : row.optString("client_message_id", "");
             if (id <= previousId || id > Integer.MAX_VALUE || !pageIds.add(id)
                     || senderId <= 0L || senderId > Integer.MAX_VALUE
                     || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())

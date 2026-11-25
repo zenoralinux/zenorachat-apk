@@ -735,7 +735,7 @@ public final class ZenoraHistoryController {
             ids.add((int) rawId);
             senderIds.add(senderId);
             bodies.add(body);
-            clientMessageIds.add(row.optString("client_message_id", ""));
+            clientMessageIds.add((row.isNull("client_message_id") ? "" : row.optString("client_message_id", "")));
             dates.add(date);
             previousId = rawId;
         }
@@ -1075,7 +1075,7 @@ public final class ZenoraHistoryController {
                 if (rawId <= 0 || rawId > Integer.MAX_VALUE
                         || senderId <= 0 || senderId > Integer.MAX_VALUE) continue;
                 int messageId = (int) rawId;
-                String clientMessageId = row.optString("client_message_id", "");
+                String clientMessageId = (row.isNull("client_message_id") ? "" : row.optString("client_message_id", ""));
                 int serverDate = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
                 if (!TextUtils.isEmpty(clientMessageId)
                         && (reconcilePendingTextMessage(account, dialogId, roomId,
