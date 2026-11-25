@@ -3351,6 +3351,7 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void onFragmentDestroy() {
+        ZenoraHistoryController.cancelDialogRequests(currentAccount, dialog_id, classGuid);
         super.onFragmentDestroy();
         if (messageMetricsView != null) {
             messageMetricsView.finish();
