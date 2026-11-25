@@ -118,11 +118,6 @@ public final class ZenoraHistoryController {
                 accountSent.remove(dialogId);
                 if (accountSent.isEmpty()) sentMessageIds.remove(account);
             }
-            Map<Long, HashSet<Long>> accountPending = pendingSentMessageIds.get(account);
-            if (accountPending != null) {
-                accountPending.remove(dialogId);
-                if (accountPending.isEmpty()) pendingSentMessageIds.remove(account);
-            }
         }
     }
 
@@ -387,6 +382,10 @@ public final class ZenoraHistoryController {
         if (messageId <= 0 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
             return false;
         }
+        synchronized (lock) {
+            Map<Long, Snapshot> accountCache = cache.get(account);
+            if (accountCache != null) accountCache.remove(dialogId);
+        }
         MessagesController messagesController = MessagesController.getInstance(account);
         TLRPC.Dialog dialog = messagesController.getDialog(dialogId);
         if (dialog == null || dialog.peer == null) {
@@ -401,9 +400,9 @@ public final class ZenoraHistoryController {
             OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
             Map<Long, HashSet<Long>> accountSent = sentMessageIds.get(account);
             HashSet<Long> appliedIds = accountSent == null ? null : accountSent.get(dialogId);
-            if (state != null && state.roomId == roomId
-                    && state.seenMessageIds.contains(messageId)
-                    || appliedIds != null && appliedIds.contains((long) messageId)) {
+            if ((state != null && state.roomId == roomId
+                    && state.seenMessageIds.contains(messageId))
+                    || (appliedIds != null && appliedIds.contains((long) messageId))) {
                 Map<Long, Snapshot> accountCache = cache.get(account);
                 if (accountCache != null) accountCache.remove(dialogId);
                 return true; // The active history/live session already published this server ID.
@@ -687,9 +686,8 @@ public final class ZenoraHistoryController {
             }
         }
         FileLog.d("[ZenoraChat] Live text page applied; dialog=" + dialogId
-                + ", room=" + roomId + ", cursor=" + previousId
-                + ", returned=" + ids.size() + ", displayed=" + objects.size()
-                + ", cursor=" + committedCursor);
+                + ", room=" + roomId + ", returned=" + ids.size()
+                + ", displayed=" + objects.size() + ", cursor=" + committedCursor);
         return committedCursor;
     }
     private static boolean isCurrentOlderRequest(int account, long dialogId, long roomId,
