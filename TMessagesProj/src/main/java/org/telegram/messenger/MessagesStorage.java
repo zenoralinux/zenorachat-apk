@@ -297,7 +297,7 @@ public class MessagesStorage extends BaseController {
 
                 ArrayList<TLRPC.Message> messages = new ArrayList<>();
                 messages.add(message);
-                putMessagesInternal(messages, false, true, 0, false, ChatActivity.MODE_DEFAULT, 0);
+                putMessagesInternal(messages, false, false, 0, false, ChatActivity.MODE_DEFAULT, 0);
 
                 SQLitePreparedStatement state = database.executeFast(
                         "INSERT OR REPLACE INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
@@ -401,19 +401,31 @@ public class MessagesStorage extends BaseController {
                                          Consumer<Exception> callback) {
         storageQueue.postRunnable(() -> {
             boolean inTransaction = false;
+            SQLiteCursor existingCursor = null;
             try {
                 database.beginTransaction();
                 inTransaction = true;
-                SQLitePreparedStatement update = database.executeFast(
-                        "UPDATE zenora_outbox SET status = 'SENDING', next_attempt_at = 0 WHERE client_message_id = ?");
-                update.bindString(1, clientMessageId);
-                update.step();
-                update.dispose();
-
-                int exists = database.executeInt(
-                        "SELECT COUNT(*) FROM zenora_outbox WHERE client_message_id = ?",
+                existingCursor = database.queryFinalized(
+                        "SELECT zenora_user_id, room_id, dialog_id, local_message_id, body FROM zenora_outbox WHERE client_message_id = ?",
                         clientMessageId);
-                if (exists == 0) {
+                boolean exists = existingCursor.next();
+                if (exists && (existingCursor.longValue(0) != zenoraUserId
+                        || existingCursor.longValue(1) != roomId
+                        || existingCursor.longValue(2) != message.dialog_id
+                        || existingCursor.intValue(3) != message.id
+                        || !message.message.equals(existingCursor.stringValue(4)))) {
+                    throw new IllegalStateException("Outbox identity does not match the active Zenora account/message");
+                }
+                existingCursor.dispose();
+                existingCursor = null;
+
+                if (exists) {
+                    SQLitePreparedStatement update = database.executeFast(
+                            "UPDATE zenora_outbox SET status = 'SENDING', next_attempt_at = 0 WHERE client_message_id = ?");
+                    update.bindString(1, clientMessageId);
+                    update.step();
+                    update.dispose();
+                } else {
                     SQLitePreparedStatement insert = database.executeFast(
                             "INSERT INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
                     try {
@@ -445,6 +457,8 @@ public class MessagesStorage extends BaseController {
                 AndroidUtilities.runOnUIThread(() -> {
                     if (callback != null) callback.accept(error);
                 });
+            } finally {
+                if (existingCursor != null) existingCursor.dispose();
             }
         });
     }
