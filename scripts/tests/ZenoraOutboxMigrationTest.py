@@ -14,16 +14,16 @@ def capture(pattern, source, label):
     return match.group(1)
 
 migration_sql = capture(
-    r'database\\.executeFast\\("(CREATE TABLE IF NOT EXISTS zenora_outbox[^"]+)"\\)',
+    r'database\.executeFast\("(CREATE TABLE IF NOT EXISTS zenora_outbox[^"]+)"\)',
     migration_source, "v181->v182 outbox table migration")
 fresh_sql = capture(
-    r'database\\.executeFast\\("(CREATE TABLE zenora_outbox[^"]+)"\\)',
+    r'database\.executeFast\("(CREATE TABLE zenora_outbox[^"]+)"\)',
     storage_source, "fresh database outbox table")
 room_index = capture(
-    r'database\\.executeFast\\("(CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx[^"]+)"\\)',
+    r'database\.executeFast\("(CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx[^"]+)"\)',
     migration_source, "outbox FIFO index")
 retry_index = capture(
-    r'database\\.executeFast\\("(CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx[^"]+)"\\)',
+    r'database\.executeFast\("(CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx[^"]+)"\)',
     migration_source, "outbox retry index")
 
 assert migration_sql.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1) == fresh_sql, \
@@ -71,15 +71,16 @@ account_a.execute(
 assert account_a.execute("SELECT COUNT(*) FROM zenora_outbox").fetchone()[0] == 1
 assert account_b.execute("SELECT COUNT(*) FROM zenora_outbox").fetchone()[0] == 0
 
-# FIFO ordering is deterministic even when two messages share the same millisecond.
+# Telegram local IDs are negative and decrease with each new local message.
+# The explicit DESC tie-break preserves insertion order when millisecond timestamps match.
 old_db.execute(
     "INSERT INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, "
     "zenora_user_id, body, message_date, status, created_at) "
     "VALUES('client-key-0002', 77, 9001, -18, 124, 9001, 'next text', 1700000001, 'SENDING', 10)")
 rows = old_db.execute(
     "SELECT client_message_id FROM zenora_outbox WHERE room_id=77 "
-    "ORDER BY created_at ASC, local_message_id ASC").fetchall()
+    "ORDER BY created_at ASC, local_message_id DESC").fetchall()
 assert [row[0] for row in rows] == ["client-key-0002", "client-key-0001"], \
-    "local message id must provide stable FIFO order for equal timestamps"
+    "local message id DESC must provide FIFO order for equal timestamps"
 
 print("Zenora outbox additive migration tests passed")
