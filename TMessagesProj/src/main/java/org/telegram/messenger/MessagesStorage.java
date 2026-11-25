@@ -118,7 +118,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 181;
+    public final static int LAST_DB_VERSION = 182;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -242,6 +242,259 @@ public class MessagesStorage extends BaseController {
 
     public DispatchQueue2 getStorageQueue() {
         return storageQueue;
+    }
+
+
+    public static final class ZenoraOutboxRecord {
+        public final String clientMessageId;
+        public final long roomId;
+        public final long dialogId;
+        public final int localMessageId;
+        public final long randomId;
+        public final long zenoraUserId;
+        public final String body;
+        public final int messageDate;
+        public final String status;
+        public final long createdAt;
+        public final long nextAttemptAt;
+        public final int attemptCount;
+
+        ZenoraOutboxRecord(String clientMessageId, long roomId, long dialogId,
+                           int localMessageId, long randomId, long zenoraUserId,
+                           String body, int messageDate, String status, long createdAt,
+                           long nextAttemptAt, int attemptCount) {
+            this.clientMessageId = clientMessageId;
+            this.roomId = roomId;
+            this.dialogId = dialogId;
+            this.localMessageId = localMessageId;
+            this.randomId = randomId;
+            this.zenoraUserId = zenoraUserId;
+            this.body = body;
+            this.messageDate = messageDate;
+            this.status = status;
+            this.createdAt = createdAt;
+            this.nextAttemptAt = nextAttemptAt;
+            this.attemptCount = attemptCount;
+        }
+    }
+
+    public interface ZenoraOutboxReadCallback {
+        void onComplete(ArrayList<ZenoraOutboxRecord> records, Exception error);
+    }
+
+    /**
+     * Atomically persist the optimistic Telegram message and its durable Zenora
+     * operation. This method is the only entry point used by the Zenora sender:
+     * both writes execute on this account's storageQueue and share one SQLite tx.
+     */
+    public void storeZenoraTextMessage(TLRPC.Message message, long roomId, long zenoraUserId,
+                                       String clientMessageId, Consumer<Exception> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+
+                ArrayList<TLRPC.Message> messages = new ArrayList<>();
+                messages.add(message);
+                putMessagesInternal(messages, false, true, 0, false, ChatActivity.MODE_DEFAULT, 0);
+
+                SQLitePreparedStatement state = database.executeFast(
+                        "INSERT OR REPLACE INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
+                try {
+                    state.bindString(1, clientMessageId);
+                    state.bindLong(2, roomId);
+                    state.bindLong(3, message.dialog_id);
+                    state.bindInteger(4, message.id);
+                    state.bindLong(5, message.random_id);
+                    state.bindLong(6, zenoraUserId);
+                    state.bindString(7, message.message);
+                    state.bindInteger(8, message.date);
+                    state.bindLong(9, System.currentTimeMillis());
+                    state.step();
+                } finally {
+                    state.dispose();
+                }
+
+                database.commitTransaction();
+                inTransaction = false;
+                if (callback != null) {
+                    AndroidUtilities.runOnUIThread(() -> callback.accept(null));
+                }
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+                if (callback != null) {
+                    AndroidUtilities.runOnUIThread(() -> callback.accept(error));
+                }
+            }
+        });
+    }
+
+    public void loadZenoraOutbox(ZenoraOutboxReadCallback callback) {
+        storageQueue.postRunnable(() -> {
+            ArrayList<ZenoraOutboxRecord> records = new ArrayList<>();
+            Exception failure = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count FROM zenora_outbox ORDER BY room_id ASC, created_at ASC, local_message_id ASC");
+                while (cursor.next()) {
+                    records.add(new ZenoraOutboxRecord(
+                            cursor.stringValue(0), cursor.longValue(1), cursor.longValue(2),
+                            cursor.intValue(3), cursor.longValue(4), cursor.longValue(5),
+                            cursor.stringValue(6), cursor.intValue(7), cursor.stringValue(8),
+                            cursor.longValue(9), cursor.longValue(10), cursor.intValue(11)));
+                }
+            } catch (Exception error) {
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+            Exception resultError = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(records, resultError);
+            });
+        });
+    }
+
+    /** Persist the state transition before any retry is scheduled. */
+    public void updateZenoraOutboxState(String clientMessageId, String status,
+                                        long nextAttemptAt, boolean incrementAttempt,
+                                        boolean updateLocalSendState) {
+        storageQueue.postRunnable(() -> {
+            SQLitePreparedStatement state = null;
+            try {
+                state = database.executeFast(
+                        "UPDATE zenora_outbox SET status = ?, next_attempt_at = ?, attempt_count = attempt_count + ? WHERE client_message_id = ?");
+                state.bindString(1, status);
+                state.bindLong(2, nextAttemptAt);
+                state.bindInteger(3, incrementAttempt ? 1 : 0);
+                state.bindString(4, clientMessageId);
+                state.step();
+                state.dispose();
+                state = null;
+
+                if (updateLocalSendState) {
+                    int sendState = "FAILED".equals(status) ? MessageObject.MESSAGE_SEND_STATE_SEND_ERROR
+                            : MessageObject.MESSAGE_SEND_STATE_SENDING;
+                    database.executeFast("UPDATE messages_v2 SET send_state = " + sendState
+                            + " WHERE mid = (SELECT local_message_id FROM zenora_outbox WHERE client_message_id = "
+                            + "'" + clientMessageId.replace("'", "''") + "') AND uid = (SELECT dialog_id FROM zenora_outbox WHERE client_message_id = "
+                            + "'" + clientMessageId.replace("'", "''") + "')").stepThis().dispose();
+                }
+            } catch (Exception error) {
+                FileLog.e(error);
+            } finally {
+                if (state != null) state.dispose();
+            }
+        });
+    }
+
+    /**
+     * A user's explicit Retry keeps the original idempotency key. Legacy
+     * optimistic messages are adopted into the outbox rather than assigned a new key.
+     */
+    public void prepareZenoraOutboxRetry(TLRPC.Message message, long roomId,
+                                         long zenoraUserId, String clientMessageId,
+                                         Consumer<Exception> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                SQLitePreparedStatement update = database.executeFast(
+                        "UPDATE zenora_outbox SET status = 'SENDING', next_attempt_at = 0 WHERE client_message_id = ?");
+                update.bindString(1, clientMessageId);
+                update.step();
+                update.dispose();
+
+                int exists = database.executeInt(
+                        "SELECT COUNT(*) FROM zenora_outbox WHERE client_message_id = ?",
+                        clientMessageId);
+                if (exists == 0) {
+                    SQLitePreparedStatement insert = database.executeFast(
+                            "INSERT INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
+                    try {
+                        insert.bindString(1, clientMessageId);
+                        insert.bindLong(2, roomId);
+                        insert.bindLong(3, message.dialog_id);
+                        insert.bindInteger(4, message.id);
+                        insert.bindLong(5, message.random_id);
+                        insert.bindLong(6, zenoraUserId);
+                        insert.bindString(7, message.message);
+                        insert.bindInteger(8, message.date);
+                        insert.bindLong(9, System.currentTimeMillis());
+                        insert.step();
+                    } finally {
+                        insert.dispose();
+                    }
+                }
+                database.executeFast("UPDATE messages_v2 SET send_state = "
+                        + MessageObject.MESSAGE_SEND_STATE_SENDING + " WHERE mid = " + message.id
+                        + " AND uid = " + message.dialog_id).stepThis().dispose();
+                database.commitTransaction();
+                inTransaction = false;
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) callback.accept(null);
+                });
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) callback.accept(error);
+                });
+            }
+        });
+    }
+
+    /**
+     * Remap the local message and retire its outbox record in the same transaction.
+     * Polling and POST acknowledgements converge on this single storage operation.
+     */
+    public void acknowledgeZenoraTextMessage(long randomId, long dialogId, int localId,
+                                              int serverId, int serverDate,
+                                              String clientMessageId, Consumer<Boolean> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            boolean success = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+
+                SQLitePreparedStatement sent = database.executeFast(
+                        "UPDATE zenora_outbox SET status = 'SENT', server_message_id = ?, server_date = ? WHERE client_message_id = ?");
+                sent.bindInteger(1, serverId);
+                sent.bindInteger(2, serverDate);
+                sent.bindString(3, clientMessageId);
+                sent.step();
+                sent.dispose();
+
+                long[] ids = updateMessageStateAndIdInternal(
+                        randomId, dialogId, localId, serverId, serverDate, 0, 0);
+                if (ids == null) {
+                    throw new IllegalStateException("Zenora local message row could not be reconciled");
+                }
+
+                SQLitePreparedStatement remove = database.executeFast(
+                        "DELETE FROM zenora_outbox WHERE client_message_id = ?");
+                remove.bindString(1, clientMessageId);
+                remove.step();
+                remove.dispose();
+
+                database.commitTransaction();
+                inTransaction = false;
+                success = true;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            }
+            boolean result = success;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(result);
+            });
+        });
     }
 
     @UiThread
@@ -534,7 +787,8 @@ public class MessagesStorage extends BaseController {
             "poll_votes_mentions_topics",
             "ephemeral_messages",
             "widget_state",
-            "widget_heights"
+            "widget_heights",
+            "zenora_outbox"
     };
 
     public static void createTables(SQLiteDatabase database) throws SQLiteException {
@@ -777,6 +1031,10 @@ public class MessagesStorage extends BaseController {
 
         database.executeFast("CREATE TABLE widget_state(uid INTEGER, mid INTEGER, local TEXT, PRIMARY KEY(uid, mid));").stepThis().dispose();
         database.executeFast("CREATE TABLE widget_heights(uid INTEGER, mid INTEGER, width INTEGER, height INTEGER, date INTEGER, anchor INTEGER default 0, PRIMARY KEY(uid, mid, width));").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
 
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
 
