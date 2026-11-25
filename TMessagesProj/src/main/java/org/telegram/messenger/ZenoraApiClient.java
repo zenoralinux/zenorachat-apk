@@ -577,6 +577,26 @@ public final class ZenoraApiClient {
             }
         });
     }
+    /** Fetches a bounded page of newly committed text messages. */
+    public static void fetchBasicTextMessagesAfter(long roomId, long afterMessageId,
+                                                    int limit, Callback callback) {
+        if (roomId <= 0 || afterMessageId < 0) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora live-message cursor"));
+            return;
+        }
+        final int safeLimit = Math.max(1, Math.min(50, limit));
+        executor.execute(() -> {
+            try {
+                String path = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&after_id=" + afterMessageId
+                        + "&limit=" + safeLimit;
+                JSONObject response = request(path, "GET", null);
+                dispatch(callback, response, null);
+            } catch (Exception e) {
+                dispatch(callback, null, e);
+            }
+        });
+    }
 
 
     /**

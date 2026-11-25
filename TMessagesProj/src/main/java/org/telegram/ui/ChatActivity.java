@@ -3357,6 +3357,7 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void onFragmentDestroy() {
+        ZenoraLiveMessageSyncController.onChatPaused(currentAccount, dialog_id, classGuid);
         ZenoraHistoryController.cancelDialogRequests(currentAccount, dialog_id, classGuid);
         super.onFragmentDestroy();
         if (messageMetricsView != null) {
@@ -30702,6 +30703,9 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onResume() {
         super.onResume();
+        if (chatMode == MODE_DEFAULT) {
+            ZenoraLiveMessageSyncController.onChatResumed(currentAccount, dialog_id, classGuid);
+        }
         checkShowBlur(false);
         activityResumeTime = System.currentTimeMillis();
         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
@@ -30917,6 +30921,7 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void onPause() {
+        ZenoraLiveMessageSyncController.onChatPaused(currentAccount, dialog_id, classGuid);
         super.onPause();
         scrolling = false;
         if (scrimPopupWindow != null) {

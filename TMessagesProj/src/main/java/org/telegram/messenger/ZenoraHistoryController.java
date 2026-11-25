@@ -434,6 +434,183 @@ public final class ZenoraHistoryController {
         return true;
     }
 
+    /**
+     * Returns the newest message ID already loaded or published for this dialog.
+     * -1 means that the initial history request has not produced a usable state yet.
+     */
+    public static long getLatestMessageId(int account, long dialogId, long roomId) {
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
+            if (state == null || state.roomId != roomId) return -1L;
+            long latest = 0L;
+            for (Integer messageId : state.seenMessageIds) {
+                if (messageId != null && messageId > latest) latest = messageId;
+            }
+            Map<Long, HashSet<Long>> accountSent = sentMessageIds.get(account);
+            HashSet<Long> sent = accountSent == null ? null : accountSent.get(dialogId);
+            if (sent != null) {
+                for (Long messageId : sent) {
+                    if (messageId != null && messageId > latest) latest = messageId;
+                }
+            }
+            return latest;
+        }
+    }
+
+    /**
+     * Applies a validated live text page through Telegram's native in-memory
+     * update path and queues the same TLRPC messages in MessagesStorage.
+     * -1 means validation or native publication failed.
+     */
+    public static long applyLiveTextMessages(int account, long dialogId, long roomId,
+                                             JSONArray messages, long afterMessageId) {
+        if (messages == null || messages.length() > 50 || afterMessageId < 0
+                || roomId <= 0 || dialogId == 0
+                || !ZenoraChatController.isZenoraEnabled()
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+            return -1L;
+        }
+
+        MessagesController messagesController = MessagesController.getInstance(account);
+        TLRPC.Dialog dialog = messagesController.getDialog(dialogId);
+        if (dialog == null || dialog.peer == null) return -1L;
+        long selfId = UserConfig.getInstance(account).getClientUserId();
+        if (selfId <= 0 || selfId > Integer.MAX_VALUE) return -1L;
+
+        ArrayList<Integer> ids = new ArrayList<>();
+        ArrayList<Long> senderIds = new ArrayList<>();
+        ArrayList<String> bodies = new ArrayList<>();
+        ArrayList<Integer> dates = new ArrayList<>();
+        HashSet<Integer> pageIds = new HashSet<>();
+        long previousId = afterMessageId;
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject row = messages.optJSONObject(i);
+            if (row == null || row.optLong("room_id", 0L) != roomId || row.isNull("text")) {
+                return -1L;
+            }
+            long rawId = row.optLong("message_id", 0L);
+            long senderId = row.optLong("sender_id", 0L);
+            String body = row.optString("text", "");
+            int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+            if (rawId <= previousId || rawId > Integer.MAX_VALUE
+                    || senderId <= 0L || senderId > Integer.MAX_VALUE
+                    || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim()) || date <= 0
+                    || !pageIds.add((int) rawId)) {
+                return -1L;
+            }
+            ids.add((int) rawId);
+            senderIds.add(senderId);
+            bodies.add(body);
+            dates.add(date);
+            previousId = rawId;
+        }
+        if (ids.isEmpty()) return afterMessageId;
+        if (ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId
+                || !ZenoraChatController.isZenoraEnabled()) {
+            return -1L;
+        }
+
+        OlderState state;
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder =
+                    olderStates.computeIfAbsent(account, ignored -> new HashMap<>());
+            state = accountOlder.get(dialogId);
+            if (state == null || state.roomId != roomId) {
+                state = new OlderState(new Snapshot(roomId, new JSONArray(), null, false, 0L));
+                accountOlder.put(dialogId, state);
+            }
+        }
+
+        HashMap<Long, TLRPC.User> directory = new HashMap<>();
+        if (state.users != null) {
+            for (int i = 0; i < state.users.length(); i++) {
+                JSONObject userRow = state.users.optJSONObject(i);
+                if (userRow == null) continue;
+                long userId = userRow.optLong("id", 0L);
+                if (userId <= 0L || userId == selfId) continue;
+                TLRPC.User user = messagesController.getUser(userId);
+                if (user == null) {
+                    user = ZenoraChatController.makeHistorySenderUser(
+                            userId, userRow.optString("username", ""),
+                            userRow.optString("display_name", ""),
+                            userRow.optInt("is_verified", 0) == 1);
+                }
+                if (user != null) directory.put(userId, user);
+            }
+        }
+
+        ArrayList<TLRPC.User> usersToStore = new ArrayList<>();
+        HashSet<Long> includedUsers = new HashSet<>();
+        ArrayList<MessageObject> objects = new ArrayList<>();
+        ArrayList<TLRPC.Message> stored = new ArrayList<>();
+        for (int i = 0; i < ids.size(); i++) {
+            int messageId = ids.get(i);
+            long senderId = senderIds.get(i);
+            boolean alreadyApplied;
+            synchronized (lock) {
+                alreadyApplied = state.seenMessageIds.contains(messageId);
+                Map<Long, HashSet<Long>> accountSent = sentMessageIds.get(account);
+                HashSet<Long> sent = accountSent == null ? null : accountSent.get(dialogId);
+                alreadyApplied |= sent != null && sent.contains((long) messageId);
+            }
+            if (senderId == selfId || alreadyApplied) continue;
+
+            TLRPC.User sender = messagesController.getUser(senderId);
+            if (sender == null) sender = directory.get(senderId);
+            if (sender == null) {
+                sender = ZenoraChatController.makeHistorySenderUser(
+                        senderId, "", "Zenora user " + senderId, false);
+            }
+            if (sender != null && includedUsers.add(senderId)) usersToStore.add(sender);
+
+            TLRPC.TL_message message = new TLRPC.TL_message();
+            message.id = messageId;
+            message.date = dates.get(i);
+            message.dialog_id = dialogId;
+            message.peer_id = dialog.peer;
+            message.from_id = new TLRPC.TL_peerUser();
+            message.from_id.user_id = senderId;
+            message.message = bodies.get(i);
+            message.media = new TLRPC.TL_messageMediaEmpty();
+            message.out = false;
+            message.unread = false;
+            message.flags |= 1 << 8;
+            objects.add(new MessageObject(account, message, true, true));
+            stored.add(message);
+        }
+
+        try {
+            if (!usersToStore.isEmpty()) messagesController.putUsers(usersToStore, false);
+            if (!objects.isEmpty()) {
+                messagesController.updateInterfaceWithMessages(dialogId, objects, 0);
+                MessagesStorage.getInstance(account).putMessages(
+                        stored, false, true, false, 0, 0, 0);
+            }
+        } catch (Exception error) {
+            FileLog.e(error);
+            return -1L;
+        }
+
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState current = accountOlder == null ? null : accountOlder.get(dialogId);
+            if (current != state || current.roomId != roomId) return -1L;
+            for (int i = 0; i < ids.size(); i++) {
+                int messageId = ids.get(i);
+                current.seenMessageIds.add(messageId);
+                if (senderIds.get(i) == selfId) {
+                    sentMessageIds.computeIfAbsent(account, ignored -> new HashMap<>())
+                            .computeIfAbsent(dialogId, ignored -> new HashSet<>())
+                            .add((long) messageId);
+                }
+            }
+        }
+        FileLog.d("[ZenoraChat] Live text page applied; dialog=" + dialogId
+                + ", room=" + roomId + ", cursor=" + previousId
+                + ", returned=" + ids.size() + ", displayed=" + objects.size());
+        return previousId;
+    }
     private static boolean isCurrentOlderRequest(int account, long dialogId, long roomId,
                                                  OlderState expectedState, long requestId) {
         if (ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId
@@ -718,6 +895,9 @@ public final class ZenoraHistoryController {
                 false,
                 null
         );
+        if (!target.olderPage) {
+            ZenoraLiveMessageSyncController.onHistoryApplied(account, dialogId, roomId, target.classGuid);
+        }
         FileLog.d("[ZenoraChat] Native text history page published; dialog="
                 + dialogId + ", count=" + result.messages.size()
                 + ", older=" + target.olderPage + ", failed=" + (error != null));
