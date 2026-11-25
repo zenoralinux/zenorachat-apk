@@ -554,7 +554,7 @@ public final class ZenoraHistoryController {
                 HashSet<Long> sent = accountSent == null ? null : accountSent.get(dialogId);
                 alreadyApplied |= sent != null && sent.contains((long) messageId);
             }
-            if (senderId == selfId || alreadyApplied) continue;
+            if (alreadyApplied) continue;
 
             TLRPC.User sender = messagesController.getUser(senderId);
             if (sender == null) sender = directory.get(senderId);
@@ -573,9 +573,10 @@ public final class ZenoraHistoryController {
             message.from_id.user_id = senderId;
             message.message = bodies.get(i);
             message.media = new TLRPC.TL_messageMediaEmpty();
-            message.out = false;
+            message.out = senderId == selfId;
             message.unread = false;
             message.flags |= 1 << 8;
+            if (message.out) message.flags |= 1 << 1;
             objects.add(new MessageObject(account, message, true, true));
             stored.add(message);
         }
