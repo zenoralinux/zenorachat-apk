@@ -12020,7 +12020,8 @@ public class MessagesController extends BaseController implements NotificationCe
         } else {
             reload = resCount == 0 && (!isInitialLoading || (SystemClock.elapsedRealtime() - lastServerQueryTime.get(dialogId, 0L)) > 60 * 1000 || (isCache && isTopic));
         }
-        if (!DialogObject.isEncryptedDialog(dialogId) && isCache && reload) {
+        if (!DialogObject.isEncryptedDialog(dialogId) && isCache && reload
+                && !ZenoraChatController.isZenoraDialog(currentAccount, dialogId)) {
             if (mode == ChatActivity.MODE_SCHEDULED) {
                 lastScheduledServerQueryTime.put(dialogId, SystemClock.elapsedRealtime());
             } else if (mode == ChatActivity.MODE_QUICK_REPLIES) {
@@ -12272,6 +12273,29 @@ public class MessagesController extends BaseController implements NotificationCe
             }
             if (!webpagesToReload.isEmpty()) {
                 reloadWebPages(dialogId, webpagesToReload, mode);
+            }
+
+            // The local Telegram cache has now been delivered to ChatActivity.
+            // Only after that notification may Zenora issue its HTTP history request.
+            if (isCache && mode == ChatActivity.MODE_DEFAULT && load_type == LOAD_BACKWARD
+                    && ZenoraChatController.isZenoraDialog(currentAccount, dialogId)
+                    && loadIndex < 0) {
+                if (max_id == 0) {
+                    ZenoraHistoryController.loadInitialHistory(
+                            currentAccount, dialogId, classGuid, Math.abs(loadIndex), count);
+                } else if (ZenoraHistoryPolicy.reachedLocalCacheBoundary(resCount, count)) {
+                    long localBeforeMessageId = max_id;
+                    for (int i = 0; i < messagesRes.messages.size(); i++) {
+                        int messageId = messagesRes.messages.get(i).id;
+                        if (messageId > 0 && (localBeforeMessageId <= 0
+                                || messageId < localBeforeMessageId)) {
+                            localBeforeMessageId = messageId;
+                        }
+                    }
+                    ZenoraHistoryController.loadOlderHistory(
+                            currentAccount, dialogId, classGuid, Math.abs(loadIndex),
+                            count, localBeforeMessageId);
+                }
             }
 
             Timer.done(t3);

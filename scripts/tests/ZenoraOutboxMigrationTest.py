@@ -29,7 +29,9 @@ retry_index = capture(
 assert migration_sql.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1) == fresh_sql, \
     "fresh and migrated outbox schemas diverged"
 assert "PRAGMA user_version = 182" in migration_source
-assert "public final static int LAST_DB_VERSION = 182;" in storage_source
+assert "public final static int LAST_DB_VERSION = 183;" in storage_source
+assert "if (version == 182)" in migration_source
+assert "CREATE TABLE zenora_history_state" in migration_source
 assert '"zenora_outbox"' in storage_source, "backup/restore table list must include the outbox"
 
 # Upgrade a populated v181 database without deleting or resetting existing messages.

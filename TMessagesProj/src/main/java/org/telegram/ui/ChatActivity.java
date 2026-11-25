@@ -3253,8 +3253,13 @@ public class ChatActivity extends BaseFragment implements
                 && ZenoraChatController.isZenoraDialog(currentAccount, dialog_id)) {
             int zenoraLoadIndex = lastLoadIndex++;
             waitingForLoad.add(zenoraLoadIndex);
-            ZenoraHistoryController.loadInitialHistory(
-                    currentAccount, dialog_id, classGuid, zenoraLoadIndex, 50);
+            // Keep Telegram's non-blocking SQLite read and UI lifecycle. The
+            // negative index preserves the loading gate for the subsequent Zenora
+            // HTTP merge, which completes it with the matching positive index.
+            getMessagesController().loadMessages(
+                    dialog_id, 0, false, 50, 0, 0, true, 0, classGuid,
+                    MessagesController.LOAD_BACKWARD, 0, MODE_DEFAULT, 0,
+                    replyMaxReadId, -zenoraLoadIndex, isTopic);
             return;
         }
         final Runnable load = () -> {
@@ -14435,16 +14440,20 @@ public class ChatActivity extends BaseFragment implements
                 && ZenoraChatController.isZenoraDialog(currentAccount, dialog_id)) {
             AndroidUtilities.runOnUIThread(() -> {
                 if (totalItemCount - firstVisibleItemFinal - visibleItemCountFinal <= checkLoadCount
-                        && !loading) {
-                    int zenoraLoadIndex = lastLoadIndex++;
-                    if (ZenoraHistoryController.loadOlderHistory(
-                            currentAccount, dialog_id, classGuid, zenoraLoadIndex, 50)) {
-                        loading = true;
-                        waitingForLoad.add(zenoraLoadIndex);
-                    }
+                        && !loading && waitingForLoad.isEmpty() && !endReached[0]) {
+                    int localLoadIndex = lastLoadIndex++;
+                    waitingForLoad.add(localLoadIndex);
+                    loading = true;
+                    int localBeforeMessageId = maxMessageId[0] == Integer.MAX_VALUE
+                            ? 0 : maxMessageId[0];
+                    getMessagesController().loadMessages(
+                            dialog_id, 0, false, 50, localBeforeMessageId, 0,
+                            true, minDate[0], classGuid, MessagesController.LOAD_BACKWARD,
+                            0, MODE_DEFAULT, 0, replyMaxReadId, -localLoadIndex, isTopic);
                 }
             });
-            // Never fall through to Telegram's MTProto history loader for Zenora dialogs.
+            // Zenora uses Telegram SQLite first; MessagesController starts the
+            // dedicated HTTP cursor request only after this local page is published.
             return;
         }
 
@@ -21417,6 +21426,10 @@ public class ChatActivity extends BaseFragment implements
             postponedScrollToLastMessageQueryIndex = 0;
         }
         ArrayList<MessageObject> messArr = (ArrayList<MessageObject>) args[2];
+        boolean keepZenoraHistoryIndex = doNotRemoveLoadIndex && isCache
+                && mode == MODE_DEFAULT
+                && (Integer) args[8] == MessagesController.LOAD_BACKWARD
+                && ((Integer) args[12] == 0 || messArr.size() < (Integer) args[1]);
         layOutWidgetsForSideMenu(messArr);
 
         boolean universalNotify = false;
@@ -21472,7 +21485,7 @@ public class ChatActivity extends BaseFragment implements
                 getMessagesController().loadMessages(dialog_id, mergeDialogId, false, AndroidUtilities.isTablet() ? 30 : 20, 0, 0, true, 0, classGuid, 2, 0, chatMode, threadMessageId, replyMaxReadId, lastLoadIndex++, isTopic);
             }
             return;
-        } else if (!doNotRemoveLoadIndex) {
+        } else if (!doNotRemoveLoadIndex || !keepZenoraHistoryIndex) {
             waitingForLoad.remove(index);
         }
         if (messages.isEmpty() && messArr.size() == 1 && MessageObject.isSystemSignUp(messArr.get(0))) {

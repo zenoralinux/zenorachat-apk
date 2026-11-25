@@ -118,7 +118,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 182;
+    public final static int LAST_DB_VERSION = 183;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -525,6 +525,155 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+
+    /** Durable server-history coverage. The database is already isolated per Telegram account. */
+    public static final class ZenoraHistoryState {
+        public final long roomId;
+        public final long dialogId;
+        public final long zenoraUserId;
+        public final long oldestLocalMessageId;
+        public final long newestLocalMessageId;
+        public final long olderCursor;
+        /** -1 unknown, 0 confirmed end, 1 more pages available. */
+        public final int hasMoreOlder;
+        public final boolean coverageValid;
+
+        ZenoraHistoryState(long roomId, long dialogId, long zenoraUserId,
+                           long oldestLocalMessageId, long newestLocalMessageId,
+                           long olderCursor, int hasMoreOlder, boolean coverageValid) {
+            this.roomId = roomId;
+            this.dialogId = dialogId;
+            this.zenoraUserId = zenoraUserId;
+            this.oldestLocalMessageId = oldestLocalMessageId;
+            this.newestLocalMessageId = newestLocalMessageId;
+            this.olderCursor = olderCursor;
+            this.hasMoreOlder = hasMoreOlder;
+            this.coverageValid = coverageValid;
+        }
+    }
+
+    public interface ZenoraHistoryStateReadCallback {
+        void onComplete(ZenoraHistoryState state, Exception error);
+    }
+
+    /** Reads only pagination metadata and local ID bounds; message rows are loaded through getMessages(). */
+    public void loadZenoraHistoryState(long roomId, long dialogId, long zenoraUserId,
+                                       ZenoraHistoryStateReadCallback callback) {
+        storageQueue.postRunnable(() -> {
+            long oldestLocal = 0L;
+            long newestLocal = 0L;
+            long persistedOldestLocal = 0L;
+            long olderCursor = 0L;
+            int hasMoreOlder = -1;
+            boolean coverageValid = false;
+            Exception failure = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT oldest_local_message_id, older_cursor, has_more_older, coverage_valid FROM zenora_history_state WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
+                        roomId, dialogId, zenoraUserId);
+                if (cursor.next()) {
+                    persistedOldestLocal = cursor.longValue(0);
+                    olderCursor = cursor.longValue(1);
+                    hasMoreOlder = cursor.intValue(2);
+                    coverageValid = cursor.intValue(3) != 0;
+                }
+                cursor.dispose();
+                cursor = null;
+
+                cursor = database.queryFinalized(
+                        "SELECT MIN(mid), MAX(mid) FROM messages_v2 WHERE uid = ? AND mid > 0",
+                        dialogId);
+                if (cursor.next()) {
+                    oldestLocal = Math.max(0L, cursor.longValue(0));
+                    newestLocal = Math.max(0L, cursor.longValue(1));
+                }
+                coverageValid = coverageValid && ZenoraHistoryPolicy.isLocalCoverageIntact(
+                        persistedOldestLocal, oldestLocal);
+            } catch (Exception error) {
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+            ZenoraHistoryState result = failure == null
+                    ? new ZenoraHistoryState(roomId, dialogId, zenoraUserId,
+                            oldestLocal, newestLocal, olderCursor, hasMoreOlder, coverageValid)
+                    : null;
+            Exception resultError = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(result, resultError);
+            });
+        });
+    }
+
+    /**
+     * Stores a successful API boundary after MessagesController has queued the
+     * page's messages on this same storageQueue. A newer refresh cannot move the
+     * cursor forward and thereby hide already cached older pages.
+     */
+    public void saveZenoraHistoryState(long roomId, long dialogId, long zenoraUserId,
+                                       long proposedOlderCursor, boolean hasMoreOlder,
+                                       boolean coverageValid) {
+        storageQueue.postRunnable(() -> {
+            SQLiteCursor cursor = null;
+            SQLitePreparedStatement state = null;
+            try {
+                long currentCursor = 0L;
+                int currentHasMore = -1;
+                boolean currentCoverageValid = false;
+                cursor = database.queryFinalized(
+                        "SELECT older_cursor, has_more_older, coverage_valid FROM zenora_history_state WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
+                        roomId, dialogId, zenoraUserId);
+                if (cursor.next()) {
+                    currentCursor = cursor.longValue(0);
+                    currentHasMore = cursor.intValue(1);
+                    currentCoverageValid = cursor.intValue(2) != 0;
+                }
+                cursor.dispose();
+                cursor = null;
+
+                long olderCursor = ZenoraHistoryPolicy.mergeOlderCursor(
+                        currentCursor, proposedOlderCursor);
+                if (currentCursor > 0 && olderCursor == currentCursor
+                        && proposedOlderCursor > currentCursor) {
+                    hasMoreOlder = currentHasMore == 1;
+                    coverageValid = currentCoverageValid;
+                }
+
+                long oldestLocal = 0L;
+                long newestLocal = 0L;
+                cursor = database.queryFinalized(
+                        "SELECT MIN(mid), MAX(mid) FROM messages_v2 WHERE uid = ? AND mid > 0",
+                        dialogId);
+                if (cursor.next()) {
+                    oldestLocal = Math.max(0L, cursor.longValue(0));
+                    newestLocal = Math.max(0L, cursor.longValue(1));
+                }
+                cursor.dispose();
+                cursor = null;
+
+                state = database.executeFast(
+                        "REPLACE INTO zenora_history_state(room_id, dialog_id, zenora_user_id, oldest_local_message_id, newest_local_message_id, older_cursor, has_more_older, coverage_valid, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                state.bindLong(1, roomId);
+                state.bindLong(2, dialogId);
+                state.bindLong(3, zenoraUserId);
+                state.bindLong(4, oldestLocal);
+                state.bindLong(5, newestLocal);
+                state.bindLong(6, olderCursor);
+                state.bindInteger(7, hasMoreOlder ? 1 : 0);
+                state.bindInteger(8, coverageValid ? 1 : 0);
+                state.bindLong(9, System.currentTimeMillis());
+                state.step();
+            } catch (Exception error) {
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+                if (state != null) state.dispose();
+            }
+        });
+    }
+
     @UiThread
     public void bindTaskToGuid(Runnable task, int guid) {
         ArrayList<Runnable> arrayList = tasks.get(guid);
@@ -741,6 +890,8 @@ public class MessagesStorage extends BaseController {
 
     public final static String[] DATABASE_TABLES = new String[] {
             "messages_holes",
+            "zenora_outbox",
+            "zenora_history_state",
             "media_holes_v2",
             "scheduled_messages_v2",
             "quick_replies",
@@ -1063,6 +1214,8 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_history_dialog_idx ON zenora_history_state(dialog_id, zenora_user_id);").stepThis().dispose();
 
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
 
