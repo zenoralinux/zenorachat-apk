@@ -105,12 +105,15 @@ public final class ZenoraApiClient {
 
     public static void enableSession(JSONObject profile) {
         if (profile == null || profile.optLong("id", 0) <= 0) return;
-        boolean saved = prefs().edit()
-                .putBoolean("enabled", true)
-                .putString("username", profile.optString("username", ""))
-                .putString("display_name", profile.optString("display_name", ""))
-                .putLong("user_id", profile.optLong("id", 0))
-                .commit();
+        boolean saved;
+        synchronized (cookieLock) {
+            saved = prefs().edit()
+                    .putBoolean("enabled", true)
+                    .putString("username", profile.optString("username", ""))
+                    .putString("display_name", profile.optString("display_name", ""))
+                    .putLong("user_id", profile.optLong("id", 0))
+                    .commit();
+        }
         if (!saved) {
             throw new IllegalStateException("Unable to persist the ZenoraChat account profile");
         }
@@ -118,11 +121,12 @@ public final class ZenoraApiClient {
 
     /** Identity attached to the active API cookie; used to isolate durable records across logins. */
     public static long getCurrentUserId() {
-        if (ApplicationLoader.applicationContext == null
-                || !prefs().getBoolean("enabled", false) || !hasAuthCookie()) {
-            return 0L;
+        if (ApplicationLoader.applicationContext == null) return 0L;
+        synchronized (cookieLock) {
+            if (!prefs().getBoolean("enabled", false)
+                    || !hasAuthCookie(prefs().getString(COOKIE_KEY, ""))) return 0L;
+            return prefs().getLong("user_id", 0L);
         }
-        return prefs().getLong("user_id", 0L);
     }
 
     public static JSONObject getStoredProfile() {
@@ -142,7 +146,9 @@ public final class ZenoraApiClient {
     }
 
     public static void clearSession() {
-        prefs().edit().clear().commit();
+        synchronized (cookieLock) {
+            prefs().edit().clear().commit();
+        }
         executor.execute(lastTypingUpdateMs::clear);
         ZenoraChatController.clearSessionEphemeralState();
     }
@@ -620,49 +626,55 @@ public final class ZenoraApiClient {
 
     /** Text POST transport is separate from history/live polling and uses the stable operation key. */
     public static void sendTextMessage(long roomId, String body, String clientMessageId, Callback callback) {
+        sendTextMessage(roomId, body, clientMessageId, getCurrentUserId(), callback);
+    }
+
+    /**
+     * The expected user id is captured with the durable outbox row. It prevents
+     * work queued by a logged-out account from ever using a subsequent login cookie.
+     */
+    public static void sendTextMessage(long roomId, String body, String clientMessageId,
+                                       long expectedUserId, Callback callback) {
         final String safeBody = body == null ? "" : body;
         if (roomId <= 0 || safeBody.trim().isEmpty()
                 || clientMessageId == null || !clientMessageId.matches("[A-Za-z0-9._:-]{8,64}")
+                || expectedUserId <= 0 || getCurrentUserId() != expectedUserId
                 || !isZenoraSessionEnabled()) {
-            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora text-send request"));
+            dispatch(callback, null, new IllegalArgumentException("Invalid or stale Zenora text-send session"));
             return;
         }
         try {
             textSendExecutor.execute(() -> {
-            try {
-                long selfUserId = prefs().getLong("user_id", 0L);
-                if (selfUserId <= 0) {
-                    throw new IllegalStateException("Zenora account identity is unavailable");
+                try {
+                    if (getCurrentUserId() != expectedUserId) {
+                        throw new IllegalStateException("Zenora account changed before text send");
+                    }
+                    JSONObject response = sendTextMessageWithRetry(
+                            roomId, safeBody, clientMessageId, expectedUserId);
+                    JSONObject message = response.optJSONObject("message");
+                    if (message == null) {
+                        throw new IllegalStateException("Zenora returned an incomplete sent-message response");
+                    }
+                    long messageId = message.optLong("message_id", 0L);
+                    String createdAt = message.optString("created_at", "");
+                    if (messageId <= 0L || messageId > Integer.MAX_VALUE
+                            || message.optLong("room_id", 0L) != roomId
+                            || message.optLong("sender_id", 0L) != expectedUserId
+                            || !safeBody.equals(message.optString("text", ""))
+                            || !clientMessageId.equals(message.optString("client_message_id", ""))
+                            || createdAt.isEmpty()) {
+                        throw new IllegalStateException("Zenora returned a mismatched sent-message record");
+                    }
+                    response.put("id", messageId);
+                    response.put("room_id", roomId);
+                    dispatch(callback, response, null);
+                } catch (Exception error) {
+                    dispatch(callback, null, error);
                 }
-
-                JSONObject response = sendTextMessageWithRetry(roomId, safeBody, clientMessageId);
-                JSONObject message = response.optJSONObject("message");
-                if (message == null) {
-                    throw new IllegalStateException("Zenora returned an incomplete sent-message response");
-                }
-                long messageId = message.optLong("message_id", 0L);
-                String createdAt = message.optString("created_at", "");
-                if (messageId <= 0L || messageId > Integer.MAX_VALUE
-                        || message.optLong("room_id", 0L) != roomId
-                        || message.optLong("sender_id", 0L) != selfUserId
-                        || !safeBody.equals(message.optString("text", ""))
-                        || !clientMessageId.equals(message.optString("client_message_id", ""))
-                        || createdAt.isEmpty()) {
-                    throw new IllegalStateException("Zenora returned a mismatched sent-message record");
-                }
-
-                // The existing native message path is still invoked only after
-                // the API confirms the committed server message and timestamp.
-                response.put("id", messageId);
-                response.put("room_id", roomId);
-                dispatch(callback, response, null);
-            } catch (Exception error) {
-                dispatch(callback, null, error);
-            }
             });
         } catch (java.util.concurrent.RejectedExecutionException rejected) {
             dispatch(callback, null, new IllegalStateException(
-                    "Zenora text-send queue is full; retry this message.", rejected));
+                    "Zenora text-send queue is full; the durable message remains queued.", rejected));
         }
     }
 
@@ -671,7 +683,8 @@ public final class ZenoraApiClient {
      * client_message_id never change during this send operation.
      */
     private static JSONObject sendTextMessageWithRetry(long roomId, String body,
-                                                       String clientMessageId) throws Exception {
+                                                       String clientMessageId,
+                                                       long expectedUserId) throws Exception {
         String formWithoutCsrf = "room_id=" + encode(String.valueOf(roomId))
                 + "&body=" + encode(body)
                 + "&client_message_id=" + encode(clientMessageId);
@@ -680,9 +693,12 @@ public final class ZenoraApiClient {
         boolean csrfRetryUsed = false;
 
         while (true) {
+            if (getCurrentUserId() != expectedUserId) {
+                throw new IllegalStateException("Zenora account changed while retrying a text message");
+            }
             String form = formWithoutCsrf + "&csrf=" + encode(csrf);
             try {
-                return request("message_send.php", "POST", form, true);
+                return request("message_send.php", "POST", form, true, expectedUserId);
             } catch (ApiException error) {
                 if ("CSRF_INVALID".equals(error.errorCode) && !csrfRetryUsed) {
                     FileLog.w("[ZenoraChat] message_send.php rejected CSRF; refreshing and retrying the same message key.");
@@ -760,11 +776,17 @@ public final class ZenoraApiClient {
     }
 
     private static JSONObject request(String path, String method, String formBody) throws Exception {
-        return request(path, method, formBody, false);
+        return request(path, method, formBody, false, 0L);
     }
 
     private static JSONObject request(String path, String method, String formBody,
                                       boolean preserveAuthCookieOnUnauthorized) throws Exception {
+        return request(path, method, formBody, preserveAuthCookieOnUnauthorized, 0L);
+    }
+
+    private static JSONObject request(String path, String method, String formBody,
+                                      boolean preserveAuthCookieOnUnauthorized,
+                                      long expectedUserId) throws Exception {
         HttpURLConnection connection = null;
         try {
             connection = (HttpURLConnection) new URL(API_BASE + path).openConnection();
@@ -776,7 +798,13 @@ public final class ZenoraApiClient {
             connection.setRequestProperty("Accept", "application/json");
             connection.setRequestProperty("X-Requested-With", "XMLHttpRequest");
             connection.setRequestProperty("User-Agent", "ZenoraChat-Android/1.0");
-            String cookie = cookies();
+            String cookie;
+            synchronized (cookieLock) {
+                if (expectedUserId > 0 && prefs().getLong("user_id", 0L) != expectedUserId) {
+                    throw new IllegalStateException("Zenora account changed before HTTP request");
+                }
+                cookie = prefs().getString(COOKIE_KEY, "");
+            }
             if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
 
             if (formBody != null) {
@@ -790,7 +818,7 @@ public final class ZenoraApiClient {
             }
 
             int status = connection.getResponseCode();
-            saveCookies(connection, preserveAuthCookieOnUnauthorized && status == 401);
+            saveCookies(connection, preserveAuthCookieOnUnauthorized && status == 401, expectedUserId);
             FileLog.d("[ZenoraChat] API " + path + " HTTP " + status
                     + ", auth cookie sent=" + hasAuthCookie(cookie));
             InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
@@ -827,7 +855,15 @@ public final class ZenoraApiClient {
     }
 
     private static void saveCookies(HttpURLConnection connection, boolean preserveAuthCookieOnClear) {
+        saveCookies(connection, preserveAuthCookieOnClear, 0L);
+    }
+
+    private static void saveCookies(HttpURLConnection connection, boolean preserveAuthCookieOnClear,
+                                    long expectedUserId) {
         synchronized (cookieLock) {
+            if (expectedUserId > 0 && prefs().getLong("user_id", 0L) != expectedUserId) {
+                return;
+            }
             Map<String, String> values = new LinkedHashMap<>();
             String current = prefs().getString(COOKIE_KEY, "");
             for (String part : current.split(";")) {
