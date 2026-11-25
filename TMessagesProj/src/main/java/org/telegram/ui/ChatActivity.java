@@ -14422,6 +14422,23 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
 
+        if (chatMode == MODE_DEFAULT
+                && ZenoraChatController.isZenoraDialog(currentAccount, dialog_id)) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (totalItemCount - firstVisibleItemFinal - visibleItemCountFinal <= checkLoadCount
+                        && !loading) {
+                    int zenoraLoadIndex = lastLoadIndex++;
+                    if (ZenoraHistoryController.loadOlderHistory(
+                            currentAccount, dialog_id, classGuid, zenoraLoadIndex, 50)) {
+                        loading = true;
+                        waitingForLoad.add(zenoraLoadIndex);
+                    }
+                }
+            });
+            // Never fall through to Telegram's MTProto history loader for Zenora dialogs.
+            return;
+        }
+
         AndroidUtilities.runOnUIThread(() -> {
             if (totalItemCount - firstVisibleItemFinal - visibleItemCountFinal <= checkLoadCount && !loading) {
                 if (!endReached[0]) {
