@@ -195,6 +195,7 @@ import org.telegram.messenger.TranslateController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.ZenoraHistoryController;
+import org.telegram.messenger.ZenoraLiveMessageSyncController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
