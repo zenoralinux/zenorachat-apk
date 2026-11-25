@@ -921,11 +921,9 @@ public final class ZenoraHistoryController {
                                 .computeIfAbsent(pending.dialogId, ignored -> new HashMap<>());
                         completed.put(pending.clientMessageId, serverId);
                         if (completed.size() > 512) completed.remove(completed.keySet().iterator().next());
-                        sentMessageIds.computeIfAbsent(pending.account, ignored -> new HashMap<>())
-                                .computeIfAbsent(pending.dialogId, ignored -> new HashSet<>()).add((long) serverId);
-                        Map<Long, OlderState> accountOlder = olderStates.get(pending.account);
-                        OlderState state = accountOlder == null ? null : accountOlder.get(pending.dialogId);
-                        if (state != null && state.roomId == pending.roomId) state.seenMessageIds.add(serverId);
+                        // ACK bookkeeping is not proof that the message exists in the
+                        // current ChatActivity. Let history/live publication insert it;
+                        // Telegram's native server-ID reconciliation handles duplicates.
                         Map<Long, Snapshot> accountCache = cache.get(pending.account);
                         if (accountCache != null) accountCache.remove(pending.dialogId);
                     }
