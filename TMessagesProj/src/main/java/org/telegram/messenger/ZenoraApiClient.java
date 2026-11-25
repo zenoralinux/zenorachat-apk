@@ -116,6 +116,15 @@ public final class ZenoraApiClient {
         }
     }
 
+    /** Identity attached to the active API cookie; used to isolate durable records across logins. */
+    public static long getCurrentUserId() {
+        if (ApplicationLoader.applicationContext == null
+                || !prefs().getBoolean("enabled", false) || !hasAuthCookie()) {
+            return 0L;
+        }
+        return prefs().getLong("user_id", 0L);
+    }
+
     public static JSONObject getStoredProfile() {
         if (ApplicationLoader.applicationContext == null
                 || !prefs().getBoolean("enabled", false) || !hasAuthCookie()) return null;
@@ -673,7 +682,7 @@ public final class ZenoraApiClient {
         while (true) {
             String form = formWithoutCsrf + "&csrf=" + encode(csrf);
             try {
-                return request("message_send.php", "POST", form);
+                return request("message_send.php", "POST", form, true);
             } catch (ApiException error) {
                 if ("CSRF_INVALID".equals(error.errorCode) && !csrfRetryUsed) {
                     FileLog.w("[ZenoraChat] message_send.php rejected CSRF; refreshing and retrying the same message key.");
