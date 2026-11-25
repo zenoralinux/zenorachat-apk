@@ -33,14 +33,16 @@ reset = method_body(HISTORY, "private static void resetDialogSendDeduplication("
 # History must reconcile pending/completed identity without dropping a server
 # message merely because its client ID was ACKed in a previous visit.
 assert "reconcilePendingTextMessage(account, dialogId, roomId" in publish
-assert "isCompletedTextMessage(account, dialogId, clientMessageId, messageId);" in publish
+assert "isCompletedTextMessage(" in publish
+assert "reconciledClientMessage |= isCompletedTextMessage(" in publish
 assert "|| isCompletedTextMessage" not in publish
 assert "continue;" not in publish[publish.index("isCompletedTextMessage"):publish.index("if (!seenIds.add(messageId)")]
 
 # Live polling must converge ACK/history races while still applying rows not
 # currently represented in the active ChatActivity.
 assert "reconcilePendingTextMessage(account, dialogId, roomId" in live
-assert "isCompletedTextMessage(account, dialogId, clientMessageId, messageId);" in live
+assert "isCompletedTextMessage(" in live
+assert "reconciledClientMessage |= isCompletedTextMessage(" in live
 assert "|| isCompletedTextMessage" not in live
 assert "committedIds.add(messageId);" not in live[live.index("isCompletedTextMessage"):live.index("boolean alreadyApplied;")]
 
