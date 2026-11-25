@@ -7756,6 +7756,12 @@ public class ChatActivityEnterView extends FrameLayout implements
     }
 
     public void doneEditingMessage() {
+        if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0) {
+            android.widget.Toast.makeText(getContext(),
+                    "Editing is not available for Zenora messages yet.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
         if (editingMessageObject == null) {
             return;
         }
@@ -7902,7 +7908,9 @@ public class ChatActivityEnterView extends FrameLayout implements
         }
         if (scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0
                 || delegate != null && delegate.hasForwardingMessages()
-                || replyingMessageObject != null || replyingQuote != null) {
+                || replyingMessageObject != null || replyingQuote != null
+                || replyingTopMessage != null
+                || parentFragment != null && parentFragment.editingMessageObject != null) {
             android.widget.Toast.makeText(getContext(),
                     "Scheduling, forwarding and replies are not available for Zenora text messages yet.",
                     android.widget.Toast.LENGTH_LONG).show();
