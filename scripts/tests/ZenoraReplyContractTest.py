@@ -104,7 +104,7 @@ assert zenora_guard >= 0 and "loadZenoraLocalReplyMessages(messages, dialogId, c
 tap = method_body(CHAT, "public void didPressReplyMessage(ChatMessageCell cell, int id")
 assert "getRoomIdForDialog(currentAccount, dialog_id)" in tap
 assert tap.index("getRoomIdForDialog") < tap.index("scrollToMessageId") if "scrollToMessageId" in tap else True
-assert "Core Reply does not navigate to parent messages yet." in tap
+assert "Core Reply intentionally does not include parent-message navigation yet." in tap
 
 # Non-Zenora Telegram paths remain present.
 assert "scrollToMessageId(id, messageObject.getId()" in CHAT
