@@ -1257,7 +1257,8 @@ public final class ZenoraHistoryController {
         long previousId = afterMessageId;
         for (int i = 0; i < messages.length(); i++) {
             JSONObject row = messages.optJSONObject(i);
-            if (row == null || row.optLong("room_id", 0L) != roomId || row.isNull("text")) {
+            if (row == null || row.optLong("room_id", 0L) != roomId || row.isNull("text")
+                    || !isValidEditMetadata(row)) {
                 return -1L;
             }
             long rawId = row.optLong("message_id", 0L);
@@ -1279,6 +1280,9 @@ public final class ZenoraHistoryController {
             clientMessageIds.add((row.isNull("client_message_id") ? "" : row.optString("client_message_id", "")));
             replyToIds.add(replyToId);
             if (replyToId > 0) cacheReplyPreviewFromRow(account, dialogId, replyToId, row.optJSONObject("reply_preview"));
+            ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,rawId,
+                    row.isNull("edited_at") ? null : row.optString("edited_at", ""),
+                    row.optLong("edit_version", 1L));
             dates.add(date);
             previousId = rawId;
         }
@@ -1484,6 +1488,16 @@ public final class ZenoraHistoryController {
         }
     }
 
+    private static boolean isValidEditMetadata(JSONObject row) {
+        if (row == null || !row.has("edit_version") || row.isNull("edit_version")) return false;
+        long version = row.optLong("edit_version", 0L);
+        if (version <= 0L || version > Integer.MAX_VALUE) return false;
+        if (row.isNull("edited_at")) return true;
+        String editedAt = row.optString("edited_at", "");
+        return !TextUtils.isEmpty(editedAt)
+                && ZenoraChatController.parseHistoryDate(editedAt) > 0;
+    }
+
     private static boolean isValidBasicTextPage(JSONArray messages, JSONObject pagination,
                                                 long roomId, int limit, long beforeMessageId) {
         if (pagination == null || messages.length() > limit) return false;
@@ -1497,7 +1511,8 @@ public final class ZenoraHistoryController {
         for (int i = 0; i < messages.length(); i++) {
             JSONObject row = messages.optJSONObject(i);
             if (row == null || row.optLong("room_id", 0L) != roomId
-                    || row.isNull("text") || !isValidReplyContractRow(row)) return false;
+                    || row.isNull("text") || !isValidReplyContractRow(row)
+                    || !isValidEditMetadata(row)) return false;
             long rawReplyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
             if (rawReplyToId < 0L || rawReplyToId > Integer.MAX_VALUE) return false;
             long messageId = row.optLong("message_id", 0L);
@@ -1670,7 +1685,8 @@ public final class ZenoraHistoryController {
             ArrayList<TLRPC.Message> mapped = new ArrayList<>();
             for (int i = 0; i < snapshot.messages.length(); i++) {
                 JSONObject row = snapshot.messages.optJSONObject(i);
-                if (row == null || row.optLong("room_id", 0) != roomId || row.isNull("text")) continue;
+                if (row == null || row.optLong("room_id", 0) != roomId || row.isNull("text")
+                        || !isValidEditMetadata(row)) continue;
                 long replyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
                 if (replyToId < 0L || replyToId > Integer.MAX_VALUE || !isValidReplyContractRow(row)) continue;
                 if (replyToId > 0) cacheReplyPreviewFromRow(account, dialogId, replyToId, row.optJSONObject("reply_preview"));
@@ -1682,6 +1698,9 @@ public final class ZenoraHistoryController {
                 int messageId = (int) rawId;
                 String clientMessageId = (row.isNull("client_message_id") ? "" : row.optString("client_message_id", ""));
                 int serverDate = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+                ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,messageId,
+                        row.isNull("edited_at") ? null : row.optString("edited_at", ""),
+                        row.optLong("edit_version", 1L));
                 boolean reconciledClientMessage = false;
                 if (!TextUtils.isEmpty(clientMessageId)) {
                     // Reconcile any still-pending local bubble with the server identity.

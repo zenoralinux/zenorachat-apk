@@ -32,6 +32,10 @@ public final class ZenoraApiClient {
     private static final String PREFS = "zenora_api_session";
     private static final String COOKIE_KEY = "cookies";
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private static final ExecutorService mutationExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 2, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(64),
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     private static final ExecutorService textSendExecutor = new java.util.concurrent.ThreadPoolExecutor(
             3, 3, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
             new java.util.concurrent.ArrayBlockingQueue<>(128),
@@ -648,6 +652,152 @@ public final class ZenoraApiClient {
         });
     }
 
+
+    private interface MessageMutationValidator {
+        void validate(JSONObject response) throws Exception;
+    }
+
+    private static JSONObject postMessageMutationWithCsrfRetry(String path, String form, long expectedUserId) throws Exception {
+        String csrf = getMuteActionCsrfToken(expectedUserId);
+        boolean retried = false;
+        while (true) {
+            if (getCurrentUserId() != expectedUserId || !isZenoraSessionEnabled()) {
+                throw new IllegalStateException("Zenora account changed during message mutation");
+            }
+            try {
+                return request(path, "POST", form + "&csrf=" + encode(csrf), true, expectedUserId);
+            } catch (ApiException error) {
+                if (!"CSRF_INVALID".equals(error.errorCode) || retried) throw error;
+                csrf = refreshMuteActionCsrfToken(expectedUserId);
+                retried = true;
+            }
+        }
+    }
+
+    private static void executeMessageMutation(String path, String form, long expectedUserId,
+                                               Callback callback, MessageMutationValidator validator) {
+        if (expectedUserId <= 0L || getCurrentUserId() != expectedUserId || !isZenoraSessionEnabled()) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid or stale Zenora mutation account"));
+            return;
+        }
+        try {
+            mutationExecutor.execute(() -> {
+                try {
+                    if (getCurrentUserId() != expectedUserId) throw new IllegalStateException("Zenora account changed before mutation");
+                    JSONObject response = postMessageMutationWithCsrfRetry(path, form, expectedUserId);
+                    if (response == null || !response.optBoolean("ok", false)) throw new IllegalStateException("Invalid Zenora mutation response");
+                    validator.validate(response);
+                    dispatch(callback, response, null);
+                } catch (Exception error) {
+                    dispatch(callback, null, error);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            dispatch(callback, null, new IllegalStateException("Zenora mutation queue is full", rejected));
+        }
+    }
+
+    private static void validateMutationMessageIds(JSONArray returned, List<Long> requested) throws Exception {
+        if (returned == null) throw new IllegalStateException("Zenora omitted deleted message IDs");
+        java.util.HashSet<Long> allowed = new java.util.HashSet<>(requested);
+        for (int i = 0; i < returned.length(); i++) {
+            long id = returned.optLong(i, 0L);
+            if (id <= 0L || id > Integer.MAX_VALUE || !allowed.contains(id)) {
+                throw new IllegalStateException("Zenora returned an unexpected deleted message ID");
+            }
+        }
+    }
+
+    public static void editMessage(long roomId, long messageId, String body,
+                                   long expectedEditVersion, long expectedUserId, Callback callback) {
+        final String safeBody = body == null ? "" : body;
+        if (roomId <= 0L || roomId > Integer.MAX_VALUE || messageId <= 0L || messageId > Integer.MAX_VALUE
+                || safeBody.trim().isEmpty() || expectedEditVersion <= 0L
+                || expectedEditVersion >= Integer.MAX_VALUE || expectedUserId <= 0L
+                || getCurrentUserId() != expectedUserId) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora edit request"));
+            return;
+        }
+        try {
+            String form = "id=" + encode(String.valueOf(messageId))
+                    + "&room_id=" + encode(String.valueOf(roomId))
+                    + "&body=" + encode(safeBody)
+                    + "&expected_edit_version=" + encode(String.valueOf(expectedEditVersion));
+            executeMessageMutation("message_edit.php", form, expectedUserId, callback, response -> {
+                JSONObject message = response.optJSONObject("message");
+                if (message == null || message.optLong("message_id", 0L) != messageId
+                        || message.optLong("room_id", 0L) != roomId || message.optLong("sender_id", 0L) <= 0L
+                        || !safeBody.equals(message.optString("text", ""))
+                        || message.optString("edited_at", "").isEmpty()
+                        || message.optLong("edit_version", 0L) != expectedEditVersion + 1L) {
+                    throw new IllegalStateException("Zenora returned a mismatched edited-message record");
+                }
+            });
+        } catch (Exception error) {
+            dispatch(callback, null, error);
+        }
+    }
+
+    public static void deleteMessage(long roomId, long messageId, String deleteScope,
+                                     long expectedUserId, Callback callback) {
+        if (roomId <= 0L || roomId > Integer.MAX_VALUE || messageId <= 0L || messageId > Integer.MAX_VALUE
+                || !("me".equals(deleteScope) || "both".equals(deleteScope))
+                || expectedUserId <= 0L || getCurrentUserId() != expectedUserId) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora delete request"));
+            return;
+        }
+        try {
+            String form = "id=" + encode(String.valueOf(messageId))
+                    + "&room_id=" + encode(String.valueOf(roomId))
+                    + "&delete_scope=" + encode(deleteScope);
+            executeMessageMutation("message_delete.php", form, expectedUserId, callback, response -> {
+                if (response.optLong("room_id", 0L) != roomId
+                        || !deleteScope.equals(response.optString("delete_scope", ""))) {
+                    throw new IllegalStateException("Zenora returned a mismatched delete scope or room");
+                }
+                validateMutationMessageIds(response.optJSONArray("deleted_message_ids"),
+                        java.util.Collections.singletonList(messageId));
+            });
+        } catch (Exception error) {
+            dispatch(callback, null, error);
+        }
+    }
+
+    public static void deleteMessagesBulk(long roomId, List<Long> messageIds, String deleteScope,
+                                          long expectedUserId, Callback callback) {
+        if (roomId <= 0L || roomId > Integer.MAX_VALUE || messageIds == null
+                || messageIds.isEmpty() || messageIds.size() > 50
+                || !("me".equals(deleteScope) || "both".equals(deleteScope))
+                || expectedUserId <= 0L || getCurrentUserId() != expectedUserId) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora bulk-delete request"));
+            return;
+        }
+        final java.util.ArrayList<Long> safeIds = new java.util.ArrayList<>();
+        final java.util.HashSet<Long> uniqueIds = new java.util.HashSet<>();
+        for (Long id : messageIds) {
+            if (id == null || id <= 0L || id > Integer.MAX_VALUE || !uniqueIds.add(id)) {
+                dispatch(callback, null, new IllegalArgumentException("Invalid or duplicate Zenora message ID"));
+                return;
+            }
+            safeIds.add(id);
+        }
+        try {
+            JSONArray jsonIds = new JSONArray();
+            for (Long id : safeIds) jsonIds.put(id);
+            String form = "room_id=" + encode(String.valueOf(roomId))
+                    + "&message_ids=" + encode(jsonIds.toString())
+                    + "&delete_scope=" + encode(deleteScope);
+            executeMessageMutation("messages_bulk_delete.php", form, expectedUserId, callback, response -> {
+                if (response.optLong("room_id", 0L) != roomId
+                        || !deleteScope.equals(response.optString("delete_scope", ""))) {
+                    throw new IllegalStateException("Zenora returned a mismatched bulk-delete scope or room");
+                }
+                validateMutationMessageIds(response.optJSONArray("deleted_message_ids"), safeIds);
+            });
+        } catch (Exception error) {
+            dispatch(callback, null, error);
+        }
+    }
 
     /** Backward-compatible wrapper. */
     public static void sendTextMessage(long roomId, String body, Callback callback) {
