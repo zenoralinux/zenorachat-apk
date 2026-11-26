@@ -9366,6 +9366,46 @@ public class MessagesController extends BaseController implements NotificationCe
         }
     }
 
+
+    /**
+     * Apply a confirmed Zenora delete to local Telegram models and SQLite only.
+     * This deliberately does not call deleteMessages() or construct any MTProto request.
+     */
+    public boolean applyZenoraMessageDeletionLocally(long dialogId, ArrayList<Integer> messageIds) {
+        if (!ZenoraChatController.isZenoraDialog(currentAccount, dialogId)
+                || DialogObject.isEncryptedDialog(dialogId)
+                || messageIds == null || messageIds.isEmpty() || messageIds.size() > 50) {
+            return false;
+        }
+        ArrayList<Integer> ids = new ArrayList<>();
+        HashSet<Integer> unique = new HashSet<>();
+        for (Integer id : messageIds) {
+            if (id == null || id == 0 || !unique.add(id)) return false;
+            ids.add(id);
+        }
+
+        long channelId = 0L;
+        if (DialogObject.isChatDialog(dialogId)) {
+            TLRPC.Chat chat = getChat(-dialogId);
+            if (ChatObject.isChannel(chat)) channelId = chat.id;
+        }
+        for (Integer id : ids) {
+            MessageObject object = dialogMessagesByIds.get(id);
+            if (object != null && object.getDialogId() == dialogId) {
+                object.deleted = true;
+            }
+        }
+        markDialogMessageAsDeleted(dialogId, ids);
+        ZenoraHistoryController.invalidateReplyPreviews(currentAccount, dialogId, ids);
+        getMessagesStorage().markMessagesAsDeleted(dialogId, ids, true, true,
+                ChatActivity.MODE_DEFAULT, 0);
+        getMessagesStorage().updateDialogsWithDeletedMessages(dialogId, channelId, ids, null);
+        getNotificationCenter().postNotificationName(
+                NotificationCenter.messagesDeleted, ids, channelId, false, false, false, 0);
+        getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+        return true;
+    }
+
     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, int topicId, boolean forAll, int mode) {
         deleteMessages(messages, randoms, encryptedChat, dialogId, forAll, mode, false, 0, null, topicId);
     }
@@ -9379,6 +9419,12 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, boolean forAll, int mode, boolean cacheOnly, long taskId, TLObject taskRequest, int topicId, boolean movedToScheduled, int movedToScheduledMessageId) {
+        // Hard safety barrier: Zenora deletes must use the authenticated Zenora API path.
+        // Never allow an overlooked caller to reach Telegram/MTProto deletion for a Zenora room.
+        if (ZenoraChatController.isZenoraDialog(currentAccount, dialogId)) {
+            FileLog.e("Blocked Telegram/MTProto deleteMessages call for Zenora dialog " + dialogId);
+            return;
+        }
         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
         final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
         final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;

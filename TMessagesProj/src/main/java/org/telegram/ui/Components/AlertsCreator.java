@@ -103,6 +103,7 @@ import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraMessageMutationController;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.utils.pip.PipEnvironment;
@@ -7746,6 +7747,120 @@ public class AlertsCreator {
             dialogId = user.id;
         } else {
             dialogId = -chat.id;
+        }
+
+
+        ArrayList<MessageObject> zenoraSelection = new ArrayList<>();
+        if (selectedGroup != null) {
+            zenoraSelection.addAll(selectedGroup.messages);
+        } else if (selectedMessage != null) {
+            zenoraSelection.add(selectedMessage);
+        } else if (selectedMessages != null) {
+            for (int a = 0; a < selectedMessages.length; a++) {
+                if (selectedMessages[a] == null) continue;
+                for (int b = 0; b < selectedMessages[a].size(); b++) {
+                    zenoraSelection.add(selectedMessages[a].valueAt(b));
+                }
+            }
+        }
+        boolean hasZenoraSelection = ZenoraChatController.isZenoraDialog(currentAccount, dialogId);
+        if (!hasZenoraSelection) {
+            for (MessageObject object : zenoraSelection) {
+                if (object != null && ZenoraChatController.isZenoraDialog(
+                        currentAccount, object.getDialogId())) {
+                    hasZenoraSelection = true;
+                    break;
+                }
+            }
+        }
+        if (hasZenoraSelection) {
+            if (scheduled || isSavedMessages || quickReplies || encryptedChat != null
+                    || topicId != 0 || mode != ChatActivity.MODE_DEFAULT) {
+                Toast.makeText(activity, "This Zenora message type does not support deletion.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (zenoraSelection.isEmpty() || zenoraSelection.size() > 50) {
+                Toast.makeText(activity, zenoraSelection.size() > 50
+                        ? "You can delete up to 50 Zenora messages at once."
+                        : "The selected Zenora messages are unavailable.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            long zenoraDialogId = zenoraSelection.get(0).getDialogId();
+            long zenoraRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, zenoraDialogId);
+            boolean sameRoom = zenoraRoomId > 0L;
+            for (MessageObject object : zenoraSelection) {
+                if (object == null || object.getDialogId() != zenoraDialogId
+                        || ZenoraChatController.getRoomIdForDialog(currentAccount, object.getDialogId())
+                                != zenoraRoomId) {
+                    sameRoom = false;
+                    break;
+                }
+            }
+            if (!sameRoom || !ZenoraMessageMutationController.canDeleteSelection(
+                    currentAccount, zenoraDialogId, zenoraRoomId, zenoraSelection)) {
+                Toast.makeText(activity,
+                        "The selected messages are unsupported, belong to different rooms, or include a message that cannot be deleted.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            final boolean[] deleteForAll = new boolean[1];
+            FrameLayout scopeContainer = new FrameLayout(activity);
+            CheckBoxCell deleteForAllCell = new CheckBoxCell(activity, 1, resourcesProvider);
+            deleteForAllCell.setText(LocaleController.getString(R.string.DeleteForAll), "", false, false);
+            deleteForAllCell.setBackgroundDrawable(Theme.getSelectorDrawable(false));
+            deleteForAllCell.setPadding(LocaleController.isRTL ? dp(16) : dp(8), 0,
+                    LocaleController.isRTL ? dp(8) : dp(16), 0);
+            deleteForAllCell.setChecked(false, false);
+            deleteForAllCell.setOnClickListener(v -> {
+                deleteForAll[0] = !deleteForAll[0];
+                ((CheckBoxCell) v).setChecked(deleteForAll[0], true);
+            });
+            scopeContainer.addView(deleteForAllCell,
+                    LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48, Gravity.TOP | Gravity.LEFT, 0, 0, 0, 0));
+
+            builder.setView(scopeContainer);
+            builder.setTitle(count == 1
+                    ? LocaleController.getString(R.string.DeleteSingleMessagesTitle)
+                    : LocaleController.formatString(R.string.DeleteMessagesTitle,
+                            LocaleController.formatPluralString("messages", count)));
+            builder.setMessage(LocaleController.getString(count == 1
+                    ? R.string.AreYouSureDeleteSingleMessage
+                    : R.string.AreYouSureDeleteFewMessages));
+            builder.setPositiveButton(LocaleController.getString(R.string.Delete), (dialogInterface, which) -> {
+                String scope = deleteForAll[0] ? "both" : "me";
+                ZenoraMessageMutationController.deleteSelection(currentAccount, zenoraDialogId,
+                        zenoraRoomId, zenoraSelection, scope,
+                        UserConfig.getInstance(currentAccount).getClientUserId(),
+                        (response, error) -> {
+                            if (error != null) {
+                                if (!activity.isFinishing()) {
+                                    Toast.makeText(activity, TextUtils.isEmpty(error.getMessage())
+                                            ? "Zenora could not delete the selected messages."
+                                            : error.getMessage(), Toast.LENGTH_LONG).show();
+                                }
+                                return;
+                            }
+                            if (selectedMessages != null) {
+                                for (SparseArray<MessageObject> selected : selectedMessages) {
+                                    if (selected != null) selected.clear();
+                                }
+                            }
+                            if (onDelete != null) onDelete.run();
+                        });
+            });
+            builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+            builder.setOnPreDismissListener(di -> {
+                if (hideDim != null) hideDim.run();
+            });
+            AlertDialog zenoraAlertDialog = builder.create();
+            fragment.showDialog(zenoraAlertDialog);
+            TextView positiveButton = (TextView) zenoraAlertDialog.getButton(DialogInterface.BUTTON_POSITIVE);
+            if (positiveButton != null) {
+                ThemeBind.textColor(positiveButton, Theme.key_text_RedBold);
+            }
+            return;
         }
 
         if (scheduled) {

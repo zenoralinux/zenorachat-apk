@@ -102,6 +102,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
+import android.widget.Toast;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
@@ -35093,7 +35094,44 @@ public class ChatActivity extends BaseFragment implements
                 break;
             }
             case OPTION_CANCEL_SENDING: {
-                if (selectedObject.isEditing() || selectedObject.isSending() && selectedObjectGroup == null) {
+                long cancelDialogId = selectedObject == null ? 0L : selectedObject.getDialogId();
+                if (cancelDialogId != 0L && ZenoraChatController.isZenoraDialog(currentAccount, cancelDialogId)) {
+                    if (selectedObject.isEditing()) {
+                        Toast.makeText(getParentActivity(),
+                                "This Zenora message cannot be cancelled as a pending send.",
+                                Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    ArrayList<MessageObject> pendingZenoraMessages = new ArrayList<>();
+                    if (selectedObjectGroup != null) {
+                        pendingZenoraMessages.addAll(selectedObjectGroup.messages);
+                    } else {
+                        pendingZenoraMessages.add(selectedObject);
+                    }
+                    boolean onlyPendingLocalMessages = !pendingZenoraMessages.isEmpty();
+                    for (MessageObject pendingObject : pendingZenoraMessages) {
+                        if (pendingObject == null || pendingObject.getId() >= 0) {
+                            onlyPendingLocalMessages = false;
+                            break;
+                        }
+                    }
+                    if (!onlyPendingLocalMessages) {
+                        Toast.makeText(getParentActivity(),
+                                "Only messages that have not been submitted to Zenora can be cancelled here.",
+                                Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, cancelDialogId);
+                    ZenoraMessageMutationController.deleteSelection(currentAccount, cancelDialogId,
+                            roomId, pendingZenoraMessages, "me",
+                            getUserConfig().getClientUserId(), (response, error) -> {
+                                if (error != null && getParentActivity() != null) {
+                                    Toast.makeText(getParentActivity(), TextUtils.isEmpty(error.getMessage())
+                                            ? "The pending Zenora message could not be cancelled."
+                                            : error.getMessage(), Toast.LENGTH_LONG).show();
+                                }
+                            });
+                } else if (selectedObject.isEditing() || selectedObject.isSending() && selectedObjectGroup == null) {
                     getSendMessagesHelper().cancelSendingMessage(selectedObject);
                 } else if (selectedObject.isSending() && selectedObjectGroup != null) {
                     for (int a = 0; a < selectedObjectGroup.messages.size(); a++) {

@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -67,6 +68,7 @@ public final class ZenoraHistoryController {
         volatile boolean failed;
         volatile boolean started;
         volatile boolean retryScheduled;
+        volatile boolean cancelRequested;
         volatile String status = ZenoraOutboxPolicy.SENDING;
         volatile int attemptCount;
         volatile long nextAttemptAt;
@@ -623,6 +625,42 @@ public final class ZenoraHistoryController {
         return true;
     }
 
+
+    /** Replace cached Reply previews of deleted parents with an unavailable placeholder. */
+    public static void invalidateReplyPreviews(int account, long dialogId, List<Integer> deletedIds) {
+        if (deletedIds == null || deletedIds.isEmpty()) return;
+        for (Integer rawId : deletedIds) {
+            if (rawId == null || rawId <= 0) continue;
+            long parentId = rawId.longValue();
+            ArrayList<MessageObject> owners = null;
+            synchronized (lock) {
+                Map<Long, HashMap<Long, ArrayList<MessageObject>>> byDialog = replyPreviewOwners.get(account);
+                HashMap<Long, ArrayList<MessageObject>> byParent = byDialog == null ? null : byDialog.get(dialogId);
+                if (byParent != null) owners = byParent.remove(parentId);
+            }
+            MessageObject unavailable = createReplyPreviewObject(account, dialogId, parentId,
+                    0L, "Original message unavailable",
+                    ConnectionsManager.getInstance(account).getCurrentTime());
+            if (unavailable != null) {
+                getReplyCacheForDialog(account, dialogId).put(parentId, unavailable);
+            }
+            if (owners != null) {
+                for (MessageObject owner : owners) {
+                    if (owner == null || owner.messageOwner == null) continue;
+                    if (unavailable != null) {
+                        owner.messageOwner.replyMessage = unavailable.messageOwner;
+                        owner.replyMessageObject = unavailable;
+                        owner.applyTimestampsHighlightForReplyMsg();
+                    } else {
+                        owner.messageOwner.replyMessage = new TLRPC.TL_messageEmpty();
+                        owner.replyMessageObject = null;
+                    }
+                    owner.forceUpdate = true;
+                }
+            }
+        }
+    }
+
     /** Persist first, then publish the optimistic bubble and begin its durable FIFO operation. */
     public static boolean sendTextMessage(int account, long dialogId, long roomId,
                                           String body, TextSendCallback callback) {
@@ -968,13 +1006,13 @@ public final class ZenoraHistoryController {
     }
 
     private static void startTextSendRequest(PendingTextSend pending) {
-        if (pending == null || pending.resolved.get() || pending.failed
+        if (pending == null || pending.resolved.get() || pending.failed || pending.cancelRequested
                 || ZenoraApiClient.getCurrentUserId() != pending.zenoraUserId
                 || ZenoraChatController.getRoomIdForDialog(
                 pending.account, pending.dialogId) != pending.roomId) return;
         synchronized (lock) {
             ArrayDeque<PendingTextSend> queue = getTextQueueLocked(pending.account, pending.roomId);
-            if (queue == null || queue.peekFirst() != pending || pending.started) return;
+            if (queue == null || queue.peekFirst() != pending || pending.started || pending.cancelRequested) return;
             pending.started = true;
             pending.retryScheduled = false;
             pending.status = ZenoraOutboxPolicy.SENDING;
@@ -1103,6 +1141,113 @@ public final class ZenoraHistoryController {
             }
         }
         if (next != null) startTextSendRequest(next);
+    }
+
+
+    public interface PendingCancelCallback {
+        void onComplete(boolean success, String errorMessage);
+    }
+
+    /**
+     * Cancel durable, not-yet-submitted text messages from the local Outbox.
+     * Active HTTP sends are deliberately refused because the server may already
+     * have committed them and the transport has no safe cancellation primitive.
+     */
+    public static void cancelPendingTextMessages(int account, long dialogId,
+                                                 List<MessageObject> objects,
+                                                 PendingCancelCallback callback) {
+        long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
+        if (roomId <= 0L || objects == null || objects.isEmpty() || objects.size() > 50) {
+            if (callback != null) callback.onComplete(false, "Invalid pending Zenora deletion selection");
+            return;
+        }
+
+        ArrayList<PendingTextSend> selected = new ArrayList<>();
+        ArrayList<String> clientIds = new ArrayList<>();
+        ArrayList<Integer> localIds = new ArrayList<>();
+        HashSet<String> unique = new HashSet<>();
+        synchronized (lock) {
+            Map<Long, HashMap<String, PendingTextSend>> byDialog = pendingTextByClientId.get(account);
+            HashMap<String, PendingTextSend> dialogPending = byDialog == null ? null : byDialog.get(dialogId);
+            for (MessageObject object : objects) {
+                if (object == null || object.messageOwner == null || object.getDialogId() != dialogId
+                        || object.getId() >= 0 || object.messageOwner.params == null) {
+                    if (callback != null) callback.onComplete(false, "Only durable pending Zenora text messages can be cancelled locally");
+                    return;
+                }
+                String clientId = object.messageOwner.params.get("zenora_client_message_id");
+                PendingTextSend pending = dialogPending == null || TextUtils.isEmpty(clientId)
+                        ? null : dialogPending.get(clientId);
+                if (pending == null || pending.roomId != roomId || pending.localId != object.getId()
+                        || pending.started || pending.resolved.get() || pending.cancelRequested
+                        || !(ZenoraOutboxPolicy.FAILED.equals(pending.status)
+                            || ZenoraOutboxPolicy.SENDING.equals(pending.status) && pending.attemptCount == 0)
+                        || !unique.add(clientId)) {
+                    if (callback != null) callback.onComplete(false,
+                            "This pending message is already being sent or is not present in the local Outbox");
+                    return;
+                }
+                selected.add(pending);
+                clientIds.add(clientId);
+                localIds.add(pending.localId);
+            }
+            for (PendingTextSend pending : selected) pending.cancelRequested = true;
+        }
+
+        MessagesStorage.getInstance(account).removeZenoraOutboxMessages(
+                dialogId, clientIds, localIds, success -> {
+                    if (!success) {
+                        synchronized (lock) {
+                            for (PendingTextSend pending : selected) pending.cancelRequested = false;
+                        }
+                        if (callback != null) callback.onComplete(false,
+                                "The local Zenora Outbox transaction failed");
+                        return;
+                    }
+
+                    ArrayList<PendingTextSend> nextToStart = new ArrayList<>();
+                    HashSet<Long> roomsToRestart = new HashSet<>();
+                    synchronized (lock) {
+                        Map<Long, HashMap<String, PendingTextSend>> byClient = pendingTextByClientId.get(account);
+                        HashMap<String, PendingTextSend> dialogClientMap =
+                                byClient == null ? null : byClient.get(dialogId);
+                        for (PendingTextSend pending : selected) {
+                            pending.resolved.set(true);
+                            pending.cancelRequested = false;
+                            ArrayDeque<PendingTextSend> queue = getTextQueueLocked(account, pending.roomId);
+                            if (queue != null && queue.peekFirst() == pending) {
+                                roomsToRestart.add(pending.roomId);
+                            }
+                            if (queue != null) queue.remove(pending);
+                            if (dialogClientMap != null) dialogClientMap.remove(pending.clientMessageId);
+                        }
+                        if (dialogClientMap != null && dialogClientMap.isEmpty() && byClient != null) {
+                            byClient.remove(dialogId);
+                            if (byClient.isEmpty()) pendingTextByClientId.remove(account);
+                        }
+                        for (Long affectedRoomId : roomsToRestart) {
+                            ArrayDeque<PendingTextSend> queue = getTextQueueLocked(account, affectedRoomId);
+                            if (queue == null || queue.isEmpty()) {
+                                Map<Long, ArrayDeque<PendingTextSend>> queues = pendingTextQueues.get(account);
+                                if (queues != null) {
+                                    queues.remove(affectedRoomId);
+                                    if (queues.isEmpty()) pendingTextQueues.remove(account);
+                                }
+                                HashSet<Long> active = activeTextSendRooms.get(account);
+                                if (active != null) {
+                                    active.remove(affectedRoomId);
+                                    if (active.isEmpty()) activeTextSendRooms.remove(account);
+                                }
+                            } else {
+                                PendingTextSend next = queue.peekFirst();
+                                next.started = false;
+                                nextToStart.add(next);
+                            }
+                        }
+                    }
+                    for (PendingTextSend next : nextToStart) startTextSendRequest(next);
+                    if (callback != null) callback.onComplete(true, "");
+                });
     }
 
     private static void failPendingTextSend(PendingTextSend pending, String reason) {

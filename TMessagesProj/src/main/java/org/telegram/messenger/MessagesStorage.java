@@ -334,6 +334,67 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+
+    /**
+     * Remove selected not-yet-submitted Zenora Outbox rows atomically.
+     * The caller separately removes the matching negative-ID bubble through the
+     * local-only MessagesController path; this method never calls a network API.
+     */
+    public void removeZenoraOutboxMessages(long dialogId, ArrayList<String> clientMessageIds,
+                                           ArrayList<Integer> localMessageIds,
+                                           Consumer<Boolean> callback) {
+        if (dialogId == 0L || clientMessageIds == null || localMessageIds == null
+                || clientMessageIds.isEmpty() || clientMessageIds.size() != localMessageIds.size()
+                || clientMessageIds.size() > 50) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(false);
+            });
+            return;
+        }
+        storageQueue.postRunnable(() -> {
+            boolean success = false;
+            SQLiteCursor cursor = null;
+            SQLitePreparedStatement state = null;
+            boolean inTransaction = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                for (int i = 0; i < clientMessageIds.size(); i++) {
+                    cursor = database.queryFinalized(
+                            "SELECT client_message_id FROM zenora_outbox WHERE client_message_id = ? AND dialog_id = ? AND local_message_id = ?",
+                            clientMessageIds.get(i), dialogId, localMessageIds.get(i));
+                    boolean exists = cursor.next();
+                    cursor.dispose();
+                    cursor = null;
+                    if (!exists) {
+                        throw new IllegalStateException("A pending Zenora Outbox record no longer exists");
+                    }
+                    state = database.executeFast(
+                            "DELETE FROM zenora_outbox WHERE client_message_id = ? AND dialog_id = ? AND local_message_id = ?");
+                    state.bindString(1, clientMessageIds.get(i));
+                    state.bindLong(2, dialogId);
+                    state.bindInteger(3, localMessageIds.get(i));
+                    state.step();
+                    state.dispose();
+                    state = null;
+                }
+                database.commitTransaction();
+                inTransaction = false;
+                success = true;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+                if (state != null) state.dispose();
+            }
+            boolean result = success;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(result);
+            });
+        });
+    }
+
     public void loadZenoraOutbox(ZenoraOutboxReadCallback callback) {
         storageQueue.postRunnable(() -> {
             ArrayList<ZenoraOutboxRecord> records = new ArrayList<>();

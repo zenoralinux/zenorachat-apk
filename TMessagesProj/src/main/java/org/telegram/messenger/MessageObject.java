@@ -12089,6 +12089,11 @@ public class MessageObject {
     }
 
     public boolean canDeleteMessage(boolean inScheduleMode, TLRPC.Chat chat) {
+        if (messageOwner != null && ZenoraChatController.isZenoraDialog(currentAccount, getDialogId())) {
+            return eventId == 0 && sponsoredId == null
+                    && ZenoraMessageMutationController.canDeleteMessage(
+                            currentAccount, getDialogId(), this, inScheduleMode);
+        }
         return (
             isStory() && messageOwner != null && messageOwner.dialog_id == UserConfig.getInstance(currentAccount).getClientUserId() ||
             eventId == 0 && sponsoredId == null && canDeleteMessage(currentAccount, inScheduleMode, messageOwner, chat) || isEphemeral()
