@@ -114,6 +114,14 @@ assert "ConnectionsManager.sendRequest" not in storage_load
 assert "TL_messages_getMessages" not in storage_load
 assert "TL_channels_getMessages" not in storage_load
 
+# Destroyed Activities are detached from shared requests; other waiters are retained.
+cancel = method_body(HISTORY, "public static void cancelDialogRequests(")
+assert "replyNavigationInFlight.get(account)" in cancel
+assert "request.dialogId != dialogId" in cancel
+assert "waiter.classGuid == classGuid" in cancel
+assert "request.waiters.isEmpty()" in cancel
+assert "iterator.remove()" in cancel
+
 # Responses are bounded, ascending, room-bound and must contain their exact target ID.
 validate = method_body(HISTORY, "private static boolean isValidBasicTextAroundPage(")
 for token in (
