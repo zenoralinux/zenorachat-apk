@@ -1744,6 +1744,115 @@ public final class ZenoraHistoryController {
                 body, entities, editedAt, editVersion);
     }
 
+    /**
+     * Restores the dialog's last-message preview from the authenticated server
+     * after deleting the previous top message. This is an on-demand one-shot
+     * request, not an additional polling loop or a full history reload.
+     */
+    public static boolean applyLatestServerDialogPreview(int account, long dialogId, long roomId,
+                                                          JSONArray messages, JSONObject pagination,
+                                                          ArrayList<Integer> deletedMessageIds) {
+        if (roomId <= 0L || dialogId == 0L
+                || !ZenoraChatController.isZenoraEnabled()
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId
+                || messages == null
+                || !isValidBasicTextPage(messages, pagination, roomId, 1, 0L)) {
+            return false;
+        }
+        if (messages.length() == 0) {
+            // The room is now empty. The local delete path has already removed
+            // the old dialog preview and recalculated its pointer.
+            return true;
+        }
+
+        JSONObject row = messages.optJSONObject(messages.length() - 1);
+        if (row == null || row.optLong("room_id", 0L) != roomId || row.isNull("text")) return false;
+        long rawMessageId = row.optLong("message_id", 0L);
+        long senderId = row.optLong("sender_id", 0L);
+        String body = row.optString("text", "");
+        int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+        long replyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
+        if (rawMessageId <= 0L || rawMessageId > Integer.MAX_VALUE
+                || senderId <= 0L || senderId > Integer.MAX_VALUE
+                || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim()) || date <= 0
+                || replyToId < 0L || replyToId > Integer.MAX_VALUE
+                || !isValidReplyContractRow(row)
+                || !isValidEditMetadata(row)
+                || (deletedMessageIds != null && deletedMessageIds.contains((int) rawMessageId))) {
+            return false;
+        }
+
+        MessagesController controller = MessagesController.getInstance(account);
+        TLRPC.Dialog dialog = controller.getDialog(dialogId);
+        if (dialog == null || dialog.peer == null) return false;
+        long selfId = UserConfig.getInstance(account).getClientUserId();
+        if (selfId <= 0L || selfId > Integer.MAX_VALUE) return false;
+
+        TLRPC.User sender = controller.getUser(senderId);
+        if (sender == null) {
+            sender = ZenoraChatController.makeHistorySenderUser(senderId, "",
+                    "Zenora user " + senderId, false);
+        }
+        if (sender != null) {
+            ArrayList<TLRPC.User> users = new ArrayList<>();
+            users.add(sender);
+            controller.putUsers(users, false);
+        }
+
+        int messageId = (int) rawMessageId;
+        ZenoraMessageMutationController.rememberMessageEditMetadata(account, roomId, messageId,
+                row.isNull("edited_at") ? null : row.optString("edited_at", ""),
+                row.optLong("edit_version", 1L));
+        if (replyToId > 0L) {
+            cacheReplyPreviewFromRow(account, dialogId, replyToId, row.optJSONObject("reply_preview"));
+        }
+
+        TLRPC.TL_message message = new TLRPC.TL_message();
+        message.id = messageId;
+        message.date = date;
+        message.dialog_id = dialogId;
+        message.peer_id = dialog.peer;
+        message.from_id = new TLRPC.TL_peerUser();
+        message.from_id.user_id = senderId;
+        message.message = body;
+        message.media = new TLRPC.TL_messageMediaEmpty();
+        message.out = senderId == selfId;
+        message.unread = false;
+        message.flags |= 1 << 8;
+        if (message.out) message.flags |= 1 << 1;
+        applyOrdinaryReplyHeader(message, replyToId);
+        ZenoraMessageMutationController.applyEditMetadata(message,
+                row.isNull("edited_at") ? null : row.optString("edited_at", ""),
+                row.optLong("edit_version", 1L));
+        MessageObject object = new MessageObject(account, message, true, true);
+        attachReplyPreview(account, dialogId, object, replyToId);
+
+        ArrayList<TLRPC.Message> stored = new ArrayList<>();
+        stored.add(message);
+        ArrayList<MessageObject> objects = new ArrayList<>();
+        objects.add(object);
+        controller.updateInterfaceWithMessages(dialogId, objects, 0);
+        MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
+
+        // The old top row may have been absent from SQLite. Set the authoritative
+        // server replacement before asking the native dialog preview holder to swap it.
+        dialog.top_message = messageId;
+        dialog.last_message_date = date;
+        controller.updateZenoraDialogPreview(dialogId, object);
+        synchronized (lock) {
+            Map<Long, OlderState> accountOlder = olderStates.get(account);
+            OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
+            if (state != null && state.roomId == roomId) {
+                state.seenMessageIds.add(messageId);
+                state.newestLocalMessageId = Math.max(state.newestLocalMessageId, messageId);
+            }
+        }
+        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+        FileLog.d("[ZenoraChat] Restored server last-message preview; dialog=" + dialogId
+                + ", room=" + roomId + ", message=" + messageId);
+        return true;
+    }
+
     public static void refreshEditedMessage(int account, long dialogId, long roomId,
                                             MessageObject target, EditRefreshCallback callback) {
         if (target == null || target.getId() <= 0 || roomId <= 0L

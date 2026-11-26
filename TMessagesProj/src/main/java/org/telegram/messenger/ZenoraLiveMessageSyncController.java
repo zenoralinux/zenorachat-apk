@@ -336,11 +336,19 @@ public final class ZenoraLiveMessageSyncController {
 
                     applyEditedMessages(session, page.events, editedMessages, suppressedEditIds);
                     if (deletedIds != null && !deletedIds.isEmpty()) {
+                        TLRPC.Dialog dialogBeforeDelete = MessagesController.getInstance(session.account)
+                                .getDialog(session.dialogId);
+                        int previousTopMessageId = dialogBeforeDelete == null ? 0 : dialogBeforeDelete.top_message;
+                        boolean deletedPreviousTop = deletedIds.contains(previousTopMessageId);
                         boolean removed = MessagesController.getInstance(session.account)
                                 .applyZenoraMessageDeletionLocally(session.dialogId, deletedIds);
                         if (!removed) {
                             FileLog.w("[ZenoraChat] Mutation event deletion already absent from active cache; dialog="
                                     + session.dialogId);
+                        } else if (deletedPreviousTop) {
+                            // The replacement can be older than the live message cursor
+                            // and absent from SQLite. Fetch only the current server tail.
+                            refreshLastServerPreview(session, requestedMessageCursor, deletedIds);
                         }
                     }
 
@@ -352,6 +360,36 @@ public final class ZenoraLiveMessageSyncController {
                         scheduleLocked(session, hasMoreMessages || page.hasMore ? 0L : POLL_INTERVAL_MS);
                     }
                 });
+    }
+
+    private static void refreshLastServerPreview(Session session, long expectedMessageCursor,
+                                                   ArrayList<Integer> deletedMessageIds) {
+        final long expectedUserId = session.userId;
+        ZenoraApiClient.fetchBasicTextHistory(session.roomId, 1, (response, error) -> {
+            synchronized (lock) {
+                if (!isCurrentLocked(session) || session.cursor != expectedMessageCursor
+                        || ZenoraApiClient.getCurrentUserId() != expectedUserId
+                        || UserConfig.getInstance(session.account).getClientUserId() != expectedUserId
+                        || ZenoraChatController.getRoomIdForDialog(session.account, session.dialogId) != session.roomId) {
+                    return;
+                }
+            }
+            if (error != null || response == null || !response.optBoolean("ok", false)) {
+                FileLog.w("[ZenoraChat] Could not refresh server last-message preview; dialog="
+                        + session.dialogId + ", reason="
+                        + (error == null ? "invalid response" : error.getMessage()));
+                return;
+            }
+            JSONArray messages = response.optJSONArray("messages");
+            JSONObject pagination = response.optJSONObject("pagination");
+            if (messages == null || messages.length() > 1
+                    || !ZenoraHistoryController.applyLatestServerDialogPreview(
+                    session.account, session.dialogId, session.roomId,
+                    messages, pagination, deletedMessageIds)) {
+                FileLog.w("[ZenoraChat] Server replacement message failed validation; dialog="
+                        + session.dialogId);
+            }
+        });
     }
 
     private static MutationPage validateMutationEventPage(JSONObject page, long roomId,
