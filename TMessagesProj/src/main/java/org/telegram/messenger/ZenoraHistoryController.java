@@ -2208,10 +2208,10 @@ public final class ZenoraHistoryController {
             applyReplyContractToMessage(message, row, dialogId, dialog.peer, date, selfId);
             String clientMessageId = row.isNull("client_message_id")
                     ? "" : row.optString("client_message_id", "");
+            if (message.params == null) message.params = new HashMap<>();
+            message.params.put("zenora_room_id", String.valueOf(roomId));
             if (!TextUtils.isEmpty(clientMessageId)) {
-                if (message.params == null) message.params = new HashMap<>();
                 message.params.put("zenora_client_message_id", clientMessageId);
-                message.params.put("zenora_room_id", String.valueOf(roomId));
             }
             mapped.add(message);
         }
