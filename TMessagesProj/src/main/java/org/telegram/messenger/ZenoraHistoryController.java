@@ -102,6 +102,67 @@ public final class ZenoraHistoryController {
     private ZenoraHistoryController() {
     }
 
+    private static long replyToIdFromRow(JSONObject row) {
+        if (row == null || row.isNull("reply_to_id")) return 0L;
+        return row.optLong("reply_to_id", -1L);
+    }
+
+    private static boolean isValidReplyContract(JSONObject row) {
+        long replyToId = replyToIdFromRow(row);
+        if (replyToId < 0L || replyToId > Integer.MAX_VALUE) return false;
+        if (replyToId == 0L) return row == null || row.isNull("reply_preview")
+                || row.optJSONObject("reply_preview") == null;
+        JSONObject preview = row.optJSONObject("reply_preview");
+        if (preview == null) return false;
+        String status = preview.optString("status", "");
+        if ("unavailable".equals(status)) return true;
+        return "available".equals(status)
+                && preview.optLong("message_id", 0L) == replyToId
+                && preview.optLong("sender_id", 0L) > 0L
+                && preview.optLong("sender_id", 0L) <= Integer.MAX_VALUE
+                && !TextUtils.isEmpty(preview.optString("text", "").trim())
+                && preview.optString("text", "").length() <= 140;
+    }
+
+    private static TLRPC.Message createReplyPreviewMessage(long dialogId, TLRPC.Peer peer,
+                                                            int date, long replyToId,
+                                                            JSONObject preview, long selfId) {
+        if (replyToId <= 0L || replyToId > Integer.MAX_VALUE || preview == null
+                || !"available".equals(preview.optString("status", ""))) return null;
+        long senderId = preview.optLong("sender_id", 0L);
+        String text = preview.optString("text", "");
+        if (senderId <= 0L || senderId > Integer.MAX_VALUE
+                || preview.optLong("message_id", 0L) != replyToId
+                || TextUtils.isEmpty(text.trim()) || text.length() > 140) return null;
+        TLRPC.TL_message parent = new TLRPC.TL_message();
+        parent.id = (int) replyToId;
+        parent.local_id = parent.id;
+        parent.dialog_id = dialogId;
+        parent.peer_id = peer;
+        parent.from_id = new TLRPC.TL_peerUser();
+        parent.from_id.user_id = senderId;
+        parent.date = date;
+        parent.message = text;
+        parent.media = new TLRPC.TL_messageMediaEmpty();
+        parent.out = senderId == selfId;
+        parent.flags |= 1 << 8;
+        if (parent.out) parent.flags |= 1 << 1;
+        return parent;
+    }
+
+    private static void applyReplyContractToMessage(TLRPC.Message message, JSONObject row,
+                                                       long dialogId, TLRPC.Peer peer,
+                                                       int date, long selfId) {
+        long replyToId = replyToIdFromRow(row);
+        if (replyToId <= 0L) return;
+        TLRPC.TL_messageReplyHeader header = new TLRPC.TL_messageReplyHeader();
+        header.flags |= 16;
+        header.reply_to_msg_id = (int) replyToId;
+        message.reply_to = header;
+        message.replyMessage = createReplyPreviewMessage(
+                dialogId, peer, date, replyToId, row.optJSONObject("reply_preview"), selfId);
+    }
+
     private static final class Target {
         final int classGuid;
         final int loadIndex;
