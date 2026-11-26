@@ -63,9 +63,15 @@ require('containsKey("zenora_client_message_id")' in SEND
 require("retryTextMessage(currentAccount, messageObject)" in SEND,
         "Zenora retry is not routed to the PHP transport")
 
-# The composer is cleared at enqueue time; the delayed native animation must not clear new input.
-require("Clear only after optimistic local publication is accepted." in ENTER,
-        "Composer is not cleared on local enqueue")
+# The composer is cleared only from onQueued after the durable local transaction and publication.
+require("public void onQueued()" in ENTER,
+        "Composer cleanup must wait for the durable local acceptance callback")
+require("messageEditText.setText(\"\")" in ENTER,
+        "Composer cleanup must still clear the accepted text")
+require("setReplyingMessageObject(null, null, null)" in ENTER,
+        "Composer cleanup must clear the accepted native Reply panel")
+require("if (!queued)" in ENTER and "Your text and Reply state were kept." in ENTER,
+        "storage failure must preserve both text and Reply selection")
 require("!zenoraOptimisticText" in ENTER,
         "delayed send animation can still erase text typed after an optimistic send")
 
