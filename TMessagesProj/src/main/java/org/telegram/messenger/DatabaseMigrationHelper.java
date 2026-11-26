@@ -1736,6 +1736,15 @@ public class DatabaseMigrationHelper {
             version = 183;
         }
 
+        if (version == 183) {
+            // Add the reply relationship without rewriting existing outbox rows.
+            if (!hasColumn(database, "zenora_outbox", "reply_to_id")) {
+                database.executeFast("ALTER TABLE zenora_outbox ADD COLUMN reply_to_id INTEGER NOT NULL DEFAULT 0").stepThis().dispose();
+            }
+            database.executeFast("PRAGMA user_version = 184").stepThis().dispose();
+            version = 184;
+        }
+
         return version;
     }
 

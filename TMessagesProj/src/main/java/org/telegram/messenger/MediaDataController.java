@@ -6249,6 +6249,9 @@ public class MediaDataController extends BaseController {
     }
 
     public void loadReplyMessagesForMessages(ArrayList<MessageObject> messages, long dialogId, int mode, long threadMessageId, Runnable callback, int classGuid, Timer logLogger) {
+        if (ZenoraHistoryController.loadReplyMessagesForZenora(currentAccount, messages, dialogId, callback)) {
+            return;
+        }
         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
         if (DialogObject.isEncryptedDialog(dialogId)) {
             Timer.Task t1 = Timer.start(logLogger, "loadReplyMessagesForMessages: (encrypted) finding messages to load");

@@ -753,6 +753,7 @@ public class ChatActivityEnterView extends FrameLayout implements
     private ChatActivity parentFragment;
     private long dialog_id;
     private boolean ignoreTextChange;
+    private boolean zenoraTextSendPersisting;
     private int innerTextChange;
     private MessageObject replyingMessageObject;
     private MessageObject replyingTopMessage;
@@ -7910,15 +7911,67 @@ public class ChatActivityEnterView extends FrameLayout implements
                     android.widget.Toast.LENGTH_LONG).show();
             return false;
         }
-        if (scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0
-                || delegate != null && delegate.hasForwardingMessages()
-                || replyingMessageObject != null || replyingQuote != null
-                || replyingTopMessage != null
-                || parentFragment != null && parentFragment.editingMessageObject != null) {
+        if (zenoraTextSendPersisting) {
             android.widget.Toast.makeText(getContext(),
-                    "Scheduling, forwarding and replies are not available for Zenora text messages yet.",
+                    "ZenoraChat is saving the previous message. Please wait for that save to finish.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        final MessageObject selectedReply = replyingMessageObject;
+        final boolean scheduled = scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0;
+        final boolean forwarding = delegate != null && delegate.hasForwardingMessages();
+        final boolean editing = parentFragment != null && parentFragment.editingMessageObject != null;
+        if (scheduled) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=SCHEDULE_UNSUPPORTED");
+            android.widget.Toast.makeText(getContext(),
+                    "Scheduled messages are not supported in ZenoraChat. Your text was kept.",
                     android.widget.Toast.LENGTH_LONG).show();
             return false;
+        }
+        if (forwarding) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=FORWARDING_UNSUPPORTED");
+            android.widget.Toast.makeText(getContext(),
+                    "Forwarding is not supported in ZenoraChat. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (editing) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=EDITING_UNSUPPORTED");
+            android.widget.Toast.makeText(getContext(),
+                    "Editing messages is not supported in ZenoraChat. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+
+        long replyToId = 0L;
+        if (selectedReply == null && replyingQuote != null) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=PARENT_QUOTE");
+            android.widget.Toast.makeText(getContext(),
+                    "Quote replies are not supported in ZenoraChat yet. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (selectedReply == null && replyingTopMessage != null) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=PARENT_TOPIC");
+            android.widget.Toast.makeText(getContext(),
+                    "Topic replies are not supported in ZenoraChat yet. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (selectedReply != null || replyingQuote != null || replyingTopMessage != null) {
+            org.telegram.messenger.ZenoraReplyValidator.Result validation =
+                    org.telegram.messenger.ZenoraReplyValidator.validate(
+                            currentAccount, selectedReply, dialog_id, roomId,
+                            replyingQuote != null, replyingTopMessage, false, false, false);
+            if (!validation.accepted) {
+                FileLog.w("[ZenoraChat][ReplyValidator] send blocked reason=" + validation.reasonCode);
+                android.widget.Toast.makeText(getContext(),
+                        "Reply cannot be sent (" + validation.reasonCode + "). Your text was kept.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return false;
+            }
+            replyToId = validation.replyToId;
         }
         if (body.length() > accountInstance.getMessagesController().getMaxMessageLength()) {
             android.widget.Toast.makeText(getContext(),
@@ -7927,29 +7980,44 @@ public class ChatActivityEnterView extends FrameLayout implements
             return false;
         }
 
+        final long selectedReplyId = replyToId;
+        zenoraTextSendPersisting = true;
         boolean queued = ZenoraHistoryController.sendTextMessage(
-                currentAccount, dialog_id, roomId, body, (success, resultMessage) -> {
+                currentAccount, dialog_id, roomId, body, selectedReplyId, selectedReply,
+                (success, resultMessage) -> {
                     if (!success) {
+                        zenoraTextSendPersisting = false;
                         FileLog.w("[ZenoraChat] Text send failed: " + resultMessage);
                         android.widget.Toast.makeText(getContext(),
-                                "Message failed to send. Use Telegram's retry action to retry the same Zenora message.",
+                                "Message failed to save or send. Your draft and Reply selection were kept.",
                                 android.widget.Toast.LENGTH_LONG).show();
+                        checkSendButton(true);
                     }
+                },
+                () -> {
+                    zenoraTextSendPersisting = false;
+                    boolean sameDraft = messageEditText != null
+                            && AndroidUtilities.getTrimmedString(messageEditText.getText()).toString().equals(body);
+                    boolean sameReply = replyingMessageObject == selectedReply;
+                    if (sameDraft && sameReply) {
+                        if (messageEditText != null) {
+                            messageEditText.setText("");
+                            messageEditText.setSelection(0);
+                        }
+                        if (selectedReply != null) setReplyingMessageObject(null, null, null);
+                        if (delegate != null) delegate.onMessageSend(body, notify, 0, 0, 0);
+                    }
+                    checkSendButton(true);
                 });
         if (!queued) {
+            zenoraTextSendPersisting = false;
             android.widget.Toast.makeText(getContext(),
-                    "ZenoraChat could not queue this message. Your text was kept.",
+                    "ZenoraChat could not queue this message. Your text and Reply selection were kept.",
                     android.widget.Toast.LENGTH_SHORT).show();
             return false;
         }
-        // Clear only after optimistic local publication is accepted.
-        if (messageEditText != null) {
-            messageEditText.setText("");
-            messageEditText.setSelection(0);
-        }
-        if (delegate != null) delegate.onMessageSend(body, notify, 0, 0, 0);
-        checkSendButton(true);
-        // Zenora must never enter SendMessagesHelper/MTProto.
+        // Optimistic publication and Outbox commit precede clearing the Composer.
+        // Zenora never enters SendMessagesHelper/MTProto.
         return false;
     }
 

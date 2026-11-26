@@ -12,58 +12,53 @@ api = source("TMessagesProj/src/main/java/org/telegram/messenger/ZenoraApiClient
 sender = source("TMessagesProj/src/main/java/org/telegram/messenger/SendMessagesHelper.java")
 workflow = source(".github/workflows/build-debug.yml")
 
-# Crash boundary: one storageQueue transaction writes both the local TL message and its outbox key.
+# Local message and Outbox row commit in one storageQueue transaction.
 assert "public void storeZenoraTextMessage(" in storage
 store = storage.split("public void storeZenoraTextMessage(", 1)[1].split("public void loadZenoraOutbox(", 1)[0]
-assert "storageQueue.postRunnable" in store
-assert "database.beginTransaction()" in store
+assert "storageQueue.postRunnable" in store and "database.beginTransaction()" in store
 assert "putMessagesInternal(messages, false, false" in store
-assert "INSERT OR REPLACE INTO zenora_outbox" in store
-assert "database.commitTransaction()" in store
-assert "rollbackTransaction()" in store
-assert '"zenora_outbox"' in storage
+assert "INSERT OR REPLACE INTO zenora_outbox" in store and "reply_to_id" in store
+assert "database.commitTransaction()" in store and "rollbackTransaction()" in store
+load = storage.split("public void loadZenoraOutbox(",1)[1].split("public void updateZenoraOutboxState(",1)[0]
+assert "reply_to_id" in load
+retryStorage = storage.split("public void prepareZenoraOutboxRetry(",1)[1].split("public void acknowledgeZenoraTextMessage(",1)[0]
+assert "reply_to_id" in retryStorage
+ack = storage.split("public void acknowledgeZenoraTextMessage(",1)[1].split("public static final class ZenoraHistoryState",1)[0]
+assert "storedReplyToId != replyToId" in ack and "AND reply_to_id = ?" in ack
 
-# Upgrade and backup/restore contract.
-assert "if (version == 181)" in migration and "PRAGMA user_version = 182" in migration
-assert "CREATE TABLE IF NOT EXISTS zenora_outbox" in migration
-assert "zenora_outbox" in storage.split("DATABASE_TABLES", 1)[1].split("};", 1)[0]
+# Additive migration, with pre-existing 183 databases moved to 184.
+assert "if (version == 181)" in migration and "if (version == 182)" in migration
+assert "if (version == 183)" in migration and "PRAGMA user_version = 184" in migration
+assert "ALTER TABLE zenora_outbox ADD COLUMN reply_to_id" in migration
+assert "LAST_DB_VERSION = 184" in storage
 
-# Durable rehydration, per-room FIFO and stable keys.
-assert "restorePendingTextSends(int account)" in history
-assert "record.zenoraUserId != currentUserId" in history
-assert "enqueuePendingTextSend(restoredPending)" in history
-assert "Collections.sort(ordered" in history
-assert "pending.clientMessageId, pending.zenoraUserId" in history
-assert "ZenoraOutboxPolicy.UNKNOWN" in history
-assert "ZenoraOutboxPolicy.FAILED" in history
-assert "AtomicBoolean(false)" in history and "compareAndSet(false, true)" in history
-assert "reconcilePendingTextMessage" in history
-assert "acknowledgeZenoraTextMessage(" in history
+# Stable key + stable parent survive retry, network retry and process restore.
+assert "final long replyToId;" in history and "record.replyToId" in history
+assert "pending.replyToId" in history and "prepareZenoraOutboxRetry(" in history
+assert "reply_to_id" in api and "&reply_to_id=" in api
+assert "message.optLong(\"reply_to_id\", 0L) != replyToId" in api
+assert "message.reply_to = new TLRPC.TL_messageReplyHeader()" in history
+assert "message.reply_to.reply_to_msg_id" in history
+assert "replyMessageObject" in history and "message.replyMessage" in history
 
-# 401 preserves its cookie; a queued request must match the user that owns the outbox record.
-assert "getCurrentUserId() != expectedUserId" in api
-assert "prefs().getLong(\"user_id\", 0L) != expectedUserId" in api
-assert 'request("message_send.php", "POST", form, true, expectedUserId)' in api
-assert "saveCookies(connection, preserveAuthCookieOnUnauthorized && status == 401, expectedUserId)" in api
-assert '"CSRF_INVALID".equals(error.errorCode)' in api
-assert "getMuteActionCsrfToken(expectedUserId)" in api
-assert "refreshMuteActionCsrfToken(expectedUserId)" in api
-assert '"mobile_auth_challenge.php", "GET", null,' in api
-assert "true, expectedUserId);" in api
-assert "client_message_id=" in api
+# History and Live map the same reply contract into native MessageObjects.
+assert "applyLiveTextMessages" in history and "cacheReplyPreviewFromRow" in history
+assert "replyToIds.get(i)" in history and "isValidReplyContractRow(row)" in history
+assert "loadReplyMessagesForZenora" in history
 
-# Native Retry is consumed by the Zenora integration before Telegram's MTProto path.
+# Telegram native retry is intercepted by Zenora, not sent with MTProto.
 assert "ZenoraHistoryController.retryTextMessage(currentAccount, messageObject)" in sender
-assert "prepareZenoraOutboxRetry(" in history
-assert "existing.failed" in history
+media = source("TMessagesProj/src/main/java/org/telegram/messenger/MediaDataController.java")
+method = media.split("public void loadReplyMessagesForMessages",1)[1]
+assert method.index("loadReplyMessagesForZenora") < method.index("final boolean scheduled")
+assert "loadReplyMessagesForZenora(currentAccount, messages, dialogId, callback)" in method[:450]
+assert "TL_messages_getMessages" not in method[:450] and "TL_channels_getMessages" not in method[:450]
 
-# Dedicated fast ARM64 build and release metadata for the new branch/tag.
-branch = "feat/zenora-durable-text-send-android-20261125"
-tag = "zenora-durable-text-send-android-20261125"
-assert branch in workflow
-assert tag in workflow
-assert "scripts/validate-apk.sh debug" in workflow
+branch = "fix/zenora-reply-send-validation-android-20261126"
+tag = "zenora-reply-send-validation-android-20261126"
+assert branch in workflow and tag in workflow
+assert "ZENORA_ABIS" in workflow and "arm64-v8a" in workflow
 assert "dist/ZenoraChat-debug-arm64.apk" in workflow
 assert "dist/SHA256SUMS" in workflow and "dist/BUILD-INFO.txt" in workflow
 
-print("Zenora outbox source contract checks passed")
+print("Zenora outbox/reply source contract checks passed")

@@ -25,6 +25,7 @@ import java.util.concurrent.ThreadLocalRandom;
 public final class ZenoraHistoryController {
     private static final Object lock = new Object();
     private static final Map<Integer, Map<Long, Snapshot>> cache = new HashMap<>();
+    private static final Map<Integer, Map<Long, HashMap<Long, MessageObject>>> replyPreviewCache = new HashMap<>();
     private static final Map<Integer, Map<Long, ArrayList<Target>>> inFlight = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> initialRequestIds = new HashMap<>();
     private static long nextInitialRequestId;
@@ -56,6 +57,7 @@ public final class ZenoraHistoryController {
         final long zenoraUserId;
         final String clientMessageId;
         final String body;
+        final long replyToId;
         final long createdAt;
         final MessageObject messageObject;
         final TextSendCallback callback;
@@ -69,7 +71,7 @@ public final class ZenoraHistoryController {
         volatile long nextAttemptAt;
 
         PendingTextSend(int account, long dialogId, long roomId, int localId, long randomId,
-                        long zenoraUserId, String clientMessageId, String body,
+                        long zenoraUserId, String clientMessageId, String body, long replyToId,
                         MessageObject messageObject, TextSendCallback callback, long createdAt) {
             this.account = account;
             this.dialogId = dialogId;
@@ -79,6 +81,7 @@ public final class ZenoraHistoryController {
             this.zenoraUserId = zenoraUserId;
             this.clientMessageId = clientMessageId;
             this.body = body;
+            this.replyToId = replyToId;
             this.messageObject = messageObject;
             this.callback = callback;
             this.createdAt = createdAt;
@@ -455,11 +458,170 @@ public final class ZenoraHistoryController {
     }
 
 
+    private static void applyOrdinaryReplyHeader(TLRPC.Message message, long replyToId) {
+        if (message == null || replyToId <= 0 || replyToId > Integer.MAX_VALUE) return;
+        message.flags |= 8;
+        message.reply_to = new TLRPC.TL_messageReplyHeader();
+        message.reply_to.flags |= 16;
+        message.reply_to.reply_to_msg_id = (int) replyToId;
+    }
+
+    private static HashMap<Long, MessageObject> getReplyCacheForDialog(int account, long dialogId) {
+        synchronized (lock) {
+            return replyPreviewCache.computeIfAbsent(account, ignored -> new HashMap<>())
+                    .computeIfAbsent(dialogId, ignored -> new HashMap<>());
+        }
+    }
+
+    private static MessageObject createReplyPreviewObject(int account, long dialogId,
+                                                           long parentId, long senderId,
+                                                           String text, int date) {
+        if (parentId <= 0 || parentId > Integer.MAX_VALUE) return null;
+        MessagesController controller = MessagesController.getInstance(account);
+        TLRPC.Dialog dialog = controller.getDialog(dialogId);
+        if (dialog == null || dialog.peer == null) return null;
+        TLRPC.TL_message parent = new TLRPC.TL_message();
+        parent.id = (int) parentId;
+        parent.local_id = parent.id;
+        parent.dialog_id = dialogId;
+        parent.peer_id = dialog.peer;
+        parent.date = Math.max(1, date);
+        parent.message = TextUtils.isEmpty(text) ? "Original message unavailable" : text;
+        parent.media = new TLRPC.TL_messageMediaEmpty();
+        if (senderId > 0 && senderId <= Integer.MAX_VALUE) {
+            TLRPC.TL_peerUser sender = new TLRPC.TL_peerUser();
+            sender.user_id = senderId;
+            parent.from_id = sender;
+            TLRPC.User senderUser = controller.getUser(senderId);
+            if (senderUser == null && senderId != UserConfig.getInstance(account).getClientUserId()) {
+                senderUser = ZenoraChatController.makeHistorySenderUser(
+                        senderId, "", "Zenora user " + senderId, false);
+            }
+            if (senderUser != null) {
+                ArrayList<TLRPC.User> senderUsers = new ArrayList<>();
+                senderUsers.add(senderUser);
+                controller.putUsers(senderUsers, false);
+            }
+        }
+        return new MessageObject(account, parent, false, true);
+    }
+
+    private static void cacheReplyPreviewFromRow(int account, long dialogId, long parentId,
+                                                  JSONObject preview) {
+        if (parentId <= 0) return;
+        String status = preview == null ? "unavailable" : preview.optString("status", "unavailable");
+        MessageObject parent;
+        if ("available".equals(status)
+                && preview.optLong("message_id", 0L) == parentId
+                && preview.optLong("sender_id", 0L) > 0
+                && !TextUtils.isEmpty(preview.optString("text", "").trim())) {
+            int date = ZenoraChatController.parseHistoryDate(preview.optString("created_at", ""));
+            if (date <= 0) return;
+            parent = createReplyPreviewObject(account, dialogId, parentId,
+                    preview.optLong("sender_id", 0L), preview.optString("text", ""), date);
+        } else {
+            parent = createReplyPreviewObject(account, dialogId, parentId, 0L,
+                    "Original message unavailable", ConnectionsManager.getInstance(account).getCurrentTime());
+        }
+        if (parent != null) getReplyCacheForDialog(account, dialogId).put(parentId, parent);
+    }
+
+    private static MessageObject getCachedReplyPreview(int account, long dialogId, long parentId) {
+        if (parentId <= 0) return null;
+        return getReplyCacheForDialog(account, dialogId).get(parentId);
+    }
+
+    private static void attachReplyPreview(int account, long dialogId,
+                                           MessageObject messageObject, long replyToId) {
+        if (messageObject == null || messageObject.messageOwner == null || replyToId <= 0) return;
+        MessageObject parent = getCachedReplyPreview(account, dialogId, replyToId);
+        if (parent == null) {
+            parent = createReplyPreviewObject(account, dialogId, replyToId, 0L,
+                    "Original message unavailable", ConnectionsManager.getInstance(account).getCurrentTime());
+            if (parent != null) getReplyCacheForDialog(account, dialogId).put(replyToId, parent);
+        }
+        if (parent != null) {
+            messageObject.messageOwner.replyMessage = parent.messageOwner;
+            messageObject.replyMessageObject = parent;
+            messageObject.applyTimestampsHighlightForReplyMsg();
+        }
+    }
+
+    private static boolean isValidReplyContractRow(JSONObject row) {
+        if (row == null) return false;
+        if (row.isNull("reply_to_id")) return row.isNull("reply_preview");
+        long parentId = row.optLong("reply_to_id", 0L);
+        if (parentId <= 0L || parentId > Integer.MAX_VALUE) return false;
+        JSONObject preview = row.optJSONObject("reply_preview");
+        if (preview == null) return false;
+        String status = preview.optString("status", "");
+        if ("unavailable".equals(status)) return true;
+        return "available".equals(status)
+                && preview.optLong("message_id", 0L) == parentId
+                && preview.optLong("sender_id", 0L) > 0L
+                && !TextUtils.isEmpty(preview.optString("text", "").trim())
+                && ZenoraChatController.parseHistoryDate(preview.optString("created_at", "")) > 0;
+    }
+
+    /** Zenora parents are resolved through API previews only, never Telegram MTProto. */
+    public static boolean loadReplyMessagesForZenora(int account, ArrayList<MessageObject> messages,
+                                                      long dialogId, Runnable callback) {
+        long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
+        if (roomId <= 0) return false;
+        HashMap<Long, MessageObject> localMessages = new HashMap<>();
+        if (messages != null) {
+            for (MessageObject object : messages) {
+                if (object != null && object.messageOwner != null && object.getId() > 0
+                        && object.getDialogId() == dialogId) {
+                    localMessages.put((long) object.getId(), object);
+                }
+            }
+        }
+        ArrayList<MessageObject> loadedParents = new ArrayList<>();
+        if (messages != null) {
+            for (MessageObject object : messages) {
+                if (object == null || object.messageOwner == null || !object.isReply()
+                        || object.messageOwner.reply_to == null) continue;
+                long parentId = object.messageOwner.reply_to.reply_to_msg_id;
+                if (parentId <= 0) continue;
+                MessageObject parent = localMessages.get(parentId);
+                if (parent == null) parent = getCachedReplyPreview(account, dialogId, parentId);
+                if (parent == null) {
+                    parent = createReplyPreviewObject(account, dialogId, parentId, 0L,
+                            "Original message unavailable",
+                            ConnectionsManager.getInstance(account).getCurrentTime());
+                    if (parent != null) getReplyCacheForDialog(account, dialogId).put(parentId, parent);
+                }
+                if (parent != null) {
+                    object.messageOwner.replyMessage = parent.messageOwner;
+                    object.replyMessageObject = parent;
+                    object.applyTimestampsHighlightForReplyMsg();
+                    if (!loadedParents.contains(parent)) loadedParents.add(parent);
+                }
+            }
+        }
+        if (!loadedParents.isEmpty()) {
+            NotificationCenter.getInstance(account).postNotificationName(
+                    NotificationCenter.replyMessagesDidLoad, dialogId, loadedParents, null);
+        }
+        if (callback != null) callback.run();
+        return true;
+    }
+
     /** Persist first, then publish the optimistic bubble and begin its durable FIFO operation. */
     public static boolean sendTextMessage(int account, long dialogId, long roomId,
                                           String body, TextSendCallback callback) {
+        return sendTextMessage(account, dialogId, roomId, body, 0L, null, callback, null);
+    }
+
+    public static boolean sendTextMessage(int account, long dialogId, long roomId,
+                                          String body, long replyToId, MessageObject replyParent,
+                                          TextSendCallback callback, Runnable onPersisted) {
         long zenoraUserId = ZenoraApiClient.getCurrentUserId();
         if (dialogId == 0 || roomId <= 0 || body == null || body.trim().isEmpty()
+                || replyToId < 0 || replyToId > Integer.MAX_VALUE
+                || (replyToId > 0 && (replyParent == null || replyParent.messageOwner == null
+                    || replyParent.getId() != replyToId || replyParent.getDialogId() != dialogId))
                 || zenoraUserId <= 0 || !ZenoraChatController.isZenoraEnabled()
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) return false;
         MessagesController controller = MessagesController.getInstance(account);
@@ -489,6 +651,8 @@ public final class ZenoraHistoryController {
         message.unread = true;
         message.flags |= 1 << 8;
         message.flags |= 1 << 1;
+        applyOrdinaryReplyHeader(message, replyToId);
+        if (replyParent != null) message.replyMessage = replyParent.messageOwner;
         message.send_state = MessageObject.MESSAGE_SEND_STATE_SENDING;
         message.params = new HashMap<>();
         message.params.put("zenora_client_message_id", clientMessageId);
@@ -496,8 +660,13 @@ public final class ZenoraHistoryController {
 
         MessageObject object = new MessageObject(account, message, false, true);
         object.wasJustSent = true;
+        if (replyParent != null) {
+            object.replyMessageObject = replyParent;
+            object.applyTimestampsHighlightForReplyMsg();
+            getReplyCacheForDialog(account, dialogId).put(replyToId, replyParent);
+        }
         PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, localId,
-                randomId, zenoraUserId, clientMessageId, body, object, callback, createdAt);
+                randomId, zenoraUserId, clientMessageId, body, replyToId, object, callback, createdAt);
 
         // The callback is invoked only after both messages_v2 and zenora_outbox commit.
         MessagesStorage.getInstance(account).storeZenoraTextMessage(
@@ -520,6 +689,7 @@ public final class ZenoraHistoryController {
                     NotificationCenter.getInstance(account).postNotificationName(
                             NotificationCenter.dialogsNeedReload);
                     UserConfig.getInstance(account).saveConfig(false);
+                    if (onPersisted != null) onPersisted.run();
                     if (startImmediately) startTextSendRequest(pending);
                 });
         return true;
@@ -535,12 +705,16 @@ public final class ZenoraHistoryController {
         String clientId = message.params == null ? null : message.params.get("zenora_client_message_id");
         if (roomId <= 0 || zenoraUserId <= 0 || zenoraUserId != UserConfig.getInstance(account).getClientUserId()
                 || TextUtils.isEmpty(clientId) || TextUtils.isEmpty(message.message)
-                || !(message.media instanceof TLRPC.TL_messageMediaEmpty)
-                || message.action != null || message.reply_to != null || object.scheduled
+                || !(message.media == null || message.media instanceof TLRPC.TL_messageMediaEmpty)
+                || message.action != null || object.scheduled
+                || message.reply_to != null && (message.reply_to.reply_to_msg_id <= 0
+                    || message.reply_to.reply_to_top_id > 0
+                    || !TextUtils.isEmpty(message.reply_to.quote_text))
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) return false;
 
+        long replyToId = message.reply_to == null ? 0L : message.reply_to.reply_to_msg_id;
         long randomId = message.random_id;
-        if (randomId == 0L) return false;
+        if (randomId == 0L || replyToId < 0 || replyToId > Integer.MAX_VALUE) return false;
         message.send_state = MessageObject.MESSAGE_SEND_STATE_SENDING;
         object.forceUpdate = true;
         long createdAt = Math.max(0L, (long) message.date * 1000L);
@@ -554,7 +728,7 @@ public final class ZenoraHistoryController {
             if (existing != null) createdAt = existing.createdAt;
         }
         PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, message.id,
-                randomId, zenoraUserId, clientId, message.message, object, null, createdAt);
+                randomId, zenoraUserId, clientId, message.message, replyToId, object, null, createdAt);
 
         MessagesStorage.getInstance(account).prepareZenoraOutboxRetry(
                 message, roomId, zenoraUserId, clientId, error -> {
@@ -674,6 +848,7 @@ public final class ZenoraHistoryController {
                 message.unread = true;
                 message.flags |= 1 << 8;
                 message.flags |= 1 << 1;
+                applyOrdinaryReplyHeader(message, record.replyToId);
                 message.send_state = ZenoraOutboxPolicy.FAILED.equals(record.status)
                         ? MessageObject.MESSAGE_SEND_STATE_SEND_ERROR
                         : MessageObject.MESSAGE_SEND_STATE_SENDING;
@@ -682,9 +857,10 @@ public final class ZenoraHistoryController {
                 message.params.put("zenora_room_id", String.valueOf(record.roomId));
 
                 MessageObject object = new MessageObject(account, message, false, true);
+                attachReplyPreview(account, record.dialogId, object, record.replyToId);
                 PendingTextSend restoredPending = new PendingTextSend(account, record.dialogId,
                         record.roomId, record.localMessageId, record.randomId, record.zenoraUserId,
-                        record.clientMessageId, record.body, object, null, record.createdAt);
+                        record.clientMessageId, record.body, record.replyToId, object, null, record.createdAt);
                 restoredPending.attemptCount = record.attemptCount;
                 restoredPending.nextAttemptAt = record.nextAttemptAt;
                 restoredPending.status = record.status;
@@ -791,7 +967,7 @@ public final class ZenoraHistoryController {
         MessagesStorage.getInstance(pending.account).updateZenoraOutboxState(
                 pending.clientMessageId, ZenoraOutboxPolicy.SENDING, 0L, false, false);
         ZenoraApiClient.sendTextMessage(pending.roomId, pending.body,
-                pending.clientMessageId, pending.zenoraUserId, (response, error) -> {
+                pending.clientMessageId, pending.replyToId, pending.zenoraUserId, (response, error) -> {
                     if (pending.resolved.get()) return;
                     if (error != null) {
                         handleTextSendFailure(pending, error);
@@ -805,12 +981,19 @@ public final class ZenoraHistoryController {
                     if (rawId <= 0L || rawId > Integer.MAX_VALUE
                             || !pending.clientMessageId.equals(returnedClientId)
                             || sent.optLong("room_id", 0L) != pending.roomId
+                            || sent.optLong("reply_to_id", 0L) != pending.replyToId
                             || !pending.body.equals(sent.optString("text", ""))
                             || serverDate <= 0) {
                         scheduleUnknownTextSend(pending,
                                 new IllegalStateException("Zenora returned an ambiguous message acknowledgment."),
                                 false);
                         return;
+                    }
+                    if (pending.replyToId > 0) {
+                        cacheReplyPreviewFromRow(pending.account, pending.dialogId,
+                                pending.replyToId, sent.optJSONObject("reply_preview"));
+                        attachReplyPreview(pending.account, pending.dialogId,
+                                pending.messageObject, pending.replyToId);
                     }
                     acknowledgePendingTextSend(pending, (int) rawId, serverDate);
                 });
@@ -975,7 +1158,7 @@ public final class ZenoraHistoryController {
         MessagesStorage storage = MessagesStorage.getInstance(pending.account);
         storage.acknowledgeZenoraTextMessage(
                 pending.randomId, pending.dialogId, pending.localId, serverId,
-                serverDate, pending.clientMessageId, success -> {
+                serverDate, pending.replyToId, pending.clientMessageId, success -> {
                     if (!success) {
                         pending.resolved.set(false);
                         message.id = previousId;
@@ -1068,6 +1251,7 @@ public final class ZenoraHistoryController {
         ArrayList<Long> senderIds = new ArrayList<>();
         ArrayList<String> bodies = new ArrayList<>();
         ArrayList<String> clientMessageIds = new ArrayList<>();
+        ArrayList<Long> replyToIds = new ArrayList<>();
         ArrayList<Integer> dates = new ArrayList<>();
         HashSet<Integer> pageIds = new HashSet<>();
         long previousId = afterMessageId;
@@ -1080,9 +1264,12 @@ public final class ZenoraHistoryController {
             long senderId = row.optLong("sender_id", 0L);
             String body = row.optString("text", "");
             int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+            long replyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
             if (rawId <= previousId || rawId > Integer.MAX_VALUE
                     || senderId <= 0L || senderId > Integer.MAX_VALUE
                     || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim()) || date <= 0
+                    || replyToId < 0L || replyToId > Integer.MAX_VALUE
+                    || !isValidReplyContractRow(row)
                     || !pageIds.add((int) rawId)) {
                 return -1L;
             }
@@ -1090,6 +1277,8 @@ public final class ZenoraHistoryController {
             senderIds.add(senderId);
             bodies.add(body);
             clientMessageIds.add((row.isNull("client_message_id") ? "" : row.optString("client_message_id", "")));
+            replyToIds.add(replyToId);
+            if (replyToId > 0) cacheReplyPreviewFromRow(account, dialogId, replyToId, row.optJSONObject("reply_preview"));
             dates.add(date);
             previousId = rawId;
         }
@@ -1191,12 +1380,18 @@ public final class ZenoraHistoryController {
             message.unread = false;
             message.flags |= 1 << 8;
             if (message.out) message.flags |= 1 << 1;
+            long replyToId = replyToIds.get(i);
+            applyOrdinaryReplyHeader(message, replyToId);
+            MessageObject replyParent = getCachedReplyPreview(account, dialogId, replyToId);
+            if (replyParent != null) message.replyMessage = replyParent.messageOwner;
             if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
                 message.params = new HashMap<>();
                 message.params.put("zenora_client_message_id", clientMessageId);
                 message.params.put("zenora_room_id", String.valueOf(roomId));
             }
-            objects.add(new MessageObject(account, message, true, true));
+            MessageObject messageObject = new MessageObject(account, message, true, true);
+            attachReplyPreview(account, dialogId, messageObject, replyToId);
+            objects.add(messageObject);
             stored.add(message);
             committedIds.add(messageId);
             committedCursor = messageId;
@@ -1302,7 +1497,9 @@ public final class ZenoraHistoryController {
         for (int i = 0; i < messages.length(); i++) {
             JSONObject row = messages.optJSONObject(i);
             if (row == null || row.optLong("room_id", 0L) != roomId
-                    || row.isNull("text")) return false;
+                    || row.isNull("text") || !isValidReplyContractRow(row)) return false;
+            long rawReplyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
+            if (rawReplyToId < 0L || rawReplyToId > Integer.MAX_VALUE) return false;
             long messageId = row.optLong("message_id", 0L);
             if (messageId <= previousId || messageId > Integer.MAX_VALUE
                     || beforeMessageId > 0 && messageId >= beforeMessageId
@@ -1474,6 +1671,9 @@ public final class ZenoraHistoryController {
             for (int i = 0; i < snapshot.messages.length(); i++) {
                 JSONObject row = snapshot.messages.optJSONObject(i);
                 if (row == null || row.optLong("room_id", 0) != roomId || row.isNull("text")) continue;
+                long replyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
+                if (replyToId < 0L || replyToId > Integer.MAX_VALUE || !isValidReplyContractRow(row)) continue;
+                if (replyToId > 0) cacheReplyPreviewFromRow(account, dialogId, replyToId, row.optJSONObject("reply_preview"));
 
                 long rawId = row.optLong("message_id", 0);
                 long senderId = row.optLong("sender_id", 0);
@@ -1520,6 +1720,9 @@ public final class ZenoraHistoryController {
                 message.from_id = fromPeer;
                 message.flags |= 1 << 8;
                 if (message.out) message.flags |= 1 << 1;
+                applyOrdinaryReplyHeader(message, replyToId);
+                MessageObject replyParent = getCachedReplyPreview(account, dialogId, replyToId);
+                if (replyParent != null) message.replyMessage = replyParent.messageOwner;
                 if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
                     message.params = new HashMap<>();
                     message.params.put("zenora_client_message_id", clientMessageId);
