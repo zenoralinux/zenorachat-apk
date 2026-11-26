@@ -27,7 +27,10 @@ assert "loadReplyMessagesForZenora" in gate
 assert "TL_messages_getMessages" not in gate and "TL_channels_getMessages" not in gate
 assert "reply_to_id" in history, "History, Live and Outbox must carry the reply parent"
 assert "if (version == 183)" in migration and "PRAGMA user_version = 184" in migration
-assert "LAST_DB_VERSION = 184" in storage
+assert "PRAGMA user_version = 185" in migration and "PRAGMA user_version = 186" in migration
+assert "LAST_DB_VERSION = 186" in storage
+assert "CREATE TABLE zenora_message_mutation_cursor" in storage
+assert "CREATE TABLE zenora_message_mutation_deleted" in storage
 assert "zenora-reply-send-validation-android-20261126" in workflow
 assert "ZENORA_ABIS" in workflow and "arm64-v8a" in workflow
 assert "dist/ZenoraChat-debug-arm64.apk" in workflow
