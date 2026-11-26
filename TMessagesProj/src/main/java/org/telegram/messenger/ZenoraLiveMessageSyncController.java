@@ -247,7 +247,7 @@ public final class ZenoraLiveMessageSyncController {
         }
 
         boolean hasMoreMessages = pagination.optBoolean("has_more_newer", false);
-        long appliedMessageCursor = requestedMessageCursor;
+        long appliedCursor = requestedMessageCursor;
         if (messages.length() == 0) {
             if (hasMoreMessages || !pagination.isNull("next_after_id")) {
                 fail(session, new IllegalStateException("Empty live-message page has an invalid cursor"));
@@ -287,9 +287,9 @@ public final class ZenoraLiveMessageSyncController {
                 fail(session, new IllegalStateException("Live-message cursor does not match the returned page"));
                 return;
             }
-            appliedMessageCursor = ZenoraHistoryController.applyLiveTextMessages(
+            appliedCursor = ZenoraHistoryController.applyLiveTextMessages(
                     session.account, session.dialogId, session.roomId, messages, requestedMessageCursor);
-            if (appliedMessageCursor != lastId) {
+            if (appliedCursor != lastId) {
                 fail(session, new IllegalStateException("Native message application did not commit the page"));
                 return;
             }
@@ -297,7 +297,7 @@ public final class ZenoraLiveMessageSyncController {
 
         synchronized (lock) {
             if (!isCurrentLocked(session) || session.cursor != requestedMessageCursor) return;
-            session.cursor = appliedMessageCursor;
+            session.cursor = appliedCursor;
         }
 
         final MutationPage page;
