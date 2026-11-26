@@ -101,7 +101,7 @@ expect("zenora_outbox" in STORAGE and "loadZenoraOutbox(" in STORAGE,
 tables = STORAGE.split("DATABASE_TABLES", 1)[1].split("};", 1)[0]
 expect(tables.count('"zenora_outbox"') == 1 and tables.count('"zenora_history_state"') == 1,
        "recovery table list must include each Zenora table exactly once")
-expect('version != MessagesStorage.LAST_DB_VERSION && version != 182' in MIGRATION,
+expect('version != MessagesStorage.LAST_DB_VERSION && version != 183 && version != 182' in MIGRATION,
        "database recovery must accept the previous version-182 schema")
 expect('excludeTables.add("zenora_history_state")' in MIGRATION,
        "version-182 recovery must skip only the newly introduced table")

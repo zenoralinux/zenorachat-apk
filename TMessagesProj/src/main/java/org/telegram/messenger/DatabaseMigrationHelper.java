@@ -1807,7 +1807,7 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION && version != 182) {
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 183 && version != 182) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
             }
