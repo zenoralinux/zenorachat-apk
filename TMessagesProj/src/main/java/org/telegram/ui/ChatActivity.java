@@ -920,6 +920,9 @@ public class ChatActivity extends BaseFragment implements
         boolean[] forwardEndReachedSnapshot;
         boolean hideForwardEndReachedSnapshot;
         boolean loadingSnapshot;
+        boolean loadingForwardSnapshot;
+        boolean firstUnreadSentSnapshot;
+        boolean hasAllMentionsLocalSnapshot;
         boolean firstLoadingSnapshot;
         boolean chatWasResetSnapshot;
         int loadsCountSnapshot;
@@ -959,6 +962,9 @@ public class ChatActivity extends BaseFragment implements
             forwardEndReachedSnapshot = forwardEndReached.clone();
             hideForwardEndReachedSnapshot = hideForwardEndReached;
             loadingSnapshot = loading;
+            loadingForwardSnapshot = loadingForward;
+            firstUnreadSentSnapshot = firstUnreadSent;
+            hasAllMentionsLocalSnapshot = hasAllMentionsLocal;
             firstLoadingSnapshot = firstLoading;
             chatWasResetSnapshot = chatWasReset;
             loadsCountSnapshot = loadsCount;
@@ -987,6 +993,9 @@ public class ChatActivity extends BaseFragment implements
             System.arraycopy(forwardEndReachedSnapshot, 0, forwardEndReached, 0, forwardEndReached.length);
             hideForwardEndReached = hideForwardEndReachedSnapshot;
             loading = loadingSnapshot;
+            loadingForward = loadingForwardSnapshot;
+            firstUnreadSent = firstUnreadSentSnapshot;
+            hasAllMentionsLocal = hasAllMentionsLocalSnapshot;
             firstLoading = firstLoadingSnapshot;
             chatWasReset = chatWasResetSnapshot;
             loadsCount = loadsCountSnapshot;
@@ -22804,11 +22813,7 @@ public class ChatActivity extends BaseFragment implements
             showFloatingTopicView(false);
         }
         addSponsoredMessages(!isFirstLoading);
-        if (zenoraAroundState != null) {
-            // Around pages are lookup payloads, not pagination. Undo all counters/cursors
-            // that Telegram's generic load handler may have touched.
-            zenoraAroundState.restore();
-        } else {
+        if (zenoraAroundState == null) {
             checkScrollForLoad(false);
         }
 
@@ -22936,6 +22941,9 @@ public class ChatActivity extends BaseFragment implements
             }
         }
         if (zenoraAroundState != null) {
+            // Restore after every generic Telegram callback side effect, including unread
+            // bookkeeping, so around_id is not observed as a history page.
+            zenoraAroundState.restore();
             zenoraAroundNavigationLoads.remove(queryLoadIndex);
             if (isZenoraReplyNavigationCurrent(zenoraAroundState.account,
                     zenoraAroundState.dialogId, zenoraAroundState.roomId,

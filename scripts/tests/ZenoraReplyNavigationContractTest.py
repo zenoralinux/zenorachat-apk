@@ -78,7 +78,8 @@ around_state = CHAT[state_start:state_end]
 for token in (
     "maxMessageId.clone()", "minMessageId.clone()", "endReached.clone()",
     "cacheEndReached.clone()", "forwardEndReached.clone()", "last_message_id",
-    "first_unread_id", "loadsCount", "void restore()",
+    "first_unread_id", "loadsCount", "loadingForwardSnapshot",
+    "firstUnreadSentSnapshot", "hasAllMentionsLocalSnapshot", "void restore()",
 ):
     assert token in around_state
 load_handler = method_body(CHAT, "private void didReceivedNotification_messagesDidLoad(")
