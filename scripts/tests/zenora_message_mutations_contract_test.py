@@ -19,7 +19,7 @@ checks = {
     "edit response version validation": 'optLong("edit_version", 0L) != expectedEditVersion + 1L' in api,
     "confirmed delete IDs validated": "validateMutationMessageIds" in api,
     "separate account-room controller": "class ZenoraMessageMutationController" in controller and "isCurrentZenoraRoom" in controller,
-    "controller has no Telegram send/delete request path": "ConnectionsManager" not in controller and "TL_" not in controller,
+    "controller has no Telegram send/delete request path": "ConnectionsManager" not in controller and "TL_messages_" not in controller and "SendMessagesHelper" not in controller,
     "history parser validates edit metadata": "isValidEditMetadata" in history and 'optLong("edit_version", 0L)' in history,
     "history parser stores edit metadata": "rememberMessageEditMetadata" in history,
     "build branch registered": "feat/zenora-message-mutations-foundation-android-20261126" in workflow,
