@@ -1082,7 +1082,9 @@ public final class ZenoraHistoryController {
     }
 
     private static boolean reconcilePendingTextMessage(int account, long dialogId, long roomId,
-                                                        String clientId, int serverId, int serverDate) {
+                                                        String clientId, int serverId, int serverDate,
+                                                        long replyToId, JSONObject replyPreview,
+                                                        TLRPC.Peer peer, long selfId) {
         if (TextUtils.isEmpty(clientId) || serverId <= 0 || serverDate <= 0) return false;
         PendingTextSend pending;
         synchronized (lock) {
@@ -1090,10 +1092,12 @@ public final class ZenoraHistoryController {
             HashMap<String, PendingTextSend> dialogPending =
                     pendingByDialog == null ? null : pendingByDialog.get(dialogId);
             pending = dialogPending == null ? null : dialogPending.get(clientId);
-            if (pending == null || pending.roomId != roomId) return false;
+            if (pending == null || pending.roomId != roomId
+                    || pending.replyToId != replyToId) return false;
             if (pending.resolved.get()) return true;
         }
-        acknowledgePendingTextSend(pending, serverId, serverDate);
+        acknowledgePendingTextSend(pending, serverId, serverDate,
+                replyToId, replyPreview, peer, selfId);
         return true;
     }
 
@@ -1479,7 +1483,8 @@ public final class ZenoraHistoryController {
                     || row.optLong("sender_id", 0L) <= 0
                     || row.optLong("sender_id", 0L) > Integer.MAX_VALUE
                     || TextUtils.isEmpty(row.optString("text", "").trim())
-                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0) {
+                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0
+                    || !isValidReplyContract(row)) {
                 return false;
             }
             if (i == 0) firstId = messageId;
@@ -1658,7 +1663,9 @@ public final class ZenoraHistoryController {
                     // A completed client ID is historical metadata, not a reason to
                     // suppress a server row for a newly created ChatActivity.
                     reconciledClientMessage = reconcilePendingTextMessage(account, dialogId, roomId,
-                            clientMessageId, messageId, serverDate);
+                            clientMessageId, messageId, serverDate,
+                            replyToIdFromRow(row), row.optJSONObject("reply_preview"),
+                            dialog.peer, selfId);
                     reconciledClientMessage |= isCompletedTextMessage(
                             account, dialogId, clientMessageId, messageId);
                 }
@@ -1690,6 +1697,7 @@ public final class ZenoraHistoryController {
                 message.from_id = fromPeer;
                 message.flags |= 1 << 8;
                 if (message.out) message.flags |= 1 << 1;
+                applyReplyContractToMessage(message, row, dialogId, dialog.peer, date, selfId);
                 if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
                     message.params = new HashMap<>();
                     message.params.put("zenora_client_message_id", clientMessageId);
