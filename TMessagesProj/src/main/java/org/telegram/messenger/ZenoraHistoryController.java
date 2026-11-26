@@ -1408,6 +1408,7 @@ public final class ZenoraHistoryController {
                 messagesController.updateInterfaceWithMessages(dialogId, objects, 0);
                 MessagesStorage.getInstance(account).putMessages(
                         stored, false, true, false, 0, 0, 0);
+                MessagesStorage.getInstance(account).putZenoraReplyPreviews(stored);
             }
         } catch (Exception error) {
             FileLog.e(error);
@@ -1785,6 +1786,7 @@ public final class ZenoraHistoryController {
                 false,
                 null
         );
+        MessagesStorage.getInstance(account).putZenoraReplyPreviews(result.messages);
         if (!target.olderPage) {
             ZenoraLiveMessageSyncController.onHistoryApplied(account, dialogId, roomId, target.classGuid);
         }
