@@ -6259,6 +6259,15 @@ public class MediaDataController extends BaseController {
                         || owner.messageOwner.reply_to.reply_to_msg_id <= 0
                         || owner.messageOwner.reply_to.reply_to_peer_id != null) continue;
                 int replyId = owner.messageOwner.reply_to.reply_to_msg_id;
+                String previewStatus = owner.messageOwner.params == null ? null
+                        : owner.messageOwner.params.get("zenora_reply_preview_status");
+                if ("unavailable".equals(previewStatus)) {
+                    // The API has explicitly revoked visibility of this parent.
+                    // Do not reuse any previously cached reply object or query SQLite.
+                    owner.replyMessageObject = null;
+                    owner.messageOwner.replyMessage = null;
+                    continue;
+                }
 
                 if (owner.replyMessageObject != null
                         && owner.replyMessageObject.messageOwner != null
