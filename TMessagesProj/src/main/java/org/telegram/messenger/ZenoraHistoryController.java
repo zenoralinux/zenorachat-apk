@@ -140,23 +140,27 @@ public final class ZenoraHistoryController {
                                                             int date, long replyToId,
                                                             JSONObject preview, long selfId) {
         if (replyToId <= 0L || replyToId > Integer.MAX_VALUE || preview == null
-                || !"available".equals(preview.optString("status", ""))) return null;
-        long senderId = preview.optLong("sender_id", 0L);
-        String text = preview.optString("text", "");
-        if (senderId <= 0L || senderId > Integer.MAX_VALUE
-                || preview.optLong("message_id", 0L) != replyToId
-                || TextUtils.isEmpty(text.trim()) || text.length() > 140) return null;
-        if (!isValidReplyPreviewText(text)) return null;
+                || preview.optLong("message_id", replyToId) != replyToId) return null;
         TLRPC.TL_message parent = new TLRPC.TL_message();
         parent.id = (int) replyToId;
         parent.local_id = parent.id;
         parent.dialog_id = dialogId;
         parent.peer_id = peer;
+        parent.date = date;
+        parent.media = new TLRPC.TL_messageMediaEmpty();
+        if ("unavailable".equals(preview.optString("status", ""))) {
+            // Safe persistent placeholder: no original text, author, or private metadata.
+            parent.message = "Message unavailable";
+            return parent;
+        }
+        if (!"available".equals(preview.optString("status", ""))) return null;
+        long senderId = preview.optLong("sender_id", 0L);
+        String text = preview.optString("text", "");
+        if (senderId <= 0L || senderId > Integer.MAX_VALUE
+                || !isValidReplyPreviewText(text)) return null;
         parent.from_id = new TLRPC.TL_peerUser();
         parent.from_id.user_id = senderId;
-        parent.date = date;
         parent.message = text;
-        parent.media = new TLRPC.TL_messageMediaEmpty();
         parent.out = senderId == selfId;
         parent.flags |= 1 << 8;
         if (parent.out) parent.flags |= 1 << 1;
@@ -1153,11 +1157,14 @@ public final class ZenoraHistoryController {
             TLRPC.Message parent = createReplyPreviewMessage(
                     pending.dialogId, peer, serverDate, replyToId, replyPreview, selfId);
             message.replyMessage = parent;
+            boolean previewAvailable = replyPreview != null
+                    && "available".equals(replyPreview.optString("status", ""))
+                    && parent != null && parent.from_id != null;
             if (message.params == null) message.params = new HashMap<>();
-            message.params.put("zenora_reply_preview_status", parent == null ? "unavailable" : "available");
+            message.params.put("zenora_reply_preview_status", previewAvailable ? "available" : "unavailable");
             pending.messageObject.replyMessageObject = parent == null
                     ? null : new MessageObject(pending.account, parent, false, false);
-            clearReplyPreview = parent == null;
+            clearReplyPreview = false;
         } else {
             message.reply_to = null;
             message.replyMessage = null;
@@ -1177,7 +1184,7 @@ public final class ZenoraHistoryController {
         MessagesStorage storage = MessagesStorage.getInstance(pending.account);
         storage.acknowledgeZenoraTextMessage(
                 pending.randomId, pending.dialogId, pending.localId, serverId,
-                serverDate, pending.clientMessageId, clearReplyPreview, success -> {
+                serverDate, pending.clientMessageId, message.replyMessage, clearReplyPreview, success -> {
                     if (!success) {
                         pending.resolved.set(false);
                         message.id = previousId;
