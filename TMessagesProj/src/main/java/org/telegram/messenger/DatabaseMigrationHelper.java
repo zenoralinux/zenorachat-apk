@@ -1745,6 +1745,14 @@ public class DatabaseMigrationHelper {
             version = 184;
         }
 
+        if (version == 184) {
+            // Persistent ordered mutation cursor, isolated by local account, room and Zenora user.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_cursor(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, last_event_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_mutation_cursor_user_idx ON zenora_message_mutation_cursor(zenora_user_id, room_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 185").stepThis().dispose();
+            version = 185;
+        }
+
         return version;
     }
 
