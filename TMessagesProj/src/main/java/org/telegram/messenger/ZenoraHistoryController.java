@@ -26,6 +26,7 @@ public final class ZenoraHistoryController {
     private static final Object lock = new Object();
     private static final Map<Integer, Map<Long, Snapshot>> cache = new HashMap<>();
     private static final Map<Integer, Map<Long, HashMap<Long, MessageObject>>> replyPreviewCache = new HashMap<>();
+    private static final Map<Integer, Map<Long, HashMap<Long, ArrayList<MessageObject>>>> replyPreviewOwners = new HashMap<>();
     private static final Map<Integer, Map<Long, ArrayList<Target>>> inFlight = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> initialRequestIds = new HashMap<>();
     private static long nextInitialRequestId;
@@ -526,6 +527,18 @@ public final class ZenoraHistoryController {
         if (parent != null) getReplyCacheForDialog(account, dialogId).put(parentId, parent);
     }
 
+    private static void rememberReplyPreviewOwner(int account, long dialogId, long parentId,
+                                                    MessageObject owner) {
+        if (parentId <= 0L || owner == null) return;
+        synchronized (lock) {
+            replyPreviewOwners
+                    .computeIfAbsent(account, ignored -> new HashMap<>())
+                    .computeIfAbsent(dialogId, ignored -> new HashMap<>())
+                    .computeIfAbsent(parentId, ignored -> new ArrayList<>())
+                    .add(owner);
+        }
+    }
+
     private static MessageObject getCachedReplyPreview(int account, long dialogId, long parentId) {
         if (parentId <= 0) return null;
         return getReplyCacheForDialog(account, dialogId).get(parentId);
@@ -544,6 +557,7 @@ public final class ZenoraHistoryController {
             messageObject.messageOwner.replyMessage = parent.messageOwner;
             messageObject.replyMessageObject = parent;
             messageObject.applyTimestampsHighlightForReplyMsg();
+            rememberReplyPreviewOwner(account, dialogId, replyToId, messageObject);
         }
     }
 
@@ -596,6 +610,7 @@ public final class ZenoraHistoryController {
                     object.messageOwner.replyMessage = parent.messageOwner;
                     object.replyMessageObject = parent;
                     object.applyTimestampsHighlightForReplyMsg();
+                    rememberReplyPreviewOwner(account, dialogId, parentId, object);
                     if (!loadedParents.contains(parent)) loadedParents.add(parent);
                 }
             }
@@ -1393,6 +1408,12 @@ public final class ZenoraHistoryController {
                 message.params.put("zenora_client_message_id", clientMessageId);
                 message.params.put("zenora_room_id", String.valueOf(roomId));
             }
+            ZenoraMessageMutationController.EditMetadata editMetadata =
+                    ZenoraMessageMutationController.getMessageEditMetadata(account, roomId, messageId);
+            if (editMetadata != null) {
+                ZenoraMessageMutationController.applyEditMetadata(
+                        message, editMetadata.editedAt, editMetadata.editVersion);
+            }
             MessageObject messageObject = new MessageObject(account, message, true, true);
             attachReplyPreview(account, dialogId, messageObject, replyToId);
             objects.add(messageObject);
@@ -1486,6 +1507,122 @@ public final class ZenoraHistoryController {
             }
             return false;
         }
+    }
+
+    public interface EditRefreshCallback {
+        void onRefreshed(boolean updated, Exception error);
+    }
+
+    private static void updateEditedTextObject(MessageObject object, String body,
+                                               ArrayList<TLRPC.MessageEntity> entities,
+                                               String editedAt, long editVersion) {
+        if (object == null || object.messageOwner == null) return;
+        object.messageOwner.message = body;
+        object.messageOwner.entities = entities == null
+                ? new ArrayList<>() : new ArrayList<>(entities);
+        object.messageOwner.flags |= 1 << 8;
+        ZenoraMessageMutationController.applyEditMetadata(object.messageOwner, editedAt, editVersion);
+        object.updateMessageText();
+    }
+
+    public static boolean applyEditedMessage(int account, long dialogId, long roomId,
+                                             MessageObject target, String body,
+                                             ArrayList<TLRPC.MessageEntity> entities,
+                                             String editedAt, long editVersion) {
+        if (target == null || target.messageOwner == null || target.getDialogId() != dialogId
+                || target.getId() <= 0 || roomId <= 0L || editVersion <= 0L
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId
+                || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
+            return false;
+        }
+        updateEditedTextObject(target, body, entities, editedAt, editVersion);
+        ZenoraMessageMutationController.rememberMessageEditMetadata(
+                account, roomId, target.getId(), editedAt, editVersion);
+
+        MessageObject cachedParent = getCachedReplyPreview(account, dialogId, target.getId());
+        if (cachedParent == null) {
+            long senderId = target.messageOwner.from_id instanceof TLRPC.TL_peerUser
+                    ? target.messageOwner.from_id.user_id : 0L;
+            cachedParent = createReplyPreviewObject(account, dialogId, target.getId(),
+                    senderId, body, target.messageOwner.date);
+            if (cachedParent != null) {
+                getReplyCacheForDialog(account, dialogId).put((long) target.getId(), cachedParent);
+            }
+        }
+        if (cachedParent != null && cachedParent != target) {
+            updateEditedTextObject(cachedParent, body, entities, editedAt, editVersion);
+        }
+
+        ArrayList<MessageObject> affected = new ArrayList<>();
+        affected.add(target);
+        synchronized (lock) {
+            Map<Long, HashMap<Long, ArrayList<MessageObject>>> accountOwners = replyPreviewOwners.get(account);
+            HashMap<Long, ArrayList<MessageObject>> dialogOwners =
+                    accountOwners == null ? null : accountOwners.get(dialogId);
+            ArrayList<MessageObject> owners = dialogOwners == null ? null : dialogOwners.get((long) target.getId());
+            if (owners != null) {
+                for (MessageObject owner : owners) {
+                    if (owner != null && !affected.contains(owner)) affected.add(owner);
+                }
+            }
+        }
+
+        try {
+            ArrayList<TLRPC.Message> stored = new ArrayList<>();
+            stored.add(target.messageOwner);
+            MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
+            MessagesController.getInstance(account).updateZenoraDialogPreview(dialogId, target);
+            NotificationCenter.getInstance(account).postNotificationName(
+                    NotificationCenter.replaceMessagesObjects, dialogId, affected);
+        } catch (Exception error) {
+            FileLog.e(error);
+            return false;
+        }
+        return true;
+    }
+
+    public static void refreshEditedMessage(int account, long dialogId, long roomId,
+                                            MessageObject target, EditRefreshCallback callback) {
+        if (target == null || target.getId() <= 0 || roomId <= 0L
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+            if (callback != null) callback.onRefreshed(false,
+                    new IllegalArgumentException("Invalid Zenora message refresh target"));
+            return;
+        }
+        long beforeId = (long) target.getId() + 1L;
+        ZenoraApiClient.fetchBasicTextHistory(roomId, 50, beforeId, (response, error) -> {
+            if (error != null || response == null) {
+                if (callback != null) callback.onRefreshed(false, error != null ? error
+                        : new IllegalStateException("Zenora returned an empty conflict refresh"));
+                return;
+            }
+            JSONArray rows = response.optJSONArray("messages");
+            JSONObject row = null;
+            if (rows != null) {
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject candidate = rows.optJSONObject(i);
+                    if (candidate != null && candidate.optLong("message_id", 0L) == target.getId()
+                            && candidate.optLong("room_id", 0L) == roomId) {
+                        row = candidate;
+                        break;
+                    }
+                }
+            }
+            if (row == null || row.isNull("text") || !isValidEditMetadata(row)) {
+                if (callback != null) callback.onRefreshed(false,
+                        new IllegalStateException("The edited Zenora message was not present in the refreshed page"));
+                return;
+            }
+            String body = row.optString("text", "");
+            String editedAt = row.isNull("edited_at") ? null : row.optString("edited_at", "");
+            long version = row.optLong("edit_version", 0L);
+            ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getEntities(
+                    new CharSequence[]{body}, true);
+            boolean updated = applyEditedMessage(account, dialogId, roomId, target,
+                    body, entities, editedAt, version);
+            if (callback != null) callback.onRefreshed(updated,
+                    updated ? null : new IllegalStateException("Refreshed Zenora message could not be applied"));
+        });
     }
 
     private static boolean isValidEditMetadata(JSONObject row) {
@@ -1739,6 +1876,9 @@ public final class ZenoraHistoryController {
                 message.from_id = fromPeer;
                 message.flags |= 1 << 8;
                 if (message.out) message.flags |= 1 << 1;
+                ZenoraMessageMutationController.applyEditMetadata(message,
+                        row.isNull("edited_at") ? null : row.optString("edited_at", ""),
+                        row.optLong("edit_version", 1L));
                 applyOrdinaryReplyHeader(message, replyToId);
                 MessageObject replyParent = getCachedReplyPreview(account, dialogId, replyToId);
                 if (replyParent != null) message.replyMessage = replyParent.messageOwner;

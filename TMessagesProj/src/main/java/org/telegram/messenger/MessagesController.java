@@ -9316,6 +9316,38 @@ public class MessagesController extends BaseController implements NotificationCe
         return inputWallPaper;
     }
 
+    public void updateZenoraDialogPreview(long dialogId, MessageObject updated) {
+        if (updated == null || updated.messageOwner == null || updated.getDialogId() != dialogId) return;
+        ArrayList<MessageObject> preview = dialogMessage.get(dialogId);
+        boolean replaced = false;
+        if (preview != null) {
+            for (int i = 0; i < preview.size(); i++) {
+                MessageObject current = preview.get(i);
+                if (current != null && current.getId() == updated.getId()) {
+                    preview.set(i, updated);
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+        TLRPC.Dialog dialog = dialogs_dict.get(dialogId);
+        if (dialog != null && dialog.top_message == updated.getId()) {
+            if (!replaced) {
+                ArrayList<MessageObject> latest = new ArrayList<>(1);
+                latest.add(updated);
+                dialogMessage.put(dialogId, latest);
+            }
+            dialog.last_message_date = updated.messageOwner.date;
+            if (updated.messageOwner.peer_id != null && updated.messageOwner.peer_id.channel_id == 0) {
+                MessageObject mapped = dialogMessagesByIds.get(updated.getId());
+                if (mapped == null || mapped.getDialogId() == dialogId) {
+                    dialogMessagesByIds.put(updated.getId(), updated);
+                }
+            }
+            getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+        }
+    }
+
     public void markDialogMessageAsDeleted(long dialogId, ArrayList<Integer> messages) {
         ArrayList<MessageObject> objs = dialogMessage.get(dialogId);
         if (objs != null) {

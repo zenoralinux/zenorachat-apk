@@ -24,6 +24,15 @@ checks = {
     "history parser stores edit metadata": "rememberMessageEditMetadata" in history,
     "build branch registered": "feat/zenora-message-mutations-foundation-android-20261126" in workflow,
     "release tag registered": "zenora-message-mutations-foundation-android-20261126" in workflow,
+    "native edit branch registered": "feat/zenora-message-edit-android-20261126" in workflow,
+    "native edit tag registered": "zenora-message-edit-android-20261126" in workflow,
+    "edit controller enforces sender and text-only policy": "canEditPlainTextMessage" in controller and "object.messageOwner.from_id.user_id != userId" in controller,
+    "edit controller blocks duplicate requests": "inFlightEdits.add(key)" in controller,
+    "SQLite persists edit version": "zenoraEditVersion" in (ROOT / "TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java").read_text() and "version >= 2" in (ROOT / "TMessagesProj/src/main/java/org/telegram/messenger/MessageCustomParamsHelper.java").read_text(),
+    "native Composer submits Zenora edit": "submitZenoraTextEdit" in (ROOT / "TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java").read_text(),
+    "conflicts refresh canonical message": "refreshEditedMessage" in history and "EDIT_VERSION_CONFLICT" in (ROOT / "TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java").read_text(),
+    "Zenora start-edit bypasses MTProto getEditData": (ROOT / "TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java").read_text().find("if (zenoraEditRoomId > 0L)") < (ROOT / "TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java").read_text().find("TL_messages_getMessageEditData"),
+    "Zenora Done path bypasses SendMessagesHelper edit": (ROOT / "TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java").read_text().find("if (zenoraRoomId > 0L)") < (ROOT / "TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java").read_text().find("SendMessagesHelper.getInstance(currentAccount).editMessage"),
     "pre-release assets retained": "dist/SHA256SUMS" in workflow and "dist/BUILD-INFO.txt" in workflow,
 }
 failed = [name for name, ok in checks.items() if not ok]

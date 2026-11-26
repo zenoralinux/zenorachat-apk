@@ -195,6 +195,7 @@ import org.telegram.messenger.TranslateController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.ZenoraHistoryController;
+import org.telegram.messenger.ZenoraMessageMutationController;
 import org.telegram.messenger.ZenoraLiveMessageSyncController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
@@ -19941,7 +19942,7 @@ public class ChatActivity extends BaseFragment implements
                     if (!messageObject.isAnimatedEmoji() && (messageObject.isSticker() || messageObject.isAnimatedSticker()) && MessageObject.isStickerHasSet(messageObject.getDocument())) {
                         selectedMessagesCanStarIds[index].remove(messageObject.getId());
                     }
-                    if (messageObject.canEditMessage(currentChat)) {
+                    if (canEditMessageInCurrentDialog(messageObject)) {
                         canEditMessagesCount--;
                     }
                     if (!messageObject.canDeleteMessage(chatMode == MODE_SCHEDULED, currentChat)) {
@@ -31883,7 +31884,7 @@ public class ChatActivity extends BaseFragment implements
         boolean noforwards = isPeerNoForwards() || message.messageOwner.noforwards || getDialogId() == UserObject.VERIFY;
         boolean noforwardsOrPaidMedia = noforwards || message.type == MessageObject.TYPE_PAID_MEDIA;
         boolean allowUnpin = message.getDialogId() != mergeDialogId && allowPin && (pinnedMessageObjects.containsKey(message.getId()) || groupedMessages != null && !groupedMessages.messages.isEmpty() && pinnedMessageObjects.containsKey(groupedMessages.messages.get(0).getId())) && !message.isExpiredStory();
-        boolean allowEdit = message.canEditMessage(currentChat) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL;
+        boolean allowEdit = canEditMessageInCurrentDialog(message) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL;
         if (allowEdit && groupedMessages != null) {
             int captionsCount = 0;
             for (int a = 0, N = groupedMessages.messages.size(); a < N; a++) {
@@ -34104,12 +34105,29 @@ public class ChatActivity extends BaseFragment implements
         return null;
     }
 
+    private boolean canEditMessageInCurrentDialog(MessageObject message) {
+        if (message == null) return false;
+        long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        if (roomId > 0L) {
+            return ZenoraMessageMutationController.canEditPlainTextMessage(
+                    currentAccount, dialog_id, message);
+        }
+        return message.canEditMessage(currentChat);
+    }
+
     private void startEditingMessageObject(MessageObject messageObject) {
         startEditingMessageObject(messageObject, false);
     }
 
     private void startEditingMessageObject(MessageObject messageObject, boolean asSuggestion) {
         if (messageObject == null || getParentActivity() == null) {
+            return;
+        }
+        long zenoraEditRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        if (zenoraEditRoomId > 0L && (asSuggestion || !canEditMessageInCurrentDialog(messageObject))) {
+            android.widget.Toast.makeText(getContext(),
+                    "Only your ordinary text messages can be edited in ZenoraChat.",
+                    android.widget.Toast.LENGTH_LONG).show();
             return;
         }
         if (selectionReactionsOverlay != null && selectionReactionsOverlay.isVisible()) {
@@ -34133,7 +34151,7 @@ public class ChatActivity extends BaseFragment implements
         chatActivityEnterView.setVisibility(View.VISIBLE);
         showFieldPanelForEdit(true, messageObject);
         updateBottomOverlay();
-        if (!asSuggestion) {
+        if (!asSuggestion && zenoraEditRoomId <= 0L) {
             checkEditTimer();
         }
         if (asSuggestion) {
@@ -34144,6 +34162,12 @@ public class ChatActivity extends BaseFragment implements
 
         updatePinnedMessageView(true);
         updateVisibleRows();
+
+        if (zenoraEditRoomId > 0L) {
+            // Zenora's native Composer is ready; commit through message_edit.php only.
+            chatActivityEnterView.showEditDoneProgress(false, true);
+            return;
+        }
 
         if (!asSuggestion && !messageObject.scheduled && !messageObject.isQuickReply() && chatMode != MODE_WELCOME_MESSAGES) {
             TLRPC.TL_messages_getMessageEditData req = new TLRPC.TL_messages_getMessageEditData();
