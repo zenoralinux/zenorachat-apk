@@ -7910,13 +7910,27 @@ public class ChatActivityEnterView extends FrameLayout implements
                     android.widget.Toast.LENGTH_LONG).show();
             return false;
         }
+        final MessageObject replyParent = replyingMessageObject;
+        final long replyToId = replyParent == null ? 0L
+                : (replyParent.messageOwner == null ? 0L : replyParent.messageOwner.id);
         if (scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0
                 || delegate != null && delegate.hasForwardingMessages()
-                || replyingMessageObject != null || replyingQuote != null
-                || replyingTopMessage != null
-                || parentFragment != null && parentFragment.editingMessageObject != null) {
+                || replyingQuote != null || replyingTopMessage != null
+                || parentFragment != null && (parentFragment.editingMessageObject != null
+                    || parentFragment.isTopic)
+                || replyParent != null && (replyParent.isTopicMainMessage
+                    || replyToId <= 0L || replyToId > Integer.MAX_VALUE
+                    || replyParent.getId() <= 0
+                    || replyParent.getDialogId() != dialog_id
+                    || !(replyParent.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty)
+                    || TextUtils.isEmpty(replyParent.messageOwner.message)
+                    || TextUtils.isEmpty(replyParent.messageOwner.message.trim())
+                    || replyParent.messageOwner.action != null
+                    || replyParent.isEphemeral()
+                    || replyParent.messageOwner.from_id == null
+                    || MessageObject.getPeerId(replyParent.messageOwner.from_id) <= 0L)) {
             android.widget.Toast.makeText(getContext(),
-                    "Scheduling, forwarding and replies are not available for Zenora text messages yet.",
+                    "Zenora supports only standard replies to existing text messages. Topics, quotes, forwards and scheduling are not available.",
                     android.widget.Toast.LENGTH_LONG).show();
             return false;
         }
@@ -7928,28 +7942,43 @@ public class ChatActivityEnterView extends FrameLayout implements
         }
 
         boolean queued = ZenoraHistoryController.sendTextMessage(
-                currentAccount, dialog_id, roomId, body, (success, resultMessage) -> {
-                    if (!success) {
-                        FileLog.w("[ZenoraChat] Text send failed: " + resultMessage);
-                        android.widget.Toast.makeText(getContext(),
-                                "Message failed to send. Use Telegram's retry action to retry the same Zenora message.",
-                                android.widget.Toast.LENGTH_LONG).show();
+                currentAccount, dialog_id, roomId, body, replyToId, replyParent,
+                new ZenoraHistoryController.TextSendCallback() {
+                    @Override
+                    public void onQueued() {
+                        // Text and Reply state are consumed only after the atomic
+                        // messages_v2 + zenora_outbox transaction has committed.
+                        if (messageEditText != null
+                                && body.equals(AndroidUtilities.getTrimmedString(messageEditText.getText()).toString())
+                                && replyingMessageObject == replyParent) {
+                            messageEditText.setText("");
+                            messageEditText.setSelection(0);
+                            if (replyParent != null) {
+                                setReplyingMessageObject(null, null, null);
+                            }
+                            if (delegate != null) delegate.onMessageSend(body, notify, 0, 0, 0);
+                            checkSendButton(true);
+                        }
+                    }
+
+                    @Override
+                    public void onComplete(boolean success, String resultMessage) {
+                        if (!success) {
+                            FileLog.w("[ZenoraChat] Text send failed: " + resultMessage);
+                            android.widget.Toast.makeText(getContext(),
+                                    "Message failed to send. Use Telegram's retry action to retry the same Zenora message.",
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
                     }
                 });
         if (!queued) {
             android.widget.Toast.makeText(getContext(),
-                    "ZenoraChat could not queue this message. Your text was kept.",
+                    "ZenoraChat could not queue this message. Your text and Reply state were kept.",
                     android.widget.Toast.LENGTH_SHORT).show();
             return false;
         }
-        // Clear only after optimistic local publication is accepted.
-        if (messageEditText != null) {
-            messageEditText.setText("");
-            messageEditText.setSelection(0);
-        }
-        if (delegate != null) delegate.onMessageSend(body, notify, 0, 0, 0);
-        checkSendButton(true);
-        // Zenora must never enter SendMessagesHelper/MTProto.
+        // Zenora must never enter SendMessagesHelper/MTProto. UI cleanup is async
+        // and happens only after the durable local transaction is accepted.
         return false;
     }
 
