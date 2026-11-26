@@ -30,7 +30,7 @@ checks = {
     "edited event validates text, date and version": "message.edited" in apply and "editVersion <= 0L" in apply and "parseHistoryDate(editedAt)" in apply,
     "edit version is persisted to serialized message custom params": "MessageCustomParamsHelper.writeLocalParams(message)" in apply and "ZenoraMessageMutationController.applyEditMetadata" in apply,
     "stale edit event cannot downgrade local message": "message.zenoraEditVersion > editVersion" in apply and "editedMessages.add(message)" in apply,
-    "personal and global deletes remove SQLite cache rows": "message.deleted_for_me" in apply and "message.deleted_for_all" in apply and "DELETE FROM messages_v2 WHERE uid = ? AND mid = ?" in apply,
+    "personal and global deletes remove SQLite cache rows": "message.deleted_for_me" in apply and "message.deleted_for_all" in apply and "String[] tables = {\"messages_v2\", \"messages_topics\", \"media_v4\", \"media_topics\"}" in apply and 'DELETE FROM " + table + " WHERE uid = ? AND mid = ?' in apply,
     "dialog last-message pointer is recalculated after deletion": "UPDATE dialogs SET (last_mid, last_mid_group)" in apply,
     "same API request fetches message and mutation pages": "message_mutation_events.php?room_id=" in api and "mutation_events_page" in api,
     "API request is bound to the expected account": "getCurrentUserId() != expectedUserId" in api and "true, expectedUserId" in api,
