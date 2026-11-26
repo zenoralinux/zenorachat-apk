@@ -194,6 +194,7 @@ import org.telegram.messenger.Timer;
 import org.telegram.messenger.TranslateController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.ZenoraHistoryController;
 import org.telegram.messenger.ZenoraLiveMessageSyncController;
 import org.telegram.messenger.UserObject;
@@ -899,6 +900,109 @@ public class ChatActivity extends BaseFragment implements
     private int canSaveMusicCount;
     private int canSaveDocumentsCount;
     private ArrayList<Integer> waitingForLoad = new ArrayList<>();
+    private final HashMap<Integer, ZenoraAroundNavigationState> zenoraAroundNavigationLoads = new HashMap<>();
+
+    private final class ZenoraAroundNavigationState {
+        final int loadIndex;
+        final int account;
+        final long dialogId;
+        final long roomId;
+        final int targetMessageId;
+        final int fromMessageId;
+        final int expectedClassGuid;
+        final long expectedUserId;
+        int[] maxMessageIdSnapshot;
+        int[] minMessageIdSnapshot;
+        int[] maxDateSnapshot;
+        int[] minDateSnapshot;
+        boolean[] endReachedSnapshot;
+        boolean[] cacheEndReachedSnapshot;
+        boolean[] forwardEndReachedSnapshot;
+        boolean hideForwardEndReachedSnapshot;
+        boolean loadingSnapshot;
+        boolean firstLoadingSnapshot;
+        boolean chatWasResetSnapshot;
+        int loadsCountSnapshot;
+        int lastMessageIdSnapshot;
+        int firstUnreadIdSnapshot;
+        int createUnreadAfterIdSnapshot;
+        boolean createUnreadAfterIdLoadingSnapshot;
+        int startLoadFromMessageIdSnapshot;
+        int startLoadFromMessageIdSavedSnapshot;
+        int startLoadFromMessageOffsetSnapshot;
+        boolean loadingFromOldPositionSnapshot;
+        int newUnreadMessageCountSnapshot;
+        int prevSetUnreadCountSnapshot;
+        boolean firstSnapshot;
+        boolean captured;
+
+        ZenoraAroundNavigationState(int loadIndex, int account, long dialogId, long roomId,
+                                     int targetMessageId, int fromMessageId,
+                                     int expectedClassGuid, long expectedUserId) {
+            this.loadIndex = loadIndex;
+            this.account = account;
+            this.dialogId = dialogId;
+            this.roomId = roomId;
+            this.targetMessageId = targetMessageId;
+            this.fromMessageId = fromMessageId;
+            this.expectedClassGuid = expectedClassGuid;
+            this.expectedUserId = expectedUserId;
+        }
+
+        void capture() {
+            maxMessageIdSnapshot = maxMessageId.clone();
+            minMessageIdSnapshot = minMessageId.clone();
+            maxDateSnapshot = maxDate.clone();
+            minDateSnapshot = minDate.clone();
+            endReachedSnapshot = endReached.clone();
+            cacheEndReachedSnapshot = cacheEndReached.clone();
+            forwardEndReachedSnapshot = forwardEndReached.clone();
+            hideForwardEndReachedSnapshot = hideForwardEndReached;
+            loadingSnapshot = loading;
+            firstLoadingSnapshot = firstLoading;
+            chatWasResetSnapshot = chatWasReset;
+            loadsCountSnapshot = loadsCount;
+            lastMessageIdSnapshot = last_message_id;
+            firstUnreadIdSnapshot = first_unread_id;
+            createUnreadAfterIdSnapshot = createUnreadMessageAfterId;
+            createUnreadAfterIdLoadingSnapshot = createUnreadMessageAfterIdLoading;
+            startLoadFromMessageIdSnapshot = startLoadFromMessageId;
+            startLoadFromMessageIdSavedSnapshot = startLoadFromMessageIdSaved;
+            startLoadFromMessageOffsetSnapshot = startLoadFromMessageOffset;
+            loadingFromOldPositionSnapshot = loadingFromOldPosition;
+            newUnreadMessageCountSnapshot = newUnreadMessageCount;
+            prevSetUnreadCountSnapshot = prevSetUnreadCount;
+            firstSnapshot = first;
+            captured = true;
+        }
+
+        void restore() {
+            if (!captured) return;
+            System.arraycopy(maxMessageIdSnapshot, 0, maxMessageId, 0, maxMessageId.length);
+            System.arraycopy(minMessageIdSnapshot, 0, minMessageId, 0, minMessageId.length);
+            System.arraycopy(maxDateSnapshot, 0, maxDate, 0, maxDate.length);
+            System.arraycopy(minDateSnapshot, 0, minDate, 0, minDate.length);
+            System.arraycopy(endReachedSnapshot, 0, endReached, 0, endReached.length);
+            System.arraycopy(cacheEndReachedSnapshot, 0, cacheEndReached, 0, cacheEndReached.length);
+            System.arraycopy(forwardEndReachedSnapshot, 0, forwardEndReached, 0, forwardEndReached.length);
+            hideForwardEndReached = hideForwardEndReachedSnapshot;
+            loading = loadingSnapshot;
+            firstLoading = firstLoadingSnapshot;
+            chatWasReset = chatWasResetSnapshot;
+            loadsCount = loadsCountSnapshot;
+            last_message_id = lastMessageIdSnapshot;
+            first_unread_id = firstUnreadIdSnapshot;
+            createUnreadMessageAfterId = createUnreadAfterIdSnapshot;
+            createUnreadMessageAfterIdLoading = createUnreadAfterIdLoadingSnapshot;
+            startLoadFromMessageId = startLoadFromMessageIdSnapshot;
+            startLoadFromMessageIdSaved = startLoadFromMessageIdSavedSnapshot;
+            startLoadFromMessageOffset = startLoadFromMessageOffsetSnapshot;
+            loadingFromOldPosition = loadingFromOldPositionSnapshot;
+            newUnreadMessageCount = newUnreadMessageCountSnapshot;
+            prevSetUnreadCount = prevSetUnreadCountSnapshot;
+            first = firstSnapshot;
+        }
+    }
     private boolean needRemovePreviousSameChatActivity = true;
 
     private int newUnreadMessageCount;
@@ -21405,6 +21509,15 @@ public class ChatActivity extends BaseFragment implements
         } else {
             doNotRemoveLoadIndex = false;
         }
+        ZenoraAroundNavigationState zenoraAroundState = zenoraAroundNavigationLoads.get(queryLoadIndex);
+        if (zenoraAroundState != null && zenoraAroundState.expectedClassGuid == guid
+                && zenoraAroundState.account == currentAccount
+                && zenoraAroundState.dialogId == dialog_id
+                && zenoraAroundState.roomId == ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id)) {
+            zenoraAroundState.capture();
+        } else {
+            zenoraAroundState = null;
+        }
         if (!doNotRemoveLoadIndex && !fragmentBeginToShow && !paused) {
             int[] alowedNotifications = new int[]{NotificationCenter.messagesDidLoad, NotificationCenter.chatInfoDidLoad, NotificationCenter.groupCallUpdated, NotificationCenter.dialogsNeedReload, NotificationCenter.scheduledMessagesUpdated,
                     NotificationCenter.closeChats, NotificationCenter.botKeyboardDidLoad, NotificationCenter.userInfoDidLoad, NotificationCenter.pinnedInfoDidLoad, NotificationCenter.needDeleteDialog/*, NotificationCenter.botInfoDidLoad*/};
@@ -21479,6 +21592,9 @@ public class ChatActivity extends BaseFragment implements
         }
 
         if (index == -1) {
+            if (zenoraAroundState != null) {
+                zenoraAroundNavigationLoads.remove(queryLoadIndex);
+            }
             if (chatMode == MODE_SCHEDULED && mode == MODE_SCHEDULED && !isCache) {
                 waitingForReplyMessageLoad = true;
                 waitingForLoad.add(lastLoadIndex);
@@ -22556,7 +22672,13 @@ public class ChatActivity extends BaseFragment implements
             showFloatingTopicView(false);
         }
         addSponsoredMessages(!isFirstLoading);
-        checkScrollForLoad(false);
+        if (zenoraAroundState != null) {
+            // Around pages are lookup payloads, not pagination. Undo all counters/cursors
+            // that Telegram's generic load handler may have touched.
+            zenoraAroundState.restore();
+        } else {
+            checkScrollForLoad(false);
+        }
 
         if (postponedScroll && !fakePostponedScroll) {
             if (!universalNotify && chatAdapter != null) {
@@ -22678,6 +22800,20 @@ public class ChatActivity extends BaseFragment implements
                         }
                         break;
                     }
+                }
+            }
+        }
+        if (zenoraAroundState != null) {
+            zenoraAroundNavigationLoads.remove(queryLoadIndex);
+            if (isZenoraReplyNavigationCurrent(zenoraAroundState.account,
+                    zenoraAroundState.dialogId, zenoraAroundState.roomId,
+                    zenoraAroundState.expectedClassGuid, zenoraAroundState.expectedUserId)) {
+                if (hasZenoraParentInAdapter(zenoraAroundState.targetMessageId)) {
+                    // Reuse Telegram's message lookup, scroll animation and highlight.
+                    scrollToMessageId(zenoraAroundState.targetMessageId,
+                            zenoraAroundState.fromMessageId, true, 0, true, 0);
+                } else {
+                    showZenoraReplyNavigationError("The original reply message could not be added to this chat.");
                 }
             }
         }
@@ -42015,10 +42151,169 @@ public class ChatActivity extends BaseFragment implements
         }
 
         @Override
-        public void didPressReplyMessage(ChatMessageCell cell, int id, float x, float y, boolean longpress) {
-            // Core Reply intentionally does not include parent-message navigation yet.
-            // Do not invoke Telegram's scroll/load path for Zenora previews.
-            if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0L) {
+                public boolean isZenoraReplyNavigationCurrent(int account, long expectedDialogId,
+                                                        long expectedRoomId, int expectedClassGuid,
+                                                        long expectedUserId) {
+            return currentAccount == account
+                    && UserConfig.selectedAccount == account
+                    && dialog_id == expectedDialogId
+                    && classGuid == expectedClassGuid
+                    && expectedRoomId > 0L
+                    && ZenoraChatController.getRoomIdForDialog(account, expectedDialogId) == expectedRoomId
+                    && ZenoraApiClient.getCurrentUserId() == expectedUserId
+                    && ZenoraApiClient.isZenoraSessionEnabled()
+                    && !paused
+                    && fragmentOpened
+                    && getParentActivity() != null;
+        }
+
+        public boolean isZenoraReplyPreviewUnavailable(int childMessageId, int targetMessageId) {
+            MessageObject child = messagesDict[0].get(childMessageId);
+            if (child == null || child.messageOwner == null
+                    || child.messageOwner.reply_to == null
+                    || child.messageOwner.reply_to.reply_to_msg_id != targetMessageId) {
+                return false;
+            }
+            String status = child.messageOwner.params == null ? null
+                    : child.messageOwner.params.get("zenora_reply_preview_status");
+            TLRPC.Message embedded = child.messageOwner.replyMessage;
+            return "unavailable".equals(status)
+                    || embedded != null && embedded.id == targetMessageId
+                    && embedded.from_id == null
+                    && "Message unavailable".equals(embedded.message);
+        }
+
+        public boolean hasZenoraParentInAdapter(int targetMessageId) {
+            if (chatAdapter == null || chatAdapter.isFiltered) return false;
+            MessageObject parent = messagesDict[0].get(targetMessageId);
+            return parent != null
+                    && parent.messageOwner != null
+                    && parent.getDialogId() == dialog_id
+                    && messages.contains(parent)
+                    && chatAdapter.getMessages().contains(parent);
+        }
+
+        public void navigateToLoadedZenoraParent(int targetMessageId, int childMessageId) {
+            if (hasZenoraParentInAdapter(targetMessageId)) {
+                scrollToMessageId(targetMessageId, childMessageId, true, 0, true, 0);
+            }
+        }
+
+        public void publishZenoraAroundMessages(TLRPC.TL_messages_messages payload,
+                                                int targetMessageId, int fromMessageId,
+                                                long expectedRoomId, long expectedUserId,
+                                                int expectedClassGuid) {
+            if (payload == null || payload.messages == null || payload.messages.isEmpty()
+                    || !isZenoraReplyNavigationCurrent(currentAccount, dialog_id,
+                            expectedRoomId, expectedClassGuid, expectedUserId)
+                    || chatMode != MODE_DEFAULT || clearOnLoad || firstLoading
+                    || targetMessageId <= 0 || targetMessageId == Integer.MAX_VALUE) {
+                showZenoraReplyNavigationError("The chat is not ready to open this reply message.");
+                return;
+            }
+            if (hasZenoraParentInAdapter(targetMessageId)) {
+                navigateToLoadedZenoraParent(targetMessageId, fromMessageId);
+                return;
+            }
+
+            TLRPC.TL_messages_messages unique = new TLRPC.TL_messages_messages();
+            unique.users.addAll(payload.users);
+            unique.chats.addAll(payload.chats);
+            HashSet<Integer> seen = new HashSet<>();
+            boolean targetIncluded = false;
+            for (TLRPC.Message message : payload.messages) {
+                if (message == null || message.id <= 0
+                        || message.dialog_id != dialog_id
+                        || !seen.add(message.id)
+                        || messagesDict[0].get(message.id) != null) {
+                    continue;
+                }
+                unique.messages.add(message);
+                if (message.id == targetMessageId) targetIncluded = true;
+            }
+            if (!targetIncluded) {
+                showZenoraReplyNavigationError("The original reply message is no longer available in this chat.");
+                return;
+            }
+            Collections.sort(unique.messages, (left, right) -> Integer.compare(right.id, left.id));
+            unique.count = unique.messages.size();
+
+            int loadIndex = lastLoadIndex++;
+            ZenoraAroundNavigationState state = new ZenoraAroundNavigationState(
+                    loadIndex, currentAccount, dialog_id, expectedRoomId, targetMessageId,
+                    fromMessageId, expectedClassGuid, expectedUserId);
+            zenoraAroundNavigationLoads.put(loadIndex, state);
+            waitingForLoad.add(loadIndex);
+
+            // This is only a cache-backed UI publication. The page was fetched via
+            // Zenora HTTP or read from SQLite; no MTProto history request is started.
+            getMessagesController().processLoadedMessages(
+                    unique, unique.messages.size(), dialog_id, 0, unique.messages.size(),
+                    0, 0, true, classGuid, 0, 0, 0, 0,
+                    MessagesController.LOAD_AROUND_MESSAGE, false, MODE_DEFAULT,
+                    0L, loadIndex, false, 0, true, false, null);
+        }
+
+        public void markZenoraReplyUnavailable(int childMessageId, int targetMessageId) {
+            MessageObject child = messagesDict[0].get(childMessageId);
+            if (child == null || child.messageOwner == null
+                    || child.messageOwner.reply_to == null
+                    || child.messageOwner.reply_to.reply_to_msg_id != targetMessageId) return;
+            if (child.messageOwner.params == null) child.messageOwner.params = new HashMap<>();
+            child.messageOwner.params.put("zenora_reply_preview_status", "unavailable");
+            TLRPC.TL_message unavailable = new TLRPC.TL_message();
+            unavailable.id = targetMessageId;
+            unavailable.local_id = targetMessageId;
+            unavailable.dialog_id = dialog_id;
+            unavailable.peer_id = child.messageOwner.peer_id;
+            unavailable.date = child.messageOwner.date;
+            unavailable.message = "Message unavailable";
+            unavailable.media = new TLRPC.TL_messageMediaEmpty();
+            child.messageOwner.replyMessage = unavailable;
+            child.replyMessageObject = new MessageObject(currentAccount, unavailable, false, false);
+            ArrayList<TLRPC.Message> persist = new ArrayList<>();
+            persist.add(child.messageOwner);
+            MessagesStorage.getInstance(currentAccount).putZenoraReplyPreviews(persist);
+            if (chatAdapter != null) chatAdapter.notifyDataSetChanged(true);
+        }
+
+        public void showZenoraReplyNavigationError(String message) {
+            if (getParentActivity() == null || TextUtils.isEmpty(message)) return;
+            BulletinFactory.of(this).createErrorBulletin(message, themeDelegate).show();
+        }
+
+public void didPressReplyMessage(ChatMessageCell cell, int id, float x, float y, boolean longpress) {
+            long zenoraRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+            if (zenoraRoomId > 0L) {
+                if (longpress || cell == null || id <= 0 || id == Integer.MAX_VALUE) {
+                    return;
+                }
+                MessageObject owner = cell.getMessageObject();
+                if (owner == null || owner.messageOwner == null
+                        || owner.getDialogId() != dialog_id
+                        || owner.messageOwner.reply_to == null
+                        || owner.messageOwner.reply_to.reply_to_peer_id != null
+                        || owner.messageOwner.reply_to.reply_to_msg_id != id) {
+                    return;
+                }
+                long zenoraUserId = ZenoraApiClient.getCurrentUserId();
+                if (zenoraUserId <= 0L) {
+                    BulletinFactory.of(ChatActivity.this)
+                            .createErrorBulletin("Zenora account is not available. Sign in again.", themeDelegate).show();
+                    return;
+                }
+                Runnable navigate = () -> ZenoraHistoryController.navigateToReplyMessage(
+                        ChatActivity.this, currentAccount, dialog_id, zenoraRoomId,
+                        id, owner.getId(), classGuid, zenoraUserId);
+                if (chatAdapter != null && chatAdapter.isFiltered) {
+                    setFilterMessages(searchingFiltered = false, true, false);
+                    updateSearchButtons(getMediaDataController().getMask(),
+                            getMediaDataController().getSearchPosition(),
+                            getMediaDataController().getSearchCount());
+                    AndroidUtilities.runOnUIThread(navigate, 80);
+                } else {
+                    navigate.run();
+                }
                 return;
             }
             if (!canPerformActions()) {
