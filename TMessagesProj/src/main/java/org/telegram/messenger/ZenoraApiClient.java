@@ -665,9 +665,15 @@ public final class ZenoraApiClient {
      */
     public static void sendTextMessage(long roomId, String body, String clientMessageId,
                                        long expectedUserId, Callback callback) {
+        sendTextMessage(roomId, body, clientMessageId, 0L, expectedUserId, callback);
+    }
+
+    public static void sendTextMessage(long roomId, String body, String clientMessageId,
+                                       long replyToId, long expectedUserId, Callback callback) {
         final String safeBody = body == null ? "" : body;
         if (roomId <= 0 || safeBody.trim().isEmpty()
                 || clientMessageId == null || !clientMessageId.matches("[A-Za-z0-9._:-]{8,64}")
+                || replyToId < 0L || replyToId > Integer.MAX_VALUE
                 || expectedUserId <= 0 || getCurrentUserId() != expectedUserId
                 || !isZenoraSessionEnabled()) {
             dispatch(callback, null, new IllegalArgumentException("Invalid or stale Zenora text-send session"));
@@ -680,18 +686,21 @@ public final class ZenoraApiClient {
                         throw new IllegalStateException("Zenora account changed before text send");
                     }
                     JSONObject response = sendTextMessageWithRetry(
-                            roomId, safeBody, clientMessageId, expectedUserId);
+                            roomId, safeBody, clientMessageId, replyToId, expectedUserId);
                     JSONObject message = response.optJSONObject("message");
                     if (message == null) {
                         throw new IllegalStateException("Zenora returned an incomplete sent-message response");
                     }
                     long messageId = message.optLong("message_id", 0L);
                     String createdAt = message.optString("created_at", "");
+                    long acknowledgedReplyToId = message.isNull("reply_to_id")
+                            ? 0L : message.optLong("reply_to_id", -1L);
                     if (messageId <= 0L || messageId > Integer.MAX_VALUE
                             || message.optLong("room_id", 0L) != roomId
                             || message.optLong("sender_id", 0L) != expectedUserId
                             || !safeBody.equals(message.optString("text", ""))
                             || !clientMessageId.equals(message.optString("client_message_id", ""))
+                            || acknowledgedReplyToId != replyToId
                             || createdAt.isEmpty()) {
                         throw new IllegalStateException("Zenora returned a mismatched sent-message record");
                     }
@@ -713,11 +722,12 @@ public final class ZenoraApiClient {
      * client_message_id never change during this send operation.
      */
     private static JSONObject sendTextMessageWithRetry(long roomId, String body,
-                                                       String clientMessageId,
+                                                       String clientMessageId, long replyToId,
                                                        long expectedUserId) throws Exception {
         String formWithoutCsrf = "room_id=" + encode(String.valueOf(roomId))
                 + "&body=" + encode(body)
-                + "&client_message_id=" + encode(clientMessageId);
+                + "&client_message_id=" + encode(clientMessageId)
+                + "&reply_to_id=" + encode(String.valueOf(replyToId));
         String csrf = getMuteActionCsrfToken(expectedUserId);
         int transientRetries = 0;
         boolean csrfRetryUsed = false;
