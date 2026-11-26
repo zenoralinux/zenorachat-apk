@@ -513,6 +513,14 @@ public class MessagesStorage extends BaseController {
     public void acknowledgeZenoraTextMessage(long randomId, long dialogId, int localId,
                                               int serverId, int serverDate,
                                               String clientMessageId, Consumer<Boolean> callback) {
+        acknowledgeZenoraTextMessage(randomId, dialogId, localId, serverId, serverDate,
+                clientMessageId, false, callback);
+    }
+
+    public void acknowledgeZenoraTextMessage(long randomId, long dialogId, int localId,
+                                              int serverId, int serverDate,
+                                              String clientMessageId, boolean clearReplyPreview,
+                                              Consumer<Boolean> callback) {
         storageQueue.postRunnable(() -> {
             boolean inTransaction = false;
             boolean success = false;
@@ -527,6 +535,18 @@ public class MessagesStorage extends BaseController {
                 sent.bindString(3, clientMessageId);
                 sent.step();
                 sent.dispose();
+
+                if (clearReplyPreview) {
+                    SQLitePreparedStatement clearPreview = database.executeFast(
+                            "UPDATE messages_v2 SET replydata = NULL WHERE mid = ? AND uid = ?");
+                    try {
+                        clearPreview.bindInteger(1, localId);
+                        clearPreview.bindLong(2, dialogId);
+                        clearPreview.step();
+                    } finally {
+                        clearPreview.dispose();
+                    }
+                }
 
                 long[] ids = updateMessageStateAndIdInternal(
                         randomId, dialogId, localId, serverId, serverDate, 0, 0);
