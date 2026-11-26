@@ -6325,6 +6325,41 @@ public class MediaDataController extends BaseController {
             SQLiteCursor cursor = null;
             try {
                 for (Integer replyId : ownersByReplyId.keySet()) {
+                    // First read the API-provided parent snapshot stored on each child row.
+                    // This remains available offline even when the parent is outside the local page/cache.
+                    ArrayList<MessageObject> replyOwners = ownersByReplyId.get(replyId);
+                    if (replyOwners != null) {
+                        for (MessageObject owner : replyOwners) {
+                            if (owner == null || owner.messageOwner == null) continue;
+                            cursor = getMessagesStorage().getDatabase().queryFinalized(
+                                    "SELECT replydata FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1",
+                                    dialogId, owner.getId());
+                            if (cursor.next() && !cursor.isNull(0)) {
+                                NativeByteBuffer data = cursor.byteBufferValue(0);
+                                if (data != null) {
+                                    TLRPC.Message parent = TLRPC.Message.TLdeserialize(
+                                            data, data.readInt32(false), false);
+                                    if (parent != null) {
+                                        parent.readAttachPath(data, getUserConfig().clientUserId);
+                                        parent.dialog_id = dialogId;
+                                        if (parent.media instanceof TLRPC.TL_messageMediaEmpty
+                                                && !TextUtils.isEmpty(parent.message)
+                                                && parent.id == replyId) {
+                                            loadedParents.put(replyId,
+                                                    new MessageObject(currentAccount, parent, false, false));
+                                        }
+                                    }
+                                    data.reuse();
+                                }
+                            }
+                            cursor.dispose();
+                            cursor = null;
+                            if (loadedParents.containsKey(replyId)) break;
+                        }
+                    }
+                    if (loadedParents.containsKey(replyId)) continue;
+
+                    // If the parent itself is cached locally, use the canonical SQLite object.
                     cursor = getMessagesStorage().getDatabase().queryFinalized(
                             "SELECT data, mid, date FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1",
                             dialogId, replyId);
