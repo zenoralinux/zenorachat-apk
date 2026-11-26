@@ -14188,6 +14188,9 @@ public class MessagesStorage extends BaseController {
                             message.id = messageId;
                             message.dialog_id = dialogId;
                             if (message.zenoraEditVersion > editVersion) {
+                                // Keep the authoritative newer row marked as present so an
+                                // older event cannot overwrite its cached reply preview.
+                                editedMessages.add(message);
                                 continue;
                             }
                             message.message = body;
