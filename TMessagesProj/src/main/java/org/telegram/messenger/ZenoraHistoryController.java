@@ -1430,7 +1430,7 @@ public final class ZenoraHistoryController {
                         dates.get(i), selfId);
             }
             if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
-                message.params = new HashMap<>();
+                if (message.params == null) message.params = new HashMap<>();
                 message.params.put("zenora_client_message_id", clientMessageId);
                 message.params.put("zenora_room_id", String.valueOf(roomId));
             }
@@ -1781,7 +1781,7 @@ public final class ZenoraHistoryController {
                 if (message.out) message.flags |= 1 << 1;
                 applyReplyContractToMessage(message, row, dialogId, dialog.peer, date, selfId);
                 if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
-                    message.params = new HashMap<>();
+                    if (message.params == null) message.params = new HashMap<>();
                     message.params.put("zenora_client_message_id", clientMessageId);
                     message.params.put("zenora_room_id", String.valueOf(roomId));
                 }
