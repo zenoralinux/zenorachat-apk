@@ -943,7 +943,7 @@ public final class ZenoraHistoryController {
         MessagesStorage.getInstance(pending.account).updateZenoraOutboxState(
                 pending.clientMessageId, ZenoraOutboxPolicy.SENDING, 0L, false, false);
         ZenoraApiClient.sendTextMessage(pending.roomId, pending.body,
-                pending.clientMessageId, pending.zenoraUserId, (response, error) -> {
+                pending.clientMessageId, pending.replyToId, pending.zenoraUserId, (response, error) -> {
                     if (pending.resolved.get()) return;
                     if (error != null) {
                         handleTextSendFailure(pending, error);
@@ -954,17 +954,22 @@ public final class ZenoraHistoryController {
                     String returnedClientId = sent == null ? "" : sent.optString("client_message_id", "");
                     int serverDate = sent == null ? 0
                             : ZenoraChatController.parseHistoryDate(sent.optString("created_at", ""));
+                    long ackReplyToId = replyToIdFromRow(sent);
                     if (rawId <= 0L || rawId > Integer.MAX_VALUE
                             || !pending.clientMessageId.equals(returnedClientId)
                             || sent.optLong("room_id", 0L) != pending.roomId
                             || !pending.body.equals(sent.optString("text", ""))
+                            || ackReplyToId != pending.replyToId
+                            || !isValidReplyContract(sent)
                             || serverDate <= 0) {
                         scheduleUnknownTextSend(pending,
                                 new IllegalStateException("Zenora returned an ambiguous message acknowledgment."),
                                 false);
                         return;
                     }
-                    acknowledgePendingTextSend(pending, (int) rawId, serverDate);
+                    acknowledgePendingTextSend(pending, (int) rawId, serverDate,
+                            ackReplyToId, sent.optJSONObject("reply_preview"),
+                            pending.messageObject.messageOwner.peer_id, pending.zenoraUserId);
                 });
     }
 
@@ -1112,11 +1117,32 @@ public final class ZenoraHistoryController {
         }
     }
 
-    private static void acknowledgePendingTextSend(PendingTextSend pending, int serverId, int serverDate) {
+    private static void acknowledgePendingTextSend(PendingTextSend pending, int serverId, int serverDate,
+                                                      long replyToId, JSONObject replyPreview,
+                                                      TLRPC.Peer peer, long selfId) {
         if (pending == null || serverId <= 0 || serverDate <= 0
-                || !pending.resolved.compareAndSet(false, true)) return;
+                || replyToId != pending.replyToId || !pending.resolved.compareAndSet(false, true)) return;
 
         TLRPC.Message message = pending.messageObject.messageOwner;
+        boolean clearReplyPreview = false;
+        if (replyToId > 0L) {
+            TLRPC.TL_messageReplyHeader header = message.reply_to instanceof TLRPC.TL_messageReplyHeader
+                    ? (TLRPC.TL_messageReplyHeader) message.reply_to
+                    : new TLRPC.TL_messageReplyHeader();
+            header.flags |= 16;
+            header.reply_to_msg_id = (int) replyToId;
+            message.reply_to = header;
+            TLRPC.Message parent = createReplyPreviewMessage(
+                    pending.dialogId, peer, serverDate, replyToId, replyPreview, selfId);
+            message.replyMessage = parent;
+            pending.messageObject.replyMessageObject = parent == null
+                    ? null : new MessageObject(pending.account, parent, false, false);
+            clearReplyPreview = parent == null;
+        } else {
+            message.reply_to = null;
+            message.replyMessage = null;
+            pending.messageObject.replyMessageObject = null;
+        }
         int previousId = message.id;
         message.id = serverId;
         message.local_id = pending.localId;
@@ -1131,7 +1157,7 @@ public final class ZenoraHistoryController {
         MessagesStorage storage = MessagesStorage.getInstance(pending.account);
         storage.acknowledgeZenoraTextMessage(
                 pending.randomId, pending.dialogId, pending.localId, serverId,
-                serverDate, pending.clientMessageId, success -> {
+                serverDate, pending.clientMessageId, clearReplyPreview, success -> {
                     if (!success) {
                         pending.resolved.set(false);
                         message.id = previousId;
