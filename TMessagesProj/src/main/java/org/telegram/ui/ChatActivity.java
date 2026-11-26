@@ -17736,6 +17736,51 @@ public class ChatActivity extends BaseFragment implements
                 && "Message unavailable".equals(embedded.message);
     }
 
+    /**
+     * Resolve the exact Zenora parent snapshot already attached to this child's Reply Preview.
+     * Such snapshots are persisted in messages_v2.replydata and can be the only local copy
+     * when the parent itself is outside the loaded history page.
+     */
+    public TLRPC.Message getZenoraReplyPreviewParent(int childMessageId, int targetMessageId) {
+        MessageObject child = messagesDict[0].get(childMessageId);
+        if (child == null || child.messageOwner == null
+                || child.getDialogId() != dialog_id
+                || child.messageOwner.reply_to == null
+                || child.messageOwner.reply_to.reply_to_peer_id != null
+                || child.messageOwner.reply_to.reply_to_msg_id != targetMessageId) {
+            return null;
+        }
+        String status = child.messageOwner.params == null ? null
+                : child.messageOwner.params.get("zenora_reply_preview_status");
+        if ("unavailable".equals(status)) return null;
+
+        TLRPC.Message parent = null;
+        MessageObject previewObject = child.replyMessageObject;
+        if (previewObject != null && previewObject.messageOwner != null
+                && previewObject.getDialogId() == dialog_id) {
+            parent = previewObject.messageOwner;
+        }
+        if (parent == null) {
+            MessageObject cachedReply = repliesMessagesDict.get(targetMessageId);
+            if (cachedReply != null && cachedReply.messageOwner != null
+                    && cachedReply.getDialogId() == dialog_id) {
+                parent = cachedReply.messageOwner;
+            }
+        }
+        if (parent == null) parent = child.messageOwner.replyMessage;
+        if (parent == null || parent.id != targetMessageId
+                || (parent.dialog_id != 0 && parent.dialog_id != dialog_id)
+                || !(parent.media instanceof TLRPC.TL_messageMediaEmpty)
+                || TextUtils.isEmpty(parent.message) || TextUtils.isEmpty(parent.message.trim())
+                || parent.from_id == null
+                || "Message unavailable".equals(parent.message)) {
+            return null;
+        }
+        parent.dialog_id = dialog_id;
+        if (parent.peer_id == null) parent.peer_id = child.messageOwner.peer_id;
+        return parent;
+    }
+
     public boolean hasZenoraParentInAdapter(int targetMessageId) {
         if (chatAdapter == null || chatAdapter.isFiltered) return false;
         MessageObject parent = messagesDict[0].get(targetMessageId);
