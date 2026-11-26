@@ -6248,7 +6248,131 @@ public class MediaDataController extends BaseController {
         }
     }
 
+    private void loadZenoraLocalReplyMessages(ArrayList<MessageObject> messages,
+                                                long dialogId, Runnable callback) {
+        HashMap<Integer, ArrayList<MessageObject>> ownersByReplyId = new HashMap<>();
+        if (messages != null) {
+            for (int i = 0; i < messages.size(); i++) {
+                MessageObject owner = messages.get(i);
+                if (owner == null || owner.messageOwner == null
+                        || owner.messageOwner.reply_to == null
+                        || owner.messageOwner.reply_to.reply_to_msg_id <= 0
+                        || owner.messageOwner.reply_to.reply_to_peer_id != null) continue;
+                int replyId = owner.messageOwner.reply_to.reply_to_msg_id;
+
+                if (owner.replyMessageObject != null
+                        && owner.replyMessageObject.messageOwner != null
+                        && owner.replyMessageObject.getDialogId() == dialogId
+                        && owner.replyMessageObject.getId() == replyId) {
+                    continue;
+                }
+
+                TLRPC.Message embedded = owner.messageOwner.replyMessage;
+                if (embedded != null && embedded.id == replyId
+                        && (embedded.dialog_id == 0 || embedded.dialog_id == dialogId)
+                        && embedded.media instanceof TLRPC.TL_messageMediaEmpty
+                        && !TextUtils.isEmpty(embedded.message)) {
+                    embedded.dialog_id = dialogId;
+                    owner.replyMessageObject = new MessageObject(currentAccount, embedded, false, false);
+                    continue;
+                }
+
+                MessageObject pageParent = null;
+                if (messages != null) {
+                    for (int j = 0; j < messages.size(); j++) {
+                        MessageObject candidate = messages.get(j);
+                        if (candidate != null && candidate != owner
+                                && candidate.messageOwner != null
+                                && candidate.getDialogId() == dialogId
+                                && candidate.getId() == replyId
+                                && candidate.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty
+                                && !TextUtils.isEmpty(candidate.messageOwner.message)) {
+                            pageParent = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (pageParent != null) {
+                    owner.replyMessageObject = pageParent;
+                    owner.messageOwner.replyMessage = pageParent.messageOwner;
+                    continue;
+                }
+                ArrayList<MessageObject> owners = ownersByReplyId.get(replyId);
+                if (owners == null) {
+                    owners = new ArrayList<>();
+                    ownersByReplyId.put(replyId, owners);
+                }
+                owners.add(owner);
+            }
+        }
+
+        if (ownersByReplyId.isEmpty()) {
+            if (callback != null) callback.run();
+            return;
+        }
+
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            HashMap<Integer, MessageObject> loadedParents = new HashMap<>();
+            SQLiteCursor cursor = null;
+            try {
+                for (Integer replyId : ownersByReplyId.keySet()) {
+                    cursor = getMessagesStorage().getDatabase().queryFinalized(
+                            "SELECT data, mid, date FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1",
+                            dialogId, replyId);
+                    if (cursor.next()) {
+                        NativeByteBuffer data = cursor.byteBufferValue(0);
+                        if (data != null) {
+                            TLRPC.Message parent = TLRPC.Message.TLdeserialize(
+                                    data, data.readInt32(false), false);
+                            if (parent != null) {
+                                parent.readAttachPath(data, getUserConfig().clientUserId);
+                                parent.id = cursor.intValue(1);
+                                parent.date = cursor.intValue(2);
+                                parent.dialog_id = dialogId;
+                                if (parent.media instanceof TLRPC.TL_messageMediaEmpty
+                                        && !TextUtils.isEmpty(parent.message)
+                                        && parent.id == replyId) {
+                                    loadedParents.put(replyId,
+                                            new MessageObject(currentAccount, parent, false, false));
+                                }
+                            }
+                            data.reuse();
+                        }
+                    }
+                    cursor.dispose();
+                    cursor = null;
+                }
+            } catch (Throwable error) {
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+
+            AndroidUtilities.runOnUIThread(() -> {
+                for (Map.Entry<Integer, ArrayList<MessageObject>> entry : ownersByReplyId.entrySet()) {
+                    MessageObject parent = loadedParents.get(entry.getKey());
+                    if (parent == null) continue;
+                    for (MessageObject owner : entry.getValue()) {
+                        if (owner == null || owner.messageOwner == null
+                                || owner.messageOwner.reply_to == null
+                                || owner.messageOwner.reply_to.reply_to_msg_id != entry.getKey()) continue;
+                        owner.replyMessageObject = parent;
+                        owner.messageOwner.replyMessage = parent.messageOwner;
+                        owner.applyTimestampsHighlightForReplyMsg();
+                    }
+                }
+                if (callback != null) callback.run();
+            });
+        });
+    }
+
     public void loadReplyMessagesForMessages(ArrayList<MessageObject> messages, long dialogId, int mode, long threadMessageId, Runnable callback, int classGuid, Timer logLogger) {
+        if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialogId) > 0L) {
+            // Zenora reply targets are resolved exclusively from its API preview,
+            // this dialog's SQLite cache, or the current page. Never fall through to MTProto.
+            loadZenoraLocalReplyMessages(messages, dialogId, callback);
+            return;
+        }
         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
         if (DialogObject.isEncryptedDialog(dialogId)) {
             Timer.Task t1 = Timer.start(logLogger, "loadReplyMessagesForMessages: (encrypted) finding messages to load");
