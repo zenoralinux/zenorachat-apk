@@ -320,7 +320,7 @@ public final class ZenoraLiveMessageSyncController {
         MessagesStorage.getInstance(session.account).applyZenoraMessageMutationEvents(
                 session.roomId, session.dialogId, session.userId, requestedEventCursor,
                 page.nextCursor, page.events, editEntitiesByMessageId,
-                (committedCursor, editedMessages, deletedIds, applyError) -> {
+                (committedCursor, editedMessages, deletedIds, suppressedEditIds, applyError) -> {
                     if (applyError != null || committedCursor != page.nextCursor) {
                         fail(session, applyError != null ? applyError
                                 : new IllegalStateException("Mutation cursor was not committed"));
@@ -334,7 +334,7 @@ public final class ZenoraLiveMessageSyncController {
                         }
                     }
 
-                    applyEditedMessages(session, page.events, editedMessages);
+                    applyEditedMessages(session, page.events, editedMessages, suppressedEditIds);
                     if (deletedIds != null && !deletedIds.isEmpty()) {
                         boolean removed = MessagesController.getInstance(session.account)
                                 .applyZenoraMessageDeletionLocally(session.dialogId, deletedIds);
@@ -433,9 +433,11 @@ public final class ZenoraLiveMessageSyncController {
     }
 
     private static void applyEditedMessages(Session session, JSONArray events,
-                                            ArrayList<TLRPC.Message> messages) {
+                                            ArrayList<TLRPC.Message> messages,
+                                            ArrayList<Integer> suppressedEditMessageIds) {
         HashMap<String, JSONObject> metadata = new HashMap<>();
         HashSet<Integer> storedIds = new HashSet<>();
+        if (suppressedEditMessageIds != null) storedIds.addAll(suppressedEditMessageIds);
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
             if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
@@ -447,6 +449,10 @@ public final class ZenoraLiveMessageSyncController {
         if (messages != null) {
             for (TLRPC.Message message : messages) {
                 if (message == null || message.id <= 0) continue;
+                if (suppressedEditMessageIds != null && suppressedEditMessageIds.contains(message.id)) {
+                    storedIds.add(message.id);
+                    continue;
+                }
                 storedIds.add(message.id);
                 String key = message.id + ":" + message.zenoraEditVersion;
                 JSONObject payload = metadata.get(key);

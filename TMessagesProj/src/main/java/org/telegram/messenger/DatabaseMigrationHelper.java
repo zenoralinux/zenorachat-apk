@@ -1753,6 +1753,15 @@ public class DatabaseMigrationHelper {
             version = 185;
         }
 
+        if (version == 185) {
+            // Durable local deletion tombstones prevent late edit events from
+            // resurrecting deleted text inside Reply previews after process death.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_deleted(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, deletion_event_id INTEGER NOT NULL, deletion_event_type TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_mutation_deleted_room_user_idx ON zenora_message_mutation_deleted(room_id, zenora_user_id, message_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 186").stepThis().dispose();
+            version = 186;
+        }
+
         return version;
     }
 
@@ -1815,16 +1824,16 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION && version != 183 && version != 182) {
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 185
+                    && version != 184 && version != 183 && version != 182) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
             }
             HashSet<String> excludeTables = new HashSet<>();
-            // Version 182 predates durable Zenora history state. The new database
-            // already has the version-183 table; skip copying the absent old table.
-            if (version == 182) {
-                excludeTables.add("zenora_history_state");
-            }
+            // Older databases predate one or more additive Zenora state tables.
+            if (version < 183) excludeTables.add("zenora_history_state");
+            if (version < 185) excludeTables.add("zenora_message_mutation_cursor");
+            if (version < 186) excludeTables.add("zenora_message_mutation_deleted");
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
             excludeTables.add("scheduled_messages_v2");

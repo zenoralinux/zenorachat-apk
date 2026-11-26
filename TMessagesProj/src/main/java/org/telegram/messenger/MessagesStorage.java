@@ -121,7 +121,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 184;
+    public final static int LAST_DB_VERSION = 186;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -14061,7 +14061,8 @@ public class MessagesStorage extends BaseController {
 
     public interface ZenoraMessageMutationApplyCallback {
         void onComplete(long cursor, ArrayList<TLRPC.Message> editedMessages,
-                        ArrayList<Integer> deletedMessageIds, Exception error);
+                        ArrayList<Integer> deletedMessageIds,
+                        ArrayList<Integer> suppressedEditMessageIds, Exception error);
     }
 
     /** Load the durable mutation cursor for this Telegram account, Zenora user and room. */
@@ -14104,7 +14105,7 @@ public class MessagesStorage extends BaseController {
                 || expectedAfterEventId < 0L || nextEventId < expectedAfterEventId
                 || events == null || events.length() > 100) {
             AndroidUtilities.runOnUIThread(() -> {
-                if (callback != null) callback.onComplete(-1L, null, null,
+                if (callback != null) callback.onComplete(-1L, null, null, null,
                         new IllegalArgumentException("Invalid Zenora mutation event page"));
             });
             return;
@@ -14112,6 +14113,7 @@ public class MessagesStorage extends BaseController {
         storageQueue.postRunnable(() -> {
             ArrayList<TLRPC.Message> editedMessages = new ArrayList<>();
             ArrayList<Integer> deletedMessageIds = new ArrayList<>();
+            ArrayList<Integer> suppressedEditMessageIds = new ArrayList<>();
             HashSet<Long> eventIds = new HashSet<>();
             SQLiteCursor cursor = null;
             boolean inTransaction = false;
@@ -14158,6 +14160,21 @@ public class MessagesStorage extends BaseController {
                                 || ZenoraChatController.parseHistoryDate(editedAt) <= 0
                                 || editVersion <= 0L || editVersion > Integer.MAX_VALUE) {
                             throw new IllegalStateException("Edited event payload failed local validation");
+                        }
+
+                        // An account-scoped tombstone wins over any late edit event:
+                        // do not restore the deleted row or a cached Reply preview.
+                        cursor = database.queryFinalized(
+                                "SELECT 1 FROM zenora_message_mutation_deleted WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ? AND message_id = ? LIMIT 1",
+                                roomId, dialogId, zenoraUserId, messageId);
+                        boolean alreadyDeletedLocally = cursor.next();
+                        cursor.dispose();
+                        cursor = null;
+                        if (alreadyDeletedLocally) {
+                            if (!suppressedEditMessageIds.contains(messageId)) {
+                                suppressedEditMessageIds.add(messageId);
+                            }
+                            continue;
                         }
 
                         TLRPC.Message message = null;
@@ -14227,6 +14244,25 @@ public class MessagesStorage extends BaseController {
                         }
                     } else if ("message.deleted_for_me".equals(eventType)
                             || "message.deleted_for_all".equals(eventType)) {
+                        SQLitePreparedStatement tombstone = database.executeFast(
+                                "REPLACE INTO zenora_message_mutation_deleted " +
+                                "(room_id,dialog_id,zenora_user_id,message_id,deletion_event_id,deletion_event_type,updated_at) " +
+                                "VALUES(?,?,?,?,?,?,?)");
+                        try {
+                            tombstone.bindLong(1, roomId);
+                            tombstone.bindLong(2, dialogId);
+                            tombstone.bindLong(3, zenoraUserId);
+                            tombstone.bindInteger(4, messageId);
+                            tombstone.bindLong(5, eventId);
+                            tombstone.bindString(6, eventType);
+                            tombstone.bindLong(7, System.currentTimeMillis());
+                            tombstone.step();
+                        } finally {
+                            tombstone.dispose();
+                        }
+                        if (!suppressedEditMessageIds.contains(messageId)) {
+                            suppressedEditMessageIds.add(messageId);
+                        }
                         String[] tables = {"messages_v2", "messages_topics", "media_v4", "media_topics"};
                         for (String table : tables) {
                             SQLitePreparedStatement delete = database.executeFast(
@@ -14296,9 +14332,11 @@ public class MessagesStorage extends BaseController {
             final long resultCursor = committedCursor;
             final ArrayList<TLRPC.Message> resultEdited = editedMessages;
             final ArrayList<Integer> resultDeleted = deletedMessageIds;
+            final ArrayList<Integer> resultSuppressedEdits = suppressedEditMessageIds;
             final Exception resultError = failure;
             AndroidUtilities.runOnUIThread(() -> {
-                if (callback != null) callback.onComplete(resultCursor, resultEdited, resultDeleted, resultError);
+                if (callback != null) callback.onComplete(resultCursor, resultEdited, resultDeleted,
+                        resultSuppressedEdits, resultError);
             });
         });
     }

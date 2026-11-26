@@ -21,7 +21,7 @@ poll_end = live.index("private static void handleResponse(", poll_start)
 poll = live[poll_start:poll_end]
 
 checks = {
-    "durable cursor is migrated in SQLite v185": "user_version = 185" in migration and "zenora_message_mutation_cursor" in migration,
+    "durable event cursor and deletion tombstones are migrated in SQLite v186": "user_version = 185" in migration and "user_version = 186" in migration and "zenora_message_mutation_cursor" in migration and "zenora_message_mutation_deleted" in migration,
     "cursor is isolated by room, dialog and Zenora account": "PRIMARY KEY(room_id, dialog_id, zenora_user_id)" in migration,
     "cursor load is persisted and not memory-only": "loadZenoraMessageMutationCursor" in storage and "SELECT last_event_id FROM zenora_message_mutation_cursor" in storage,
     "event apply validates expected durable cursor": "storedCursor != expectedAfterEventId" in apply,
@@ -31,6 +31,10 @@ checks = {
     "edit version is persisted to serialized message custom params": "MessageCustomParamsHelper.writeLocalParams(message)" in apply and "ZenoraMessageMutationController.applyEditMetadata" in apply,
     "edited entities are prepared before starting the SQLite transaction": "prepareEditedMessageEntities(session, page.events)" in live and "editEntitiesByMessageId" in live,
     "edited body, entity vector and version are serialized before cursor commit": "new ArrayList<>(parsedEntities)" in apply and "message.flags |= 1 << 7" in apply and "message.flags |= 1 << 8" in apply,
+    "deleted parent tombstones are written inside the same transaction": "REPLACE INTO zenora_message_mutation_deleted" in apply and "deletion_event_id" in apply,
+    "late edit events check persistent per-account deletion tombstones": "SELECT 1 FROM zenora_message_mutation_deleted" in apply and "alreadyDeletedLocally" in apply,
+    "tombstoned edit previews are suppressed in native UI callback": "suppressedEditMessageIds" in live and "storedIds.addAll(suppressedEditMessageIds)" in live,
+    "database recovery handles older cursor-only and pre-cursor schemas": "version != 185" in migration and 'excludeTables.add("zenora_message_mutation_deleted")' in migration,
     "stale edit event cannot downgrade local message": "message.zenoraEditVersion > editVersion" in apply and "editedMessages.add(message)" in apply,
     "personal and global deletes remove SQLite cache rows": "message.deleted_for_me" in apply and "message.deleted_for_all" in apply and "String[] tables = {\"messages_v2\", \"messages_topics\", \"media_v4\", \"media_topics\"}" in apply and 'DELETE FROM " + table + " WHERE uid = ? AND mid = ?' in apply,
     "dialog last-message pointer is recalculated after deletion": "UPDATE dialogs SET (last_mid, last_mid_group)" in apply,
