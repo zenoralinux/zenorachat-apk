@@ -352,6 +352,12 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+    private static String limitZenoraReplyPreview(String text) {
+        if (text == null) return "";
+        int count = text.codePointCount(0, text.length());
+        return count <= 140 ? text : text.substring(0, text.offsetByCodePoints(0, 140));
+    }
+
     private void updateZenoraReplyPreviewInternal(TLRPC.Message message) throws Exception {
         if (message == null || message.reply_to == null) return;
         if (message.replyMessage == null) {
@@ -538,7 +544,7 @@ public class MessagesStorage extends BaseController {
                         long previewSender = localReply == null || localReply.from_id == null
                                 ? 0L : MessageObject.getPeerId(localReply.from_id);
                         String previewBody = localReply == null || localReply.message == null
-                                ? "" : localReply.message.substring(0, Math.min(140, localReply.message.length()));
+                                ? "" : limitZenoraReplyPreview(localReply.message);
                         insert.bindLong(11, previewSender);
                         insert.bindString(12, previewBody);
                         insert.step();
