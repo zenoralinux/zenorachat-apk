@@ -98,9 +98,12 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.SecretChatHelper;
 import org.telegram.messenger.SendMessagesHelper;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
+import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraMessageMutationController;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.utils.pip.PipEnvironment;
@@ -1557,6 +1560,12 @@ public class AlertsCreator {
                 did == 0 && parentFragment instanceof NotificationsCustomSettingsActivity ? null : LocaleController.getString(R.string.NotificationsCustomize),
                 LocaleController.getString(R.string.NotificationsTurnOff)
         };
+        // Zenora Android exposes permanent mute only; keep the existing Telegram
+        // duration choices for non-Zenora accounts and global notification settings.
+        if (did != 0 && ZenoraApiClient.isZenoraSessionEnabled()) {
+            descriptions[1] = null;
+            descriptions[2] = null;
+        }
 
         int[] icons = new int[]{
                 R.drawable.notifications_on,
@@ -1598,7 +1607,13 @@ public class AlertsCreator {
             textView.setOnClickListener(v -> {
                 int i = (Integer) v.getTag();
                 if (i == 0) {
-                    if (did != 0) {
+                    if (did != 0 && ZenoraApiClient.isZenoraSessionEnabled()) {
+                        NotificationsController.getInstance(currentAccount).setDialogNotificationsSettings(
+                                did, topicId, NotificationsController.SETTING_MUTE_UNMUTE);
+                        if (resultCallback != null) {
+                            resultCallback.run(defaultEnabled ? 0 : 1);
+                        }
+                    } else if (did != 0) {
                         SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
                         SharedPreferences.Editor editor = preferences.edit();
                         if (defaultEnabled) {
@@ -2711,14 +2726,19 @@ public class AlertsCreator {
         frameLayout.addView(messageTextView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, (LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.TOP, 24, 49, 24, 1));
 
         final TLRPC.Chat mfChat = ChatObject.isMonoForum(chat) ? fragment.getMessagesController().getMonoForumLinkedChat(chat.id) : null;
-        boolean canRevokeInbox = user != null && !user.bot && user.id != selfUserId && MessagesController.getInstance(account).canRevokePmInbox;
+        boolean zenoraDeleteAllAvailable = ZenoraChatController.isZenoraEnabled();
+        boolean canRevokeInbox = user != null && !user.bot && user.id != selfUserId
+                && (zenoraDeleteAllAvailable || MessagesController.getInstance(account).canRevokePmInbox);
         int revokeTimeLimit;
         if (user != null) {
             revokeTimeLimit = MessagesController.getInstance(account).revokeTimePmLimit;
         } else {
             revokeTimeLimit = MessagesController.getInstance(account).revokeTimeLimit;
         }
-        boolean canDeleteInbox = !secret && user != null && canRevokeInbox && revokeTimeLimit == 0x7fffffff;
+        // Zenora owns the DM history policy. Do not hide the native "also delete
+        // for the other side" checkbox behind Telegram's MTProto revoke window.
+        boolean canDeleteInbox = !secret && user != null && canRevokeInbox
+                && (zenoraDeleteAllAvailable || revokeTimeLimit == 0x7fffffff);
         final boolean[] deleteForAll = new boolean[1];
         boolean deleteChatForAll = false;
 
@@ -6590,23 +6610,10 @@ public class AlertsCreator {
 
         BottomSheet.Builder builder = new BottomSheet.Builder(fragment.getParentActivity(), false, resourcesProvider);
         builder.setTitle(LocaleController.getString(R.string.Notifications), true);
-        CharSequence[] items = new CharSequence[]{
-                LocaleController.formatString("MuteFor", R.string.MuteFor, LocaleController.formatPluralString("Hours", 1)),
-                LocaleController.formatString("MuteFor", R.string.MuteFor, LocaleController.formatPluralString("Hours", 8)),
-                LocaleController.formatString("MuteFor", R.string.MuteFor, LocaleController.formatPluralString("Days", 2)),
-                LocaleController.getString(R.string.MuteDisable)
-        };
+        // Android Zenora mute is permanent; timed choices are intentionally hidden.
+        CharSequence[] items = new CharSequence[]{LocaleController.getString(R.string.MuteDisable)};
         builder.setItems(items, (dialogInterface, i) -> {
-                    int setting;
-                    if (i == 0) {
-                        setting = NotificationsController.SETTING_MUTE_HOUR;
-                    } else if (i == 1) {
-                        setting = NotificationsController.SETTING_MUTE_8_HOURS;
-                    } else if (i == 2) {
-                        setting = NotificationsController.SETTING_MUTE_2_DAYS;
-                    } else {
-                        setting = NotificationsController.SETTING_MUTE_FOREVER;
-                    }
+                    int setting = NotificationsController.SETTING_MUTE_FOREVER;
                     NotificationsController.getInstance(UserConfig.selectedAccount).setDialogNotificationsSettings(dialog_id, topicId, setting);
                     if (BulletinFactory.canShowBulletin(fragment)) {
                         BulletinFactory.createMuteBulletin(fragment, setting, 0, resourcesProvider).show();
@@ -6623,23 +6630,10 @@ public class AlertsCreator {
 
         BottomSheet.Builder builder = new BottomSheet.Builder(fragment.getParentActivity(), false, resourcesProvider);
         builder.setTitle(LocaleController.getString(R.string.Notifications), true);
-        CharSequence[] items = new CharSequence[]{
-                LocaleController.formatString("MuteFor", R.string.MuteFor, LocaleController.formatPluralString("Hours", 1)),
-                LocaleController.formatString("MuteFor", R.string.MuteFor, LocaleController.formatPluralString("Hours", 8)),
-                LocaleController.formatString("MuteFor", R.string.MuteFor, LocaleController.formatPluralString("Days", 2)),
-                LocaleController.getString(R.string.MuteDisable)
-        };
+        // Android Zenora mute is permanent; timed choices are intentionally hidden.
+        CharSequence[] items = new CharSequence[]{LocaleController.getString(R.string.MuteDisable)};
         builder.setItems(items, (dialogInterface, i) -> {
-                    int setting;
-                    if (i == 0) {
-                        setting = NotificationsController.SETTING_MUTE_HOUR;
-                    } else if (i == 1) {
-                        setting = NotificationsController.SETTING_MUTE_8_HOURS;
-                    } else if (i == 2) {
-                        setting = NotificationsController.SETTING_MUTE_2_DAYS;
-                    } else {
-                        setting = NotificationsController.SETTING_MUTE_FOREVER;
-                    }
+                    int setting = NotificationsController.SETTING_MUTE_FOREVER;
                     if (dialog_ids != null) {
                         for (int j = 0; j < dialog_ids.size(); ++j) {
                             long dialog_id = dialog_ids.get(j);
@@ -7753,6 +7747,120 @@ public class AlertsCreator {
             dialogId = user.id;
         } else {
             dialogId = -chat.id;
+        }
+
+
+        ArrayList<MessageObject> zenoraSelection = new ArrayList<>();
+        if (selectedGroup != null) {
+            zenoraSelection.addAll(selectedGroup.messages);
+        } else if (selectedMessage != null) {
+            zenoraSelection.add(selectedMessage);
+        } else if (selectedMessages != null) {
+            for (int a = 0; a < selectedMessages.length; a++) {
+                if (selectedMessages[a] == null) continue;
+                for (int b = 0; b < selectedMessages[a].size(); b++) {
+                    zenoraSelection.add(selectedMessages[a].valueAt(b));
+                }
+            }
+        }
+        boolean hasZenoraSelection = ZenoraChatController.isZenoraDialog(currentAccount, dialogId);
+        if (!hasZenoraSelection) {
+            for (MessageObject object : zenoraSelection) {
+                if (object != null && ZenoraChatController.isZenoraDialog(
+                        currentAccount, object.getDialogId())) {
+                    hasZenoraSelection = true;
+                    break;
+                }
+            }
+        }
+        if (hasZenoraSelection) {
+            if (scheduled || isSavedMessages || quickReplies || encryptedChat != null
+                    || topicId != 0 || mode != ChatActivity.MODE_DEFAULT) {
+                Toast.makeText(activity, "This Zenora message type does not support deletion.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (zenoraSelection.isEmpty() || zenoraSelection.size() > 50) {
+                Toast.makeText(activity, zenoraSelection.size() > 50
+                        ? "You can delete up to 50 Zenora messages at once."
+                        : "The selected Zenora messages are unavailable.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            long zenoraDialogId = zenoraSelection.get(0).getDialogId();
+            long zenoraRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, zenoraDialogId);
+            boolean sameRoom = zenoraRoomId > 0L;
+            for (MessageObject object : zenoraSelection) {
+                if (object == null || object.getDialogId() != zenoraDialogId
+                        || ZenoraChatController.getRoomIdForDialog(currentAccount, object.getDialogId())
+                                != zenoraRoomId) {
+                    sameRoom = false;
+                    break;
+                }
+            }
+            if (!sameRoom || !ZenoraMessageMutationController.canDeleteSelection(
+                    currentAccount, zenoraDialogId, zenoraRoomId, zenoraSelection)) {
+                Toast.makeText(activity,
+                        "The selected messages are unsupported, belong to different rooms, or include a message that cannot be deleted.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            final boolean[] deleteForAll = new boolean[1];
+            FrameLayout scopeContainer = new FrameLayout(activity);
+            CheckBoxCell deleteForAllCell = new CheckBoxCell(activity, 1, resourcesProvider);
+            deleteForAllCell.setText(LocaleController.getString(R.string.DeleteForAll), "", false, false);
+            deleteForAllCell.setBackgroundDrawable(Theme.getSelectorDrawable(false));
+            deleteForAllCell.setPadding(LocaleController.isRTL ? dp(16) : dp(8), 0,
+                    LocaleController.isRTL ? dp(8) : dp(16), 0);
+            deleteForAllCell.setChecked(false, false);
+            deleteForAllCell.setOnClickListener(v -> {
+                deleteForAll[0] = !deleteForAll[0];
+                ((CheckBoxCell) v).setChecked(deleteForAll[0], true);
+            });
+            scopeContainer.addView(deleteForAllCell,
+                    LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 48, Gravity.TOP | Gravity.LEFT, 0, 0, 0, 0));
+
+            builder.setView(scopeContainer);
+            builder.setTitle(count == 1
+                    ? LocaleController.getString(R.string.DeleteSingleMessagesTitle)
+                    : LocaleController.formatString(R.string.DeleteMessagesTitle,
+                            LocaleController.formatPluralString("messages", count)));
+            builder.setMessage(LocaleController.getString(count == 1
+                    ? R.string.AreYouSureDeleteSingleMessage
+                    : R.string.AreYouSureDeleteFewMessages));
+            builder.setPositiveButton(LocaleController.getString(R.string.Delete), (dialogInterface, which) -> {
+                String scope = deleteForAll[0] ? "both" : "me";
+                ZenoraMessageMutationController.deleteSelection(currentAccount, zenoraDialogId,
+                        zenoraRoomId, zenoraSelection, scope,
+                        UserConfig.getInstance(currentAccount).getClientUserId(),
+                        (response, error) -> {
+                            if (error != null) {
+                                if (!activity.isFinishing()) {
+                                    Toast.makeText(activity, TextUtils.isEmpty(error.getMessage())
+                                            ? "Zenora could not delete the selected messages."
+                                            : error.getMessage(), Toast.LENGTH_LONG).show();
+                                }
+                                return;
+                            }
+                            if (selectedMessages != null) {
+                                for (SparseArray<MessageObject> selected : selectedMessages) {
+                                    if (selected != null) selected.clear();
+                                }
+                            }
+                            if (onDelete != null) onDelete.run();
+                        });
+            });
+            builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+            builder.setOnPreDismissListener(di -> {
+                if (hideDim != null) hideDim.run();
+            });
+            AlertDialog zenoraAlertDialog = builder.create();
+            fragment.showDialog(zenoraAlertDialog);
+            TextView positiveButton = (TextView) zenoraAlertDialog.getButton(DialogInterface.BUTTON_POSITIVE);
+            if (positiveButton != null) {
+                ThemeBind.textColor(positiveButton, Theme.key_text_RedBold);
+            }
+            return;
         }
 
         if (scheduled) {

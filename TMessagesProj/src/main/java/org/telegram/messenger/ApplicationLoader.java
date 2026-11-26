@@ -295,6 +295,8 @@ public class ApplicationLoader extends Application {
         }
 
         super.onCreate();
+        // Register foreground/background tracking before the first Activity starts.
+        ZenoraChatController.initializeLifecycleTracking();
 
         // The widget engine's isolated process has no files, network or accounts: none of the client starts there.
         if (org.telegram.utils.twidget.WidgetEngineService.isEngineProcess()) {

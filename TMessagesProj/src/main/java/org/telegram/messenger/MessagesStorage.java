@@ -28,6 +28,9 @@ import android.util.SparseIntArray;
 import androidx.annotation.UiThread;
 import androidx.collection.LongSparseArray;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.SQLite.SQLiteCursor;
 import org.telegram.SQLite.SQLiteDatabase;
@@ -118,7 +121,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 181;
+    public final static int LAST_DB_VERSION = 186;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -242,6 +245,517 @@ public class MessagesStorage extends BaseController {
 
     public DispatchQueue2 getStorageQueue() {
         return storageQueue;
+    }
+
+
+    public static final class ZenoraOutboxRecord {
+        public final String clientMessageId;
+        public final long roomId;
+        public final long replyToId;
+        public final long dialogId;
+        public final int localMessageId;
+        public final long randomId;
+        public final long zenoraUserId;
+        public final String body;
+        public final int messageDate;
+        public final String status;
+        public final long createdAt;
+        public final long nextAttemptAt;
+        public final int attemptCount;
+
+        ZenoraOutboxRecord(String clientMessageId, long roomId, long replyToId, long dialogId,
+                           int localMessageId, long randomId, long zenoraUserId,
+                           String body, int messageDate, String status, long createdAt,
+                           long nextAttemptAt, int attemptCount) {
+            this.clientMessageId = clientMessageId;
+            this.roomId = roomId;
+            this.replyToId = replyToId;
+            this.dialogId = dialogId;
+            this.localMessageId = localMessageId;
+            this.randomId = randomId;
+            this.zenoraUserId = zenoraUserId;
+            this.body = body;
+            this.messageDate = messageDate;
+            this.status = status;
+            this.createdAt = createdAt;
+            this.nextAttemptAt = nextAttemptAt;
+            this.attemptCount = attemptCount;
+        }
+    }
+
+    public interface ZenoraOutboxReadCallback {
+        void onComplete(ArrayList<ZenoraOutboxRecord> records, Exception error);
+    }
+
+    /**
+     * Atomically persist the optimistic Telegram message and its durable Zenora
+     * operation. This method is the only entry point used by the Zenora sender:
+     * both writes execute on this account's storageQueue and share one SQLite tx.
+     */
+    public void storeZenoraTextMessage(TLRPC.Message message, long roomId, long zenoraUserId,
+                                       String clientMessageId, Consumer<Exception> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+
+                ArrayList<TLRPC.Message> messages = new ArrayList<>();
+                messages.add(message);
+                putMessagesInternal(messages, false, false, 0, false, ChatActivity.MODE_DEFAULT, 0);
+
+                SQLitePreparedStatement state = database.executeFast(
+                        "INSERT OR REPLACE INTO zenora_outbox(client_message_id, room_id, reply_to_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
+                try {
+                    state.bindString(1, clientMessageId);
+                    state.bindLong(2, roomId);
+                    state.bindLong(3, message.reply_to == null ? 0L : message.reply_to.reply_to_msg_id);
+                    state.bindLong(4, message.dialog_id);
+                    state.bindInteger(5, message.id);
+                    state.bindLong(6, message.random_id);
+                    state.bindLong(7, zenoraUserId);
+                    state.bindString(8, message.message);
+                    state.bindInteger(9, message.date);
+                    state.bindLong(10, System.currentTimeMillis());
+                    state.step();
+                } finally {
+                    state.dispose();
+                }
+
+                database.commitTransaction();
+                inTransaction = false;
+                if (callback != null) {
+                    AndroidUtilities.runOnUIThread(() -> callback.accept(null));
+                }
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+                if (callback != null) {
+                    AndroidUtilities.runOnUIThread(() -> callback.accept(error));
+                }
+            }
+        });
+    }
+
+
+    /**
+     * Remove selected not-yet-submitted Zenora Outbox rows atomically.
+     * The caller separately removes the matching negative-ID bubble through the
+     * local-only MessagesController path; this method never calls a network API.
+     */
+    public void removeZenoraOutboxMessages(long dialogId, ArrayList<String> clientMessageIds,
+                                           ArrayList<Integer> localMessageIds,
+                                           Consumer<Boolean> callback) {
+        if (dialogId == 0L || clientMessageIds == null || localMessageIds == null
+                || clientMessageIds.isEmpty() || clientMessageIds.size() != localMessageIds.size()
+                || clientMessageIds.size() > 50) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(false);
+            });
+            return;
+        }
+        storageQueue.postRunnable(() -> {
+            boolean success = false;
+            SQLiteCursor cursor = null;
+            SQLitePreparedStatement state = null;
+            boolean inTransaction = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                for (int i = 0; i < clientMessageIds.size(); i++) {
+                    cursor = database.queryFinalized(
+                            "SELECT client_message_id FROM zenora_outbox WHERE client_message_id = ? AND dialog_id = ? AND local_message_id = ?",
+                            clientMessageIds.get(i), dialogId, localMessageIds.get(i));
+                    boolean exists = cursor.next();
+                    cursor.dispose();
+                    cursor = null;
+                    if (!exists) {
+                        throw new IllegalStateException("A pending Zenora Outbox record no longer exists");
+                    }
+                    state = database.executeFast(
+                            "DELETE FROM zenora_outbox WHERE client_message_id = ? AND dialog_id = ? AND local_message_id = ?");
+                    state.bindString(1, clientMessageIds.get(i));
+                    state.bindLong(2, dialogId);
+                    state.bindInteger(3, localMessageIds.get(i));
+                    state.step();
+                    state.dispose();
+                    state = null;
+                }
+                database.commitTransaction();
+                inTransaction = false;
+                success = true;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+                if (state != null) state.dispose();
+            }
+            boolean result = success;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(result);
+            });
+        });
+    }
+
+    public void loadZenoraOutbox(ZenoraOutboxReadCallback callback) {
+        storageQueue.postRunnable(() -> {
+            ArrayList<ZenoraOutboxRecord> records = new ArrayList<>();
+            Exception failure = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT client_message_id, room_id, reply_to_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count FROM zenora_outbox ORDER BY room_id ASC, created_at ASC, local_message_id DESC");
+                while (cursor.next()) {
+                    records.add(new ZenoraOutboxRecord(
+                            cursor.stringValue(0), cursor.longValue(1), cursor.longValue(2),
+                            cursor.longValue(3), cursor.intValue(4), cursor.longValue(5),
+                            cursor.longValue(6), cursor.stringValue(7), cursor.intValue(8),
+                            cursor.stringValue(9), cursor.longValue(10), cursor.longValue(11),
+                            cursor.intValue(12)));
+                }
+            } catch (Exception error) {
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+            Exception resultError = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(records, resultError);
+            });
+        });
+    }
+
+    /** Persist the state transition before any retry is scheduled. */
+    public void updateZenoraOutboxState(String clientMessageId, String status,
+                                        long nextAttemptAt, boolean incrementAttempt,
+                                        boolean updateLocalSendState) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            SQLitePreparedStatement state = null;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                state = database.executeFast(
+                        "UPDATE zenora_outbox SET status = ?, next_attempt_at = ?, attempt_count = attempt_count + ? WHERE client_message_id = ?");
+                state.bindString(1, status);
+                state.bindLong(2, nextAttemptAt);
+                state.bindInteger(3, incrementAttempt ? 1 : 0);
+                state.bindString(4, clientMessageId);
+                state.step();
+                state.dispose();
+                state = null;
+
+                if (updateLocalSendState) {
+                    int sendState = "FAILED".equals(status) ? MessageObject.MESSAGE_SEND_STATE_SEND_ERROR
+                            : MessageObject.MESSAGE_SEND_STATE_SENDING;
+                    SQLitePreparedStatement messageState = database.executeFast(
+                            "UPDATE messages_v2 SET send_state = ? WHERE mid = "
+                                    + "(SELECT local_message_id FROM zenora_outbox WHERE client_message_id = ?) "
+                                    + "AND uid = (SELECT dialog_id FROM zenora_outbox WHERE client_message_id = ?)");
+                    try {
+                        messageState.bindInteger(1, sendState);
+                        messageState.bindString(2, clientMessageId);
+                        messageState.bindString(3, clientMessageId);
+                        messageState.step();
+                    } finally {
+                        messageState.dispose();
+                    }
+                }
+                database.commitTransaction();
+                inTransaction = false;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            } finally {
+                if (state != null) state.dispose();
+            }
+        });
+    }
+
+    /**
+     * A user's explicit Retry keeps the original idempotency key. Legacy
+     * optimistic messages are adopted into the outbox rather than assigned a new key.
+     */
+    public void prepareZenoraOutboxRetry(TLRPC.Message message, long roomId,
+                                         long zenoraUserId, String clientMessageId,
+                                         Consumer<Exception> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            SQLiteCursor existingCursor = null;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                long replyToId = message.reply_to == null ? 0L : message.reply_to.reply_to_msg_id;
+                existingCursor = database.queryFinalized(
+                        "SELECT zenora_user_id, room_id, dialog_id, local_message_id, body, reply_to_id FROM zenora_outbox WHERE client_message_id = ?",
+                        clientMessageId);
+                boolean exists = existingCursor.next();
+                if (exists && (existingCursor.longValue(0) != zenoraUserId
+                        || existingCursor.longValue(1) != roomId
+                        || existingCursor.longValue(2) != message.dialog_id
+                        || existingCursor.intValue(3) != message.id
+                        || !message.message.equals(existingCursor.stringValue(4))
+                        || existingCursor.longValue(5) != replyToId)) {
+                    throw new IllegalStateException("Outbox identity does not match the active Zenora account/message");
+                }
+                existingCursor.dispose();
+                existingCursor = null;
+
+                if (exists) {
+                    SQLitePreparedStatement update = database.executeFast(
+                            "UPDATE zenora_outbox SET status = 'SENDING', next_attempt_at = 0 WHERE client_message_id = ?");
+                    update.bindString(1, clientMessageId);
+                    update.step();
+                    update.dispose();
+                } else {
+                    SQLitePreparedStatement insert = database.executeFast(
+                            "INSERT INTO zenora_outbox(client_message_id, room_id, reply_to_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
+                    try {
+                        insert.bindString(1, clientMessageId);
+                        insert.bindLong(2, roomId);
+                        insert.bindLong(3, replyToId);
+                        insert.bindLong(4, message.dialog_id);
+                        insert.bindInteger(5, message.id);
+                        insert.bindLong(6, message.random_id);
+                        insert.bindLong(7, zenoraUserId);
+                        insert.bindString(8, message.message);
+                        insert.bindInteger(9, message.date);
+                        insert.bindLong(10, System.currentTimeMillis());
+                        insert.step();
+                    } finally {
+                        insert.dispose();
+                    }
+                }
+                database.executeFast("UPDATE messages_v2 SET send_state = "
+                        + MessageObject.MESSAGE_SEND_STATE_SENDING + " WHERE mid = " + message.id
+                        + " AND uid = " + message.dialog_id).stepThis().dispose();
+                database.commitTransaction();
+                inTransaction = false;
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) callback.accept(null);
+                });
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) callback.accept(error);
+                });
+            } finally {
+                if (existingCursor != null) existingCursor.dispose();
+            }
+        });
+    }
+
+    /**
+     * Remap the local message and retire its outbox record in the same transaction.
+     * Polling and POST acknowledgements converge on this single storage operation.
+     */
+    public void acknowledgeZenoraTextMessage(long randomId, long dialogId, int localId,
+                                              int serverId, int serverDate, long replyToId,
+                                              String clientMessageId, Consumer<Boolean> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            boolean success = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+
+                SQLiteCursor pending = database.queryFinalized(
+                        "SELECT reply_to_id FROM zenora_outbox WHERE client_message_id = ?",
+                        clientMessageId);
+                boolean hasPending = pending.next();
+                long storedReplyToId = hasPending ? pending.longValue(0) : -1L;
+                pending.dispose();
+                if (!hasPending || storedReplyToId != replyToId) {
+                    throw new IllegalStateException("Zenora ACK reply_to_id does not match the durable outbox record");
+                }
+                SQLitePreparedStatement sent = database.executeFast(
+                        "UPDATE zenora_outbox SET status = 'SENT', server_message_id = ?, server_date = ? WHERE client_message_id = ? AND reply_to_id = ?");
+                sent.bindInteger(1, serverId);
+                sent.bindInteger(2, serverDate);
+                sent.bindString(3, clientMessageId);
+                sent.bindLong(4, replyToId);
+                sent.step();
+                sent.dispose();
+
+                long[] ids = updateMessageStateAndIdInternal(
+                        randomId, dialogId, localId, serverId, serverDate, 0, 0);
+                if (ids == null) {
+                    throw new IllegalStateException("Zenora local message row could not be reconciled");
+                }
+
+                SQLitePreparedStatement remove = database.executeFast(
+                        "DELETE FROM zenora_outbox WHERE client_message_id = ? AND reply_to_id = ?");
+                remove.bindString(1, clientMessageId);
+                remove.bindLong(2, replyToId);
+                remove.step();
+                remove.dispose();
+
+                database.commitTransaction();
+                inTransaction = false;
+                success = true;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            }
+            boolean result = success;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(result);
+            });
+        });
+    }
+
+
+    /** Durable server-history coverage. The database is already isolated per Telegram account. */
+    public static final class ZenoraHistoryState {
+        public final long roomId;
+        public final long dialogId;
+        public final long zenoraUserId;
+        public final long oldestLocalMessageId;
+        public final long newestLocalMessageId;
+        public final long olderCursor;
+        /** -1 unknown, 0 confirmed end, 1 more pages available. */
+        public final int hasMoreOlder;
+        public final boolean coverageValid;
+
+        ZenoraHistoryState(long roomId, long dialogId, long zenoraUserId,
+                           long oldestLocalMessageId, long newestLocalMessageId,
+                           long olderCursor, int hasMoreOlder, boolean coverageValid) {
+            this.roomId = roomId;
+            this.dialogId = dialogId;
+            this.zenoraUserId = zenoraUserId;
+            this.oldestLocalMessageId = oldestLocalMessageId;
+            this.newestLocalMessageId = newestLocalMessageId;
+            this.olderCursor = olderCursor;
+            this.hasMoreOlder = hasMoreOlder;
+            this.coverageValid = coverageValid;
+        }
+    }
+
+    public interface ZenoraHistoryStateReadCallback {
+        void onComplete(ZenoraHistoryState state, Exception error);
+    }
+
+    /** Reads only pagination metadata and local ID bounds; message rows are loaded through getMessages(). */
+    public void loadZenoraHistoryState(long roomId, long dialogId, long zenoraUserId,
+                                       ZenoraHistoryStateReadCallback callback) {
+        storageQueue.postRunnable(() -> {
+            long oldestLocal = 0L;
+            long newestLocal = 0L;
+            long persistedOldestLocal = 0L;
+            long olderCursor = 0L;
+            int hasMoreOlder = -1;
+            boolean coverageValid = false;
+            Exception failure = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT oldest_local_message_id, older_cursor, has_more_older, coverage_valid FROM zenora_history_state WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
+                        roomId, dialogId, zenoraUserId);
+                if (cursor.next()) {
+                    persistedOldestLocal = cursor.longValue(0);
+                    olderCursor = cursor.longValue(1);
+                    hasMoreOlder = cursor.intValue(2);
+                    coverageValid = cursor.intValue(3) != 0;
+                }
+                cursor.dispose();
+                cursor = null;
+
+                cursor = database.queryFinalized(
+                        "SELECT MIN(mid), MAX(mid) FROM messages_v2 WHERE uid = ? AND mid > 0",
+                        dialogId);
+                if (cursor.next()) {
+                    oldestLocal = Math.max(0L, cursor.longValue(0));
+                    newestLocal = Math.max(0L, cursor.longValue(1));
+                }
+                coverageValid = coverageValid && ZenoraHistoryPolicy.isLocalCoverageIntact(
+                        persistedOldestLocal, oldestLocal);
+            } catch (Exception error) {
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+            ZenoraHistoryState result = failure == null
+                    ? new ZenoraHistoryState(roomId, dialogId, zenoraUserId,
+                            oldestLocal, newestLocal, olderCursor, hasMoreOlder, coverageValid)
+                    : null;
+            Exception resultError = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(result, resultError);
+            });
+        });
+    }
+
+    /**
+     * Stores a successful API boundary after MessagesController has queued the
+     * page's messages on this same storageQueue. A newer refresh cannot move the
+     * cursor forward and thereby hide already cached older pages.
+     */
+    public void saveZenoraHistoryState(long roomId, long dialogId, long zenoraUserId,
+                                       long proposedOlderCursor, boolean hasMoreOlder,
+                                       boolean coverageValid) {
+        storageQueue.postRunnable(() -> {
+            boolean persistedHasMoreOlder = hasMoreOlder;
+            boolean persistedCoverageValid = coverageValid;
+            SQLiteCursor cursor = null;
+            SQLitePreparedStatement state = null;
+            try {
+                long currentCursor = 0L;
+                int currentHasMore = -1;
+                boolean currentCoverageValid = false;
+                cursor = database.queryFinalized(
+                        "SELECT older_cursor, has_more_older, coverage_valid FROM zenora_history_state WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
+                        roomId, dialogId, zenoraUserId);
+                if (cursor.next()) {
+                    currentCursor = cursor.longValue(0);
+                    currentHasMore = cursor.intValue(1);
+                    currentCoverageValid = cursor.intValue(2) != 0;
+                }
+                cursor.dispose();
+                cursor = null;
+
+                long olderCursor = ZenoraHistoryPolicy.mergeOlderCursor(
+                        currentCursor, proposedOlderCursor);
+                if (currentCursor > 0 && olderCursor == currentCursor
+                        && proposedOlderCursor > currentCursor) {
+                    persistedHasMoreOlder = currentHasMore == 1;
+                    persistedCoverageValid = currentCoverageValid;
+                }
+
+                long oldestLocal = 0L;
+                long newestLocal = 0L;
+                cursor = database.queryFinalized(
+                        "SELECT MIN(mid), MAX(mid) FROM messages_v2 WHERE uid = ? AND mid > 0",
+                        dialogId);
+                if (cursor.next()) {
+                    oldestLocal = Math.max(0L, cursor.longValue(0));
+                    newestLocal = Math.max(0L, cursor.longValue(1));
+                }
+                cursor.dispose();
+                cursor = null;
+
+                state = database.executeFast(
+                        "REPLACE INTO zenora_history_state(room_id, dialog_id, zenora_user_id, oldest_local_message_id, newest_local_message_id, older_cursor, has_more_older, coverage_valid, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                state.bindLong(1, roomId);
+                state.bindLong(2, dialogId);
+                state.bindLong(3, zenoraUserId);
+                state.bindLong(4, oldestLocal);
+                state.bindLong(5, newestLocal);
+                state.bindLong(6, olderCursor);
+                state.bindInteger(7, persistedHasMoreOlder ? 1 : 0);
+                state.bindInteger(8, persistedCoverageValid ? 1 : 0);
+                state.bindLong(9, System.currentTimeMillis());
+                state.step();
+            } catch (Exception error) {
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+                if (state != null) state.dispose();
+            }
+        });
     }
 
     @UiThread
@@ -460,6 +974,9 @@ public class MessagesStorage extends BaseController {
 
     public final static String[] DATABASE_TABLES = new String[] {
             "messages_holes",
+            "zenora_history_state",
+            "zenora_message_mutation_cursor",
+            "zenora_message_mutation_deleted",
             "media_holes_v2",
             "scheduled_messages_v2",
             "quick_replies",
@@ -534,7 +1051,8 @@ public class MessagesStorage extends BaseController {
             "poll_votes_mentions_topics",
             "ephemeral_messages",
             "widget_state",
-            "widget_heights"
+            "widget_heights",
+            "zenora_outbox"
     };
 
     public static void createTables(SQLiteDatabase database) throws SQLiteException {
@@ -777,6 +1295,19 @@ public class MessagesStorage extends BaseController {
 
         database.executeFast("CREATE TABLE widget_state(uid INTEGER, mid INTEGER, local TEXT, PRIMARY KEY(uid, mid));").stepThis().dispose();
         database.executeFast("CREATE TABLE widget_heights(uid INTEGER, mid INTEGER, width INTEGER, height INTEGER, date INTEGER, anchor INTEGER default 0, PRIMARY KEY(uid, mid, width));").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, reply_to_id INTEGER NOT NULL DEFAULT 0, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_history_dialog_idx ON zenora_history_state(dialog_id, zenora_user_id);").stepThis().dispose();
+
+        // Fresh databases must create all Zenora event-sync state before the
+        // schema version is advanced; upgrades create the same tables in migrations.
+        database.executeFast("CREATE TABLE zenora_message_mutation_cursor(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, last_event_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX zenora_mutation_cursor_user_idx ON zenora_message_mutation_cursor(zenora_user_id, room_id);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_message_mutation_deleted(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, deletion_event_id INTEGER NOT NULL, deletion_event_type TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX zenora_mutation_deleted_room_user_idx ON zenora_message_mutation_deleted(room_id, zenora_user_id, message_id);").stepThis().dispose();
 
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
 
@@ -13530,6 +14061,293 @@ public class MessagesStorage extends BaseController {
             }
             updateTopicData(dialogId, forumTopic, flags, message.date);
         }
+    }
+
+
+    public interface ZenoraMessageMutationCursorCallback {
+        void onComplete(long cursor, Exception error);
+    }
+
+    public interface ZenoraMessageMutationApplyCallback {
+        void onComplete(long cursor, ArrayList<TLRPC.Message> editedMessages,
+                        ArrayList<Integer> deletedMessageIds,
+                        ArrayList<Integer> suppressedEditMessageIds, Exception error);
+    }
+
+    /** Load the durable mutation cursor for this Telegram account, Zenora user and room. */
+    public void loadZenoraMessageMutationCursor(long roomId, long dialogId, long zenoraUserId,
+                                                ZenoraMessageMutationCursorCallback callback) {
+        storageQueue.postRunnable(() -> {
+            long value = 0L;
+            Exception failure = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT last_event_id FROM zenora_message_mutation_cursor WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
+                        roomId, dialogId, zenoraUserId);
+                if (cursor.next()) value = Math.max(0L, cursor.longValue(0));
+            } catch (Exception error) {
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+            final long result = value;
+            final Exception resultError = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(result, resultError);
+            });
+        });
+    }
+
+    /**
+     * Apply a fully validated event page and persist its cursor in one SQLite
+     * transaction. If any row fails, all changes roll back and the caller retries
+     * the exact same event page.
+     */
+    public void applyZenoraMessageMutationEvents(long roomId, long dialogId, long zenoraUserId,
+                                                 long expectedAfterEventId, long nextEventId,
+                                                 JSONArray events,
+                                                 HashMap<Integer, ArrayList<TLRPC.MessageEntity>> editEntitiesByMessageId,
+                                                 ZenoraMessageMutationApplyCallback callback) {
+        if (roomId <= 0L || dialogId == 0L || zenoraUserId <= 0L
+                || expectedAfterEventId < 0L || nextEventId < expectedAfterEventId
+                || events == null || events.length() > 100) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(-1L, null, null, null,
+                        new IllegalArgumentException("Invalid Zenora mutation event page"));
+            });
+            return;
+        }
+        storageQueue.postRunnable(() -> {
+            ArrayList<TLRPC.Message> editedMessages = new ArrayList<>();
+            ArrayList<Integer> deletedMessageIds = new ArrayList<>();
+            ArrayList<Integer> suppressedEditMessageIds = new ArrayList<>();
+            HashSet<Long> eventIds = new HashSet<>();
+            SQLiteCursor cursor = null;
+            boolean inTransaction = false;
+            Exception failure = null;
+            long committedCursor = -1L;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT last_event_id FROM zenora_message_mutation_cursor WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
+                        roomId, dialogId, zenoraUserId);
+                long storedCursor = cursor.next() ? Math.max(0L, cursor.longValue(0)) : 0L;
+                cursor.dispose();
+                cursor = null;
+                if (storedCursor != expectedAfterEventId) {
+                    throw new IllegalStateException("Zenora mutation event cursor changed during polling");
+                }
+
+                database.beginTransaction();
+                inTransaction = true;
+                long previousEventId = expectedAfterEventId;
+                boolean deletedAny = false;
+                for (int i = 0; i < events.length(); i++) {
+                    JSONObject event = events.optJSONObject(i);
+                    if (event == null || event.optLong("room_id", 0L) != roomId) {
+                        throw new IllegalStateException("Mutation event belongs to another room");
+                    }
+                    long eventId = event.optLong("event_id", 0L);
+                    long rawMessageId = event.optLong("message_id", 0L);
+                    String eventType = event.optString("event_type", "");
+                    if (eventId <= previousEventId || eventId > nextEventId
+                            || !eventIds.add(eventId) || rawMessageId <= 0L
+                            || rawMessageId > Integer.MAX_VALUE) {
+                        throw new IllegalStateException("Mutation event sequence or message ID is invalid");
+                    }
+                    previousEventId = eventId;
+                    int messageId = (int) rawMessageId;
+
+                    if ("message.edited".equals(eventType)) {
+                        JSONObject payload = event.optJSONObject("payload");
+                        String body = payload == null ? "" : payload.optString("text", "");
+                        String editedAt = payload == null ? "" : payload.optString("edited_at", "");
+                        long editVersion = payload == null ? 0L : payload.optLong("edit_version", 0L);
+                        if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                                || TextUtils.isEmpty(editedAt)
+                                || ZenoraChatController.parseHistoryDate(editedAt) <= 0
+                                || editVersion <= 0L || editVersion > Integer.MAX_VALUE) {
+                            throw new IllegalStateException("Edited event payload failed local validation");
+                        }
+
+                        // An account-scoped tombstone wins over any late edit event:
+                        // do not restore the deleted row or a cached Reply preview.
+                        cursor = database.queryFinalized(
+                                "SELECT 1 FROM zenora_message_mutation_deleted WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ? AND message_id = ? LIMIT 1",
+                                roomId, dialogId, zenoraUserId, messageId);
+                        boolean alreadyDeletedLocally = cursor.next();
+                        cursor.dispose();
+                        cursor = null;
+                        if (alreadyDeletedLocally) {
+                            if (!suppressedEditMessageIds.contains(messageId)) {
+                                suppressedEditMessageIds.add(messageId);
+                            }
+                            continue;
+                        }
+
+                        TLRPC.Message message = null;
+                        cursor = database.queryFinalized(
+                                "SELECT data, custom_params FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1",
+                                dialogId, messageId);
+                        if (cursor.next()) {
+                            NativeByteBuffer data = cursor.byteBufferValue(0);
+                            if (data != null) {
+                                message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                if (message != null) {
+                                    message.readAttachPath(data, getUserConfig().clientUserId);
+                                }
+                                data.reuse();
+                            }
+                            NativeByteBuffer customParams = cursor.byteBufferValue(1);
+                            if (customParams != null && message != null) {
+                                MessageCustomParamsHelper.readLocalParams(message, customParams);
+                                customParams.reuse();
+                            }
+                        }
+                        cursor.dispose();
+                        cursor = null;
+
+                        // A message not present in the local history is still safe to
+                        // consume: a later server history page supplies its canonical row.
+                        if (message != null) {
+                            // Telegram stores the message body separately from SQLite's mid/uid columns.
+                            message.id = messageId;
+                            message.dialog_id = dialogId;
+                            if (message.zenoraEditVersion > editVersion) {
+                                // Keep the authoritative newer row marked as present so an
+                                // older event cannot overwrite its cached reply preview.
+                                editedMessages.add(message);
+                                continue;
+                            }
+                            ArrayList<TLRPC.MessageEntity> parsedEntities =
+                                    editEntitiesByMessageId == null ? null : editEntitiesByMessageId.get(messageId);
+                            if (parsedEntities == null) {
+                                throw new IllegalStateException("Edited message entities were not prepared before SQLite commit");
+                            }
+                            message.message = body;
+                            message.entities = new ArrayList<>(parsedEntities);
+                            if (message.entities.isEmpty()) message.flags &= ~(1 << 7);
+                            else message.flags |= 1 << 7;
+                            message.flags |= 1 << 8;
+                            ZenoraMessageMutationController.applyEditMetadata(message, editedAt, editVersion);
+
+                            NativeByteBuffer serialized = new NativeByteBuffer(message.getObjectSize());
+                            message.serializeToStream(serialized);
+                            NativeByteBuffer updatedParams = MessageCustomParamsHelper.writeLocalParams(message);
+                            SQLitePreparedStatement update = database.executeFast(
+                                    "UPDATE messages_v2 SET data = ?, custom_params = ? WHERE uid = ? AND mid = ?");
+                            try {
+                                update.bindByteBuffer(1, serialized);
+                                if (updatedParams != null) update.bindByteBuffer(2, updatedParams);
+                                else update.bindNull(2);
+                                update.bindLong(3, dialogId);
+                                update.bindInteger(4, messageId);
+                                update.step();
+                            } finally {
+                                update.dispose();
+                                serialized.reuse();
+                                if (updatedParams != null) updatedParams.reuse();
+                            }
+                            editedMessages.add(message);
+                        }
+                    } else if ("message.deleted_for_me".equals(eventType)
+                            || "message.deleted_for_all".equals(eventType)) {
+                        SQLitePreparedStatement tombstone = database.executeFast(
+                                "REPLACE INTO zenora_message_mutation_deleted " +
+                                "(room_id,dialog_id,zenora_user_id,message_id,deletion_event_id,deletion_event_type,updated_at) " +
+                                "VALUES(?,?,?,?,?,?,?)");
+                        try {
+                            tombstone.bindLong(1, roomId);
+                            tombstone.bindLong(2, dialogId);
+                            tombstone.bindLong(3, zenoraUserId);
+                            tombstone.bindInteger(4, messageId);
+                            tombstone.bindLong(5, eventId);
+                            tombstone.bindString(6, eventType);
+                            tombstone.bindLong(7, System.currentTimeMillis());
+                            tombstone.step();
+                        } finally {
+                            tombstone.dispose();
+                        }
+                        if (!suppressedEditMessageIds.contains(messageId)) {
+                            suppressedEditMessageIds.add(messageId);
+                        }
+                        String[] tables = {"messages_v2", "messages_topics", "media_v4", "media_topics"};
+                        for (String table : tables) {
+                            SQLitePreparedStatement delete = database.executeFast(
+                                    "DELETE FROM " + table + " WHERE uid = ? AND mid = ?");
+                            try {
+                                delete.bindLong(1, dialogId);
+                                delete.bindInteger(2, messageId);
+                                delete.step();
+                            } finally {
+                                delete.dispose();
+                            }
+                        }
+                        SQLitePreparedStatement deleteSequence = database.executeFast(
+                                "DELETE FROM messages_seq WHERE mid = ?");
+                        try {
+                            deleteSequence.bindInteger(1, messageId);
+                            deleteSequence.step();
+                        } finally {
+                            deleteSequence.dispose();
+                        }
+                        if (!deletedMessageIds.contains(messageId)) deletedMessageIds.add(messageId);
+                        deletedAny = true;
+                    } else {
+                        throw new IllegalStateException("Unsupported Zenora mutation event type");
+                    }
+                }
+
+                if (deletedAny) {
+                    SQLitePreparedStatement updateDialog = database.executeFast(
+                            "UPDATE dialogs SET (last_mid, last_mid_group) = " +
+                            "(SELECT mid, group_id FROM messages_v2 WHERE uid = ? AND date = " +
+                            "(SELECT MAX(date) FROM messages_v2 WHERE uid = ? AND date != 0)) WHERE did = ?");
+                    try {
+                        updateDialog.bindLong(1, dialogId);
+                        updateDialog.bindLong(2, dialogId);
+                        updateDialog.bindLong(3, dialogId);
+                        updateDialog.step();
+                    } finally {
+                        updateDialog.dispose();
+                    }
+                }
+
+                SQLitePreparedStatement saveCursor = database.executeFast(
+                        "REPLACE INTO zenora_message_mutation_cursor " +
+                        "(room_id,dialog_id,zenora_user_id,last_event_id,updated_at) VALUES(?,?,?,?,?)");
+                try {
+                    saveCursor.bindLong(1, roomId);
+                    saveCursor.bindLong(2, dialogId);
+                    saveCursor.bindLong(3, zenoraUserId);
+                    saveCursor.bindLong(4, nextEventId);
+                    saveCursor.bindLong(5, System.currentTimeMillis());
+                    saveCursor.step();
+                } finally {
+                    saveCursor.dispose();
+                }
+                database.commitTransaction();
+                inTransaction = false;
+                committedCursor = nextEventId;
+            } catch (Exception error) {
+                failure = error;
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+
+            final long resultCursor = committedCursor;
+            final ArrayList<TLRPC.Message> resultEdited = editedMessages;
+            final ArrayList<Integer> resultDeleted = deletedMessageIds;
+            final ArrayList<Integer> resultSuppressedEdits = suppressedEditMessageIds;
+            final Exception resultError = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(resultCursor, resultEdited, resultDeleted,
+                        resultSuppressedEdits, resultError);
+            });
+        });
     }
 
     public void putMessages(ArrayList<TLRPC.Message> messages, boolean withTransaction, boolean useQueue, boolean doNotUpdateDialogDate, int downloadMask, int mode, long threadMessageId) {

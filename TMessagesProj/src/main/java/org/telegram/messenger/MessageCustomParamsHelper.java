@@ -35,7 +35,8 @@ public class MessageCustomParamsHelper {
             message.translatedText == null &&
             message.translatedRichMessage == null &&
             message.errorAllowedPriceStars == 0 &&
-            message.errorNewPriceStars == 0
+            message.errorNewPriceStars == 0 &&
+            message.zenoraEditVersion == 0L
         );
     }
 
@@ -54,6 +55,7 @@ public class MessageCustomParamsHelper {
         toMessage.translatedRichMessage = fromMessage.translatedRichMessage;
         toMessage.errorAllowedPriceStars = fromMessage.errorAllowedPriceStars;
         toMessage.errorNewPriceStars = fromMessage.errorNewPriceStars;
+        toMessage.zenoraEditVersion = fromMessage.zenoraEditVersion;
         toMessage.translatedVoiceTranscription = fromMessage.translatedVoiceTranscription;
         toMessage.summarizedOpen = fromMessage.summarizedOpen;
         toMessage.summaryText = fromMessage.summaryText;
@@ -70,7 +72,8 @@ public class MessageCustomParamsHelper {
         TLObject params;
         switch (version) {
             case 1:
-                params = new Params_v1(message);
+            case 2:
+                params = new Params_v1(message, version);
                 break;
             default:
                 throw new RuntimeException("can't read params version = " + version);
@@ -82,7 +85,7 @@ public class MessageCustomParamsHelper {
         if (isEmpty(message)) {
             return null;
         }
-        TLObject params = new Params_v1(message);
+        TLObject params = new Params_v1(message, message.zenoraEditVersion > 0L ? 2 : 1);
         try {
             NativeByteBuffer nativeByteBuffer = new NativeByteBuffer(params.getObjectSize());
             params.serializeToStream(nativeByteBuffer);
@@ -95,12 +98,13 @@ public class MessageCustomParamsHelper {
 
     private static class Params_v1 extends TLObject {
 
-        private final static int VERSION = 1;
+        private final int version;
         final TLRPC.Message message;
         int flags = 0;
 
-        private Params_v1(TLRPC.Message message) {
+        private Params_v1(TLRPC.Message message, int version) {
             this.message = message;
+            this.version = version;
             flags |= message.voiceTranscription != null ? 1 : 0;
             flags |= message.voiceTranscriptionForce ? 2 : 0;
 
@@ -125,7 +129,7 @@ public class MessageCustomParamsHelper {
 
         @Override
         public void serializeToStream(OutputSerializedData stream) {
-            stream.writeInt32(VERSION);
+            stream.writeInt32(version);
             flags = message.voiceTranscriptionForce ? (flags | 2) : (flags &~ 2);
             flags = message.summarizedOpen ? (flags | 512) : (flags &~ 512);
             stream.writeInt32(flags);
@@ -172,6 +176,9 @@ public class MessageCustomParamsHelper {
             }
             if (hasFlag(flags, FLAG_13)) {
                 message.translatedRichMessage.serializeToStream(stream);
+            }
+            if (version >= 2) {
+                stream.writeInt64(message.zenoraEditVersion);
             }
         }
 
@@ -227,6 +234,9 @@ public class MessageCustomParamsHelper {
             }
             if (hasFlag(flags, FLAG_13)) {
                 message.translatedRichMessage = TL_iv.RichMessage.TLdeserialize(stream, stream.readInt32(exception), exception);
+            }
+            if (version >= 2) {
+                message.zenoraEditVersion = stream.readInt64(exception);
             }
         }
 

@@ -185,6 +185,68 @@ public class NotificationsSettingsFacade {
         });
     }
 
+    /**
+     * Apply Zenora's per-chat mute state locally while preserving Telegram's
+     * global notification defaults. An unmuted Zenora chat removes its local
+     * override instead of forcing notifications on.
+     */
+    public void applyZenoraMuteState(long dialogId, int muteUntil) {
+        applyZenoraMuteState(dialogId, muteUntil, null);
+    }
+
+    /**
+     * Persist Zenora mute state off the UI thread, then update the live dialog
+     * model and publish notifications only after persistence has been queued.
+     * The completion callback is invoked on the main thread after the model is
+     * consistent, preventing dialogsNeedReload from racing this update.
+     */
+    public void applyZenoraMuteState(long dialogId, int muteUntil, Runnable completion) {
+        if (dialogId == 0) return;
+        Utilities.globalQueue.postRunnable(() -> {
+            String key = NotificationsController.getSharedPrefKey(dialogId, 0, true);
+            int now = (int) (System.currentTimeMillis() / 1000L);
+            SharedPreferences.Editor editor = getPreferences().edit();
+            long flags = 0;
+            int effectiveMuteUntil = 0;
+            if (muteUntil > now) {
+                if (muteUntil > now + 60 * 60 * 24 * 365) {
+                    editor.putInt(PROPERTY_NOTIFY + key, 2);
+                    editor.remove(PROPERTY_NOTIFY_UNTIL + key);
+                    effectiveMuteUntil = Integer.MAX_VALUE;
+                    flags = 1;
+                } else {
+                    editor.putInt(PROPERTY_NOTIFY + key, 3);
+                    editor.putInt(PROPERTY_NOTIFY_UNTIL + key, muteUntil);
+                    effectiveMuteUntil = muteUntil;
+                    flags = ((long) muteUntil << 32) | 1L;
+                }
+            } else {
+                // Remove only the per-chat override so global notification
+                // defaults continue to apply after unmuting.
+                editor.remove(PROPERTY_NOTIFY + key);
+                editor.remove(PROPERTY_NOTIFY_UNTIL + key);
+            }
+            editor.commit();
+
+            MessagesStorage.getInstance(currentAccount).setDialogFlags(dialogId, flags);
+            if (flags != 0) {
+                NotificationsController.getInstance(currentAccount).removeNotificationsForDialog(dialogId);
+            }
+            final int appliedMuteUntil = effectiveMuteUntil;
+            AndroidUtilities.runOnUIThread(() -> {
+                TLRPC.Dialog dialog = MessagesController.getInstance(currentAccount).dialogs_dict.get(dialogId);
+                if (dialog != null) {
+                    dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
+                    dialog.notify_settings.flags |= 1 << 2;
+                    dialog.notify_settings.mute_until = appliedMuteUntil;
+                }
+                NotificationCenter.getInstance(currentAccount)
+                        .postNotificationName(NotificationCenter.notificationsSettingsUpdated);
+                if (completion != null) completion.run();
+            });
+        });
+    }
+
     public void applySoundSettings(TLRPC.NotificationSound settings, SharedPreferences.Editor editor, long dialogId, long topicId, int globalType, boolean serverUpdate) {
         if (settings == null) {
             return;

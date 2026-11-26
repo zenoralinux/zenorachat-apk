@@ -138,6 +138,7 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.TopicsController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraApiClient;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.browser.Browser;
@@ -392,6 +393,26 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
     public static LaunchActivity instance;
 
+    public static void requestZenoraLogin() {
+        LaunchActivity activity = instance;
+        if (activity == null) {
+            return;
+        }
+        AndroidUtilities.runOnUIThread(() -> {
+            if (instance != activity) {
+                return;
+            }
+            ZenoraApiClient.clearSession();
+            UserConfig.getInstance(activity.currentAccount).clearConfig();
+            DialogsActivity.resetZenoraLoadState(activity.currentAccount);
+            INavigationLayout layout = activity.getActionBarLayout();
+            if (layout != null) {
+                layout.presentFragment(new INavigationLayout.NavigationParams(new ZenoraLoginActivity())
+                        .setRemoveLast(true));
+            }
+        });
+    }
+
     public boolean voipLaunchedInBackground;
 
     public WindowAnimatedInsetsProvider getRootAnimatedInsetsListener() {
@@ -419,6 +440,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         ApplicationLoader.postInitApplication();
         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
         currentAccount = UserConfig.selectedAccount;
+        // This build uses ZenoraChat identities instead of Telegram MTProto accounts.
+        // Clear a pre-existing Telegram identity once before showing the Zenora login.
+        if (!ZenoraApiClient.isZenoraSessionEnabled()
+                && UserConfig.getInstance(currentAccount).isClientActivated()) {
+            UserConfig.getInstance(currentAccount).clearConfig();
+        }
         if (BuildVars.DEBUG_VERSION || BuildVars.DEBUG_PRIVATE_VERSION) {
             registerDebugThemeReceiver();
         }
@@ -1120,10 +1147,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private BaseFragment getClientNotActivatedFragment() {
-        if (LoginActivity.loadCurrentState(false, currentAccount).getInt("currentViewNum", 0) != 0) {
-            return new LoginActivity();
-        }
-        return new IntroActivity();
+        return new ZenoraLoginActivity();
     }
 
     public FireworksOverlay getFireworksOverlay() {

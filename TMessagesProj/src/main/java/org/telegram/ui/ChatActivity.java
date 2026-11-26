@@ -102,6 +102,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.animation.DecelerateInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
+import android.widget.Toast;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
@@ -193,6 +194,10 @@ import org.telegram.messenger.SvgHelper;
 import org.telegram.messenger.Timer;
 import org.telegram.messenger.TranslateController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraHistoryController;
+import org.telegram.messenger.ZenoraMessageMutationController;
+import org.telegram.messenger.ZenoraLiveMessageSyncController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -2242,6 +2247,9 @@ public class ChatActivity extends BaseFragment implements
         public void needSendTyping() {
             if (isQuickRepliesOrWelcomeMessagesMode() || chatMode == MODE_EDIT_BUSINESS_LINK || chatMode == MODE_SUGGESTIONS) return;
             getMessagesController().sendTyping(dialog_id, threadMessageId, 0, classGuid);
+            if (threadMessageId == 0) {
+                ZenoraChatController.setTypingState(currentAccount, dialog_id, true);
+            }
         }
 
         @Override
@@ -2344,6 +2352,12 @@ public class ChatActivity extends BaseFragment implements
 
         @Override
         public void didPressAttachButton() {
+            if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0) {
+                android.widget.Toast.makeText(getContext(),
+                        "Only text messages are available in Zenora chats.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
             if (chatAttachAlert != null) {
                 chatAttachAlert.setEditingMessageObject(0, null);
             }
@@ -3237,6 +3251,19 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
         firstMessagesLoaded = true;
+        if (chatMode == MODE_DEFAULT
+                && ZenoraChatController.isZenoraDialog(currentAccount, dialog_id)) {
+            int zenoraLoadIndex = lastLoadIndex++;
+            waitingForLoad.add(zenoraLoadIndex);
+            // Keep Telegram's non-blocking SQLite read and UI lifecycle. The
+            // negative index preserves the loading gate for the subsequent Zenora
+            // HTTP merge, which completes it with the matching positive index.
+            getMessagesController().loadMessages(
+                    dialog_id, 0, false, 50, 0, 0, true, 0, classGuid,
+                    MessagesController.LOAD_BACKWARD, 0, MODE_DEFAULT, 0,
+                    replyMaxReadId, -zenoraLoadIndex, isTopic);
+            return;
+        }
         final Runnable load = () -> {
             waitingForLoad.add(lastLoadIndex);
             if (chatMode == MODE_SEARCH) {
@@ -3338,6 +3365,8 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void onFragmentDestroy() {
+        ZenoraLiveMessageSyncController.onChatPaused(currentAccount, dialog_id, classGuid);
+        ZenoraHistoryController.cancelDialogRequests(currentAccount, dialog_id, classGuid);
         super.onFragmentDestroy();
         if (messageMetricsView != null) {
             messageMetricsView.finish();
@@ -14409,6 +14438,27 @@ public class ChatActivity extends BaseFragment implements
             return;
         }
 
+        if (chatMode == MODE_DEFAULT
+                && ZenoraChatController.isZenoraDialog(currentAccount, dialog_id)) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (totalItemCount - firstVisibleItemFinal - visibleItemCountFinal <= checkLoadCount
+                        && !loading && waitingForLoad.isEmpty() && !endReached[0]) {
+                    int localLoadIndex = lastLoadIndex++;
+                    waitingForLoad.add(localLoadIndex);
+                    loading = true;
+                    int localBeforeMessageId = maxMessageId[0] == Integer.MAX_VALUE
+                            ? 0 : maxMessageId[0];
+                    getMessagesController().loadMessages(
+                            dialog_id, 0, false, 50, localBeforeMessageId, 0,
+                            true, minDate[0], classGuid, MessagesController.LOAD_BACKWARD,
+                            0, MODE_DEFAULT, 0, replyMaxReadId, -localLoadIndex, isTopic);
+                }
+            });
+            // Zenora uses Telegram SQLite first; MessagesController starts the
+            // dedicated HTTP cursor request only after this local page is published.
+            return;
+        }
+
         AndroidUtilities.runOnUIThread(() -> {
             if (totalItemCount - firstVisibleItemFinal - visibleItemCountFinal <= checkLoadCount && !loading) {
                 if (!endReached[0]) {
@@ -17268,6 +17318,9 @@ public class ChatActivity extends BaseFragment implements
                     inlineUpdate1();
                 }
                 getMessagesController().markDialogAsRead(dialog_id, maxPositiveUnreadId, maxNegativeUnreadId, maxUnreadDate, false, threadId, counterDecrement, maxPositiveUnreadId == minMessageId[0] || maxNegativeUnreadId == minMessageId[0], scheduledRead);
+                if (threadId == 0 && maxPositiveUnreadId > 0) {
+                    ZenoraChatController.markDialogAttentionRead(currentAccount, dialog_id, maxPositiveUnreadId);
+                }
                 firstUnreadSent = true;
             } else if (!firstUnreadSent && currentEncryptedChat == null) {
                 if (chatLayoutManager.findFirstVisibleItemPosition() == 0) {
@@ -17278,6 +17331,9 @@ public class ChatActivity extends BaseFragment implements
                         inlineUpdate2();
                     }
                     getMessagesController().markDialogAsRead(dialog_id, minMessageId[0], minMessageId[0], maxDate[0], false, threadId, 0, true, scheduledRead);
+                    if (threadId == 0 && minMessageId[0] > 0) {
+                        ZenoraChatController.markDialogAttentionRead(currentAccount, dialog_id, minMessageId[0]);
+                    }
                     if (isTopic && replyOriginalChat != null) {
                         getMessagesStorage().updateRepliesMaxReadId(replyOriginalChat.id, replyOriginalMessageId, Math.max(maxPositiveUnreadId, replyMaxReadId), 0, true);
                     }
@@ -19887,7 +19943,7 @@ public class ChatActivity extends BaseFragment implements
                     if (!messageObject.isAnimatedEmoji() && (messageObject.isSticker() || messageObject.isAnimatedSticker()) && MessageObject.isStickerHasSet(messageObject.getDocument())) {
                         selectedMessagesCanStarIds[index].remove(messageObject.getId());
                     }
-                    if (messageObject.canEditMessage(currentChat)) {
+                    if (canEditMessageInCurrentDialog(messageObject)) {
                         canEditMessagesCount--;
                     }
                     if (!messageObject.canDeleteMessage(chatMode == MODE_SCHEDULED, currentChat)) {
@@ -21372,6 +21428,10 @@ public class ChatActivity extends BaseFragment implements
             postponedScrollToLastMessageQueryIndex = 0;
         }
         ArrayList<MessageObject> messArr = (ArrayList<MessageObject>) args[2];
+        boolean keepZenoraHistoryIndex = doNotRemoveLoadIndex && isCache
+                && mode == MODE_DEFAULT
+                && (Integer) args[8] == MessagesController.LOAD_BACKWARD
+                && ((Integer) args[12] == 0 || messArr.size() < (Integer) args[1]);
         layOutWidgetsForSideMenu(messArr);
 
         boolean universalNotify = false;
@@ -21427,7 +21487,7 @@ public class ChatActivity extends BaseFragment implements
                 getMessagesController().loadMessages(dialog_id, mergeDialogId, false, AndroidUtilities.isTablet() ? 30 : 20, 0, 0, true, 0, classGuid, 2, 0, chatMode, threadMessageId, replyMaxReadId, lastLoadIndex++, isTopic);
             }
             return;
-        } else if (!doNotRemoveLoadIndex) {
+        } else if (!doNotRemoveLoadIndex || !keepZenoraHistoryIndex) {
             waitingForLoad.remove(index);
         }
         if (messages.isEmpty() && messArr.size() == 1 && MessageObject.isSystemSignUp(messArr.get(0))) {
@@ -30659,6 +30719,9 @@ public class ChatActivity extends BaseFragment implements
     @Override
     public void onResume() {
         super.onResume();
+        if (chatMode == MODE_DEFAULT) {
+            ZenoraLiveMessageSyncController.onChatResumed(currentAccount, dialog_id, classGuid);
+        }
         checkShowBlur(false);
         activityResumeTime = System.currentTimeMillis();
         if (openImport && getSendMessagesHelper().getImportingHistory(dialog_id) != null) {
@@ -30874,6 +30937,7 @@ public class ChatActivity extends BaseFragment implements
 
     @Override
     public void onPause() {
+        ZenoraLiveMessageSyncController.onChatPaused(currentAccount, dialog_id, classGuid);
         super.onPause();
         scrolling = false;
         if (scrimPopupWindow != null) {
@@ -30882,6 +30946,9 @@ public class ChatActivity extends BaseFragment implements
         }
         long replyId = threadMessageId;
         getMessagesController().markDialogAsReadNow(dialog_id, replyId);
+        if (threadMessageId == 0) {
+            ZenoraChatController.setTypingState(currentAccount, dialog_id, false);
+        }
         final boolean keepVoiceRecording = keepVoiceRecordingOnPause && saveVoiceRecordingForRestore();
         keepVoiceRecordingOnPause = false;
         if (keepVoiceRecording) {
@@ -31818,7 +31885,7 @@ public class ChatActivity extends BaseFragment implements
         boolean noforwards = isPeerNoForwards() || message.messageOwner.noforwards || getDialogId() == UserObject.VERIFY;
         boolean noforwardsOrPaidMedia = noforwards || message.type == MessageObject.TYPE_PAID_MEDIA;
         boolean allowUnpin = message.getDialogId() != mergeDialogId && allowPin && (pinnedMessageObjects.containsKey(message.getId()) || groupedMessages != null && !groupedMessages.messages.isEmpty() && pinnedMessageObjects.containsKey(groupedMessages.messages.get(0).getId())) && !message.isExpiredStory();
-        boolean allowEdit = message.canEditMessage(currentChat) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL;
+        boolean allowEdit = canEditMessageInCurrentDialog(message) && !chatActivityEnterView.hasAudioToSend() && message.getDialogId() != mergeDialogId && message.type != MessageObject.TYPE_STORY && message.type != MessageObject.TYPE_POLL;
         if (allowEdit && groupedMessages != null) {
             int captionsCount = 0;
             for (int a = 0, N = groupedMessages.messages.size(); a < N; a++) {
@@ -34039,12 +34106,29 @@ public class ChatActivity extends BaseFragment implements
         return null;
     }
 
+    private boolean canEditMessageInCurrentDialog(MessageObject message) {
+        if (message == null) return false;
+        long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        if (roomId > 0L) {
+            return ZenoraMessageMutationController.canEditPlainTextMessage(
+                    currentAccount, dialog_id, message);
+        }
+        return message.canEditMessage(currentChat);
+    }
+
     private void startEditingMessageObject(MessageObject messageObject) {
         startEditingMessageObject(messageObject, false);
     }
 
     private void startEditingMessageObject(MessageObject messageObject, boolean asSuggestion) {
         if (messageObject == null || getParentActivity() == null) {
+            return;
+        }
+        long zenoraEditRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        if (zenoraEditRoomId > 0L && (asSuggestion || !canEditMessageInCurrentDialog(messageObject))) {
+            android.widget.Toast.makeText(getContext(),
+                    "Only your ordinary text messages can be edited in ZenoraChat.",
+                    android.widget.Toast.LENGTH_LONG).show();
             return;
         }
         if (selectionReactionsOverlay != null && selectionReactionsOverlay.isVisible()) {
@@ -34068,7 +34152,7 @@ public class ChatActivity extends BaseFragment implements
         chatActivityEnterView.setVisibility(View.VISIBLE);
         showFieldPanelForEdit(true, messageObject);
         updateBottomOverlay();
-        if (!asSuggestion) {
+        if (!asSuggestion && zenoraEditRoomId <= 0L) {
             checkEditTimer();
         }
         if (asSuggestion) {
@@ -34079,6 +34163,12 @@ public class ChatActivity extends BaseFragment implements
 
         updatePinnedMessageView(true);
         updateVisibleRows();
+
+        if (zenoraEditRoomId > 0L) {
+            // Zenora's native Composer is ready; commit through message_edit.php only.
+            chatActivityEnterView.showEditDoneProgress(false, true);
+            return;
+        }
 
         if (!asSuggestion && !messageObject.scheduled && !messageObject.isQuickReply() && chatMode != MODE_WELCOME_MESSAGES) {
             TLRPC.TL_messages_getMessageEditData req = new TLRPC.TL_messages_getMessageEditData();
@@ -35004,7 +35094,44 @@ public class ChatActivity extends BaseFragment implements
                 break;
             }
             case OPTION_CANCEL_SENDING: {
-                if (selectedObject.isEditing() || selectedObject.isSending() && selectedObjectGroup == null) {
+                long cancelDialogId = selectedObject == null ? 0L : selectedObject.getDialogId();
+                if (cancelDialogId != 0L && ZenoraChatController.isZenoraDialog(currentAccount, cancelDialogId)) {
+                    if (selectedObject.isEditing()) {
+                        Toast.makeText(getParentActivity(),
+                                "This Zenora message cannot be cancelled as a pending send.",
+                                Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    ArrayList<MessageObject> pendingZenoraMessages = new ArrayList<>();
+                    if (selectedObjectGroup != null) {
+                        pendingZenoraMessages.addAll(selectedObjectGroup.messages);
+                    } else {
+                        pendingZenoraMessages.add(selectedObject);
+                    }
+                    boolean onlyPendingLocalMessages = !pendingZenoraMessages.isEmpty();
+                    for (MessageObject pendingObject : pendingZenoraMessages) {
+                        if (pendingObject == null || pendingObject.getId() >= 0) {
+                            onlyPendingLocalMessages = false;
+                            break;
+                        }
+                    }
+                    if (!onlyPendingLocalMessages) {
+                        Toast.makeText(getParentActivity(),
+                                "Only messages that have not been submitted to Zenora can be cancelled here.",
+                                Toast.LENGTH_LONG).show();
+                        break;
+                    }
+                    long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, cancelDialogId);
+                    ZenoraMessageMutationController.deleteSelection(currentAccount, cancelDialogId,
+                            roomId, pendingZenoraMessages, "me",
+                            getUserConfig().getClientUserId(), (response, error) -> {
+                                if (error != null && getParentActivity() != null) {
+                                    Toast.makeText(getParentActivity(), TextUtils.isEmpty(error.getMessage())
+                                            ? "The pending Zenora message could not be cancelled."
+                                            : error.getMessage(), Toast.LENGTH_LONG).show();
+                                }
+                            });
+                } else if (selectedObject.isEditing() || selectedObject.isSending() && selectedObjectGroup == null) {
                     getSendMessagesHelper().cancelSendingMessage(selectedObject);
                 } else if (selectedObject.isSending() && selectedObjectGroup != null) {
                     for (int a = 0; a < selectedObjectGroup.messages.size(); a++) {

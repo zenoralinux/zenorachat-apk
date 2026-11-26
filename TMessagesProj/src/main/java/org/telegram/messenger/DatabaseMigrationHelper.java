@@ -1719,6 +1719,49 @@ public class DatabaseMigrationHelper {
             version = 181;
         }
 
+
+        if (version == 181) {
+            // Additive Zenora outbox migration; existing message and dialog rows stay untouched.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 182").stepThis().dispose();
+            version = 182;
+        }
+
+        if (version == 182) {
+            database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_history_dialog_idx ON zenora_history_state(dialog_id, zenora_user_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 183").stepThis().dispose();
+            version = 183;
+        }
+
+        if (version == 183) {
+            // Add the reply relationship without rewriting existing outbox rows.
+            if (!hasColumn(database, "zenora_outbox", "reply_to_id")) {
+                database.executeFast("ALTER TABLE zenora_outbox ADD COLUMN reply_to_id INTEGER NOT NULL DEFAULT 0").stepThis().dispose();
+            }
+            database.executeFast("PRAGMA user_version = 184").stepThis().dispose();
+            version = 184;
+        }
+
+        if (version == 184) {
+            // Persistent ordered mutation cursor, isolated by local account, room and Zenora user.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_cursor(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, last_event_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_mutation_cursor_user_idx ON zenora_message_mutation_cursor(zenora_user_id, room_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 185").stepThis().dispose();
+            version = 185;
+        }
+
+        if (version == 185) {
+            // Durable local deletion tombstones prevent late edit events from
+            // resurrecting deleted text inside Reply previews after process death.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_deleted(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, deletion_event_id INTEGER NOT NULL, deletion_event_type TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_mutation_deleted_room_user_idx ON zenora_message_mutation_deleted(room_id, zenora_user_id, message_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 186").stepThis().dispose();
+            version = 186;
+        }
+
         return version;
     }
 
@@ -1781,11 +1824,16 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION) {
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 185
+                    && version != 184 && version != 183 && version != 182) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
             }
             HashSet<String> excludeTables = new HashSet<>();
+            // Older databases predate one or more additive Zenora state tables.
+            if (version < 183) excludeTables.add("zenora_history_state");
+            if (version < 185) excludeTables.add("zenora_message_mutation_cursor");
+            if (version < 186) excludeTables.add("zenora_message_mutation_deleted");
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
             excludeTables.add("scheduled_messages_v2");

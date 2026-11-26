@@ -144,9 +144,14 @@ import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SendMessagesHelper;
+import org.json.JSONObject;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.SharedPrefsHelper;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.ZenoraChatController;
+import org.telegram.messenger.ZenoraApiClient;
+import org.telegram.messenger.ZenoraHistoryController;
+import org.telegram.messenger.ZenoraMessageMutationController;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -751,6 +756,8 @@ public class ChatActivityEnterView extends FrameLayout implements
     private ChatActivity parentFragment;
     private long dialog_id;
     private boolean ignoreTextChange;
+    private boolean zenoraTextSendPersisting;
+    private boolean zenoraEditInFlight;
     private int innerTextChange;
     private MessageObject replyingMessageObject;
     private MessageObject replyingTopMessage;
@@ -7387,6 +7394,14 @@ public class ChatActivityEnterView extends FrameLayout implements
         final boolean allowConfirmFinal = allowConfirm && !animatorEphemeralMessageVisibility.getValue();
 
         final Runnable send = () -> {
+            if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0
+                    && (videoToSendMessageObject != null || audioToSend != null
+                    || richDraftActive && richDraftMessage != null)) {
+                android.widget.Toast.makeText(getContext(),
+                        "Only plain-text messages are available in Zenora chats.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
             if (slowModeTimer == Integer.MAX_VALUE && !isInScheduleMode()) {
                 if (delegate != null) {
                     delegate.scrollToSendingMessage();
@@ -7502,6 +7517,10 @@ public class ChatActivityEnterView extends FrameLayout implements
             if (checkPremiumAnimatedEmoji(currentAccount, dialog_id, parentFragment, null, message)) {
                 return;
             }
+            // Zenora clears the Composer synchronously after its optimistic local row is stored.
+            // Do not let Telegram's 200 ms send-animation callback erase text typed afterwards.
+            final boolean zenoraOptimisticText = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0
+                    && !TextUtils.isEmpty(message);
             if (processSendingText(message, notify, scheduleDate, scheduleRepeatPeriod, payStars)) {
                 if (delegate.hasForwardingMessages() || (scheduleDate != 0 && !isInScheduleMode()) || isInScheduleMode()) {
                     if (messageEditText != null) {
@@ -7515,7 +7534,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     AndroidUtilities.runOnUIThread(moveToSendStateRunnable = () -> {
                         moveToSendStateRunnable = null;
                         hideTopView(true);
-                        if (messageEditText != null) {
+                        if (messageEditText != null && !zenoraOptimisticText) {
                             messageEditText.setText("");
                         }
                         if (delegate != null) {
@@ -7524,7 +7543,8 @@ public class ChatActivityEnterView extends FrameLayout implements
                     }, 200);
                 }
                 lastTypingTimeSend = 0;
-            } else if (forceShowSendButton) {
+            } else if (forceShowSendButton
+                    && ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) <= 0) {
                 if (delegate != null) {
                     delegate.onMessageSend(null, notify, scheduleDate, scheduleRepeatPeriod, payStars);
                 }
@@ -7748,6 +7768,40 @@ public class ChatActivityEnterView extends FrameLayout implements
         if (editingMessageObject == null) {
             return;
         }
+        final long zenoraRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        if (zenoraRoomId > 0L) {
+            if (!ZenoraMessageMutationController.canEditPlainTextMessage(
+                    currentAccount, dialog_id, editingMessageObject)) {
+                android.widget.Toast.makeText(getContext(),
+                        "You do not have permission to edit this Zenora message.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            CharSequence[] editText = new CharSequence[]{
+                    AndroidUtilities.getTrimmedString(messageEditText == null ? "" : messageEditText.getTextToUse())
+            };
+            if (TextUtils.isEmpty(editText[0])) {
+                AndroidUtilities.shakeViewSpring(messageEditText, -3);
+                BotWebViewVibrationEffect.APP_ERROR.vibrate();
+                return;
+            }
+            if (editText[0].length() > accountInstance.getMessagesController().getMaxMessageLength()) {
+                android.widget.Toast.makeText(getContext(),
+                        "The edited message is too long for ZenoraChat.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            ArrayList<TLRPC.MessageEntity> editEntities =
+                    MediaDataController.getInstance(currentAccount).getEntities(editText, supportsSendingNewEntities());
+            boolean unchanged = TextUtils.equals(editText[0], editingMessageObject.messageOwner.message)
+                    && MediaDataController.entitiesEqual(editEntities, editingMessageObject.messageOwner.entities);
+            if (unchanged) {
+                setEditingMessageObject(null, null, false);
+                return;
+            }
+            submitZenoraTextEdit(editingMessageObject, editText[0].toString(), editEntities);
+            return;
+        }
 
         if (editingMessageObject.needResendWhenEdit() && !ChatObject.canManageMonoForum(currentAccount, editingMessageObject.getDialogId())) {
             final MessageSuggestionParams params = parentFragment != null && parentFragment.messageSuggestionParams != null ?
@@ -7876,7 +7930,235 @@ public class ChatActivityEnterView extends FrameLayout implements
         setEditingMessageObject(null, null, false);
     }
 
+
+    private boolean submitZenoraTextEdit(MessageObject target, String body,
+                                         ArrayList<TLRPC.MessageEntity> entities) {
+        final long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        final long userId = ZenoraApiClient.getCurrentUserId();
+        if (roomId <= 0L || userId <= 0L || target == null
+                || !ZenoraMessageMutationController.canEditPlainTextMessage(currentAccount, dialog_id, target)) {
+            android.widget.Toast.makeText(getContext(),
+                    "You do not have permission to edit this Zenora message.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (zenoraEditInFlight) {
+            android.widget.Toast.makeText(getContext(),
+                    "This Zenora message is already being edited. Please wait for the current request.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
+            android.widget.Toast.makeText(getContext(),
+                    "A Zenora text message cannot be empty.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        final long expectedVersion = ZenoraMessageMutationController.getExpectedEditVersion(
+                currentAccount, roomId, target);
+        if (expectedVersion <= 0L || expectedVersion >= Integer.MAX_VALUE) {
+            android.widget.Toast.makeText(getContext(),
+                    "The edit version is invalid. Refresh the conversation and try again.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+
+        zenoraEditInFlight = true;
+        showEditDoneProgress(true, true);
+        ZenoraMessageMutationController.editMessage(
+                currentAccount, dialog_id, roomId, target.getId(), body,
+                expectedVersion, userId, (response, error) -> {
+                    zenoraEditInFlight = false;
+                    showEditDoneProgress(false, true);
+                    if (error != null) {
+                        boolean conflict = error instanceof ZenoraApiClient.ApiException
+                                && "EDIT_VERSION_CONFLICT".equals(
+                                        ((ZenoraApiClient.ApiException) error).errorCode);
+                        if (conflict) {
+                            ZenoraHistoryController.refreshEditedMessage(
+                                    currentAccount, dialog_id, roomId, target,
+                                    (updated, refreshError) -> {
+                                        if (!updated) {
+                                            FileLog.w("[ZenoraChat] Conflict refresh did not update message "
+                                                    + target.getId() + ": "
+                                                    + (refreshError == null ? "not found" : refreshError.getMessage()));
+                                        }
+                                    });
+                            android.widget.Toast.makeText(getContext(),
+                                    "This message changed elsewhere. The latest server version was refreshed; your draft is still in the Composer.",
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        } else {
+                            FileLog.w("[ZenoraChat] Text edit failed: " + error.getMessage());
+                            android.widget.Toast.makeText(getContext(),
+                                    "Message edit failed. Your text and edit mode were kept.",
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        checkSendButton(true);
+                        return;
+                    }
+
+                    JSONObject edited = response == null ? null : response.optJSONObject("message");
+                    String editedAt = edited == null || edited.isNull("edited_at")
+                            ? null : edited.optString("edited_at", "");
+                    long newVersion = edited == null ? 0L : edited.optLong("edit_version", 0L);
+                    String savedText = edited == null ? "" : edited.optString("text", "");
+                    if (edited == null || newVersion != expectedVersion + 1L
+                            || !body.equals(savedText)
+                            || !ZenoraHistoryController.applyEditedMessage(
+                                    currentAccount, dialog_id, roomId, target,
+                                    savedText, entities, editedAt, newVersion)) {
+                        ZenoraHistoryController.refreshEditedMessage(
+                                currentAccount, dialog_id, roomId, target, (updated, refreshError) -> {
+                                    if (!updated) FileLog.w("[ZenoraChat] Could not reconcile successful edit locally");
+                                });
+                        android.widget.Toast.makeText(getContext(),
+                                "Zenora saved the edit, but the local message is being refreshed. Your Composer text was kept.",
+                                android.widget.Toast.LENGTH_LONG).show();
+                        checkSendButton(true);
+                        return;
+                    }
+                    if (parentFragment != null && parentFragment.editingMessageObject == target) {
+                        setEditingMessageObject(null, null, false);
+                    }
+                    checkSendButton(true);
+                });
+        return false;
+    }
+
+    private boolean processZenoraTextMessage(CharSequence text, boolean notify,
+                                             int scheduleDate, int scheduleRepeatPeriod,
+                                             long payStars) {
+        final long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
+        final String body = AndroidUtilities.getTrimmedString(text).toString();
+        if (roomId <= 0 || body.isEmpty()) return false;
+        if (!ZenoraChatController.isZenoraEnabled()) {
+            android.widget.Toast.makeText(getContext(),
+                    "ZenoraChat session is unavailable. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (zenoraTextSendPersisting) {
+            android.widget.Toast.makeText(getContext(),
+                    "ZenoraChat is saving the previous message. Please wait for that save to finish.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return false;
+        }
+
+        final MessageObject selectedReply = replyingMessageObject;
+        final boolean scheduled = scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0;
+        final boolean forwarding = delegate != null && delegate.hasForwardingMessages();
+        final MessageObject editingObject = parentFragment != null ? parentFragment.editingMessageObject : null;
+        final boolean editing = editingObject != null;
+        if (scheduled) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=SCHEDULE_UNSUPPORTED");
+            android.widget.Toast.makeText(getContext(),
+                    "Scheduled messages are not supported in ZenoraChat. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (forwarding) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=FORWARDING_UNSUPPORTED");
+            android.widget.Toast.makeText(getContext(),
+                    "Forwarding is not supported in ZenoraChat. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (editing) {
+            if (editingObject.scheduled || editingObject.messageOwner == null
+                    || editingObject.type != MessageObject.TYPE_TEXT
+                    || scheduleDate != 0 || scheduleRepeatPeriod != 0 || payStars > 0) {
+                android.widget.Toast.makeText(getContext(),
+                        "Only ordinary, unscheduled Zenora text messages can be edited.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return false;
+            }
+            CharSequence[] editText = new CharSequence[]{body};
+            ArrayList<TLRPC.MessageEntity> editEntities =
+                    MediaDataController.getInstance(currentAccount).getEntities(editText, supportsSendingNewEntities());
+            return submitZenoraTextEdit(editingObject, body, editEntities);
+        }
+
+        long replyToId = 0L;
+        if (selectedReply == null && replyingQuote != null) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=PARENT_QUOTE");
+            android.widget.Toast.makeText(getContext(),
+                    "Quote replies are not supported in ZenoraChat yet. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (selectedReply == null && replyingTopMessage != null) {
+            FileLog.w("[ZenoraChat][ReplyValidator] reason=PARENT_TOPIC");
+            android.widget.Toast.makeText(getContext(),
+                    "Topic replies are not supported in ZenoraChat yet. Your text was kept.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (selectedReply != null || replyingQuote != null || replyingTopMessage != null) {
+            org.telegram.messenger.ZenoraReplyValidator.Result validation =
+                    org.telegram.messenger.ZenoraReplyValidator.validate(
+                            currentAccount, selectedReply, dialog_id, roomId,
+                            replyingQuote != null, replyingTopMessage, false, false, false);
+            if (!validation.accepted) {
+                FileLog.w("[ZenoraChat][ReplyValidator] send blocked reason=" + validation.reasonCode);
+                android.widget.Toast.makeText(getContext(),
+                        "Reply cannot be sent (" + validation.reasonCode + "). Your text was kept.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return false;
+            }
+            replyToId = validation.replyToId;
+        }
+        if (body.length() > accountInstance.getMessagesController().getMaxMessageLength()) {
+            android.widget.Toast.makeText(getContext(),
+                    "The message is too long to send in ZenoraChat.",
+                    android.widget.Toast.LENGTH_LONG).show();
+            return false;
+        }
+
+        final long selectedReplyId = replyToId;
+        zenoraTextSendPersisting = true;
+        boolean queued = ZenoraHistoryController.sendTextMessage(
+                currentAccount, dialog_id, roomId, body, selectedReplyId, selectedReply,
+                (success, resultMessage) -> {
+                    if (!success) {
+                        zenoraTextSendPersisting = false;
+                        FileLog.w("[ZenoraChat] Text send failed: " + resultMessage);
+                        android.widget.Toast.makeText(getContext(),
+                                "Message failed to save or send. Your draft and Reply selection were kept.",
+                                android.widget.Toast.LENGTH_LONG).show();
+                        checkSendButton(true);
+                    }
+                },
+                () -> {
+                    zenoraTextSendPersisting = false;
+                    boolean sameDraft = messageEditText != null
+                            && AndroidUtilities.getTrimmedString(messageEditText.getText()).toString().equals(body);
+                    boolean sameReply = replyingMessageObject == selectedReply;
+                    if (sameDraft && sameReply) {
+                        if (messageEditText != null) {
+                            messageEditText.setText("");
+                            messageEditText.setSelection(0);
+                        }
+                        if (selectedReply != null) setReplyingMessageObject(null, null, null);
+                        if (delegate != null) delegate.onMessageSend(body, notify, 0, 0, 0);
+                    }
+                    checkSendButton(true);
+                });
+        if (!queued) {
+            zenoraTextSendPersisting = false;
+            android.widget.Toast.makeText(getContext(),
+                    "ZenoraChat could not queue this message. Your text and Reply selection were kept.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        // Optimistic publication and Outbox commit precede clearing the Composer.
+        // Zenora never enters SendMessagesHelper/MTProto.
+        return false;
+    }
+
     public boolean processSendingText(CharSequence text, boolean notify, int scheduleDate, int scheduleRepeatPeriod, long payStars) {
+        if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0) {
+            return processZenoraTextMessage(text, notify, scheduleDate, scheduleRepeatPeriod, payStars);
+        }
         if (replyingQuote != null && parentFragment != null && replyingQuote.outdated) {
             parentFragment.showQuoteMessageUpdate();
             return false;

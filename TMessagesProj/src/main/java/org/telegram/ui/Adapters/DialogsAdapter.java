@@ -287,6 +287,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
         boolean isForumCell;
         private boolean pinned;
         private boolean isFolder;
+        private boolean muted;
         TL_chatlists.TL_chatlists_chatlistUpdates chatlistUpdates;
         private int emptyType;
 
@@ -371,6 +372,9 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
                 }
                 isFolder = dialog.isFolder;
                 isForumCell = MessagesController.getInstance(currentAccount).isForum(dialog.id);
+                // Keep mute state in the item snapshot so DiffUtil can detect
+                // notification-only changes even when the Dialog object is reused.
+                muted = !dialog.isFolder && MessagesController.getInstance(currentAccount).isDialogMuted(dialog.id, 0);
             }
         }
 
@@ -579,7 +583,15 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
 
             @Override
             public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-                return oldItems.get(oldItemPosition).viewType == newItems.get(newItemPosition).viewType;
+                ItemInternal oldItem = oldItems.get(oldItemPosition);
+                ItemInternal newItem = newItems.get(newItemPosition);
+                if (oldItem.viewType != newItem.viewType) {
+                    return false;
+                }
+                if (oldItem.viewType == VIEW_TYPE_DIALOG || oldItem.viewType == VIEW_TYPE_DIALOG_COMMUNITY) {
+                    return oldItem.muted == newItem.muted;
+                }
+                return true;
             }
         };
         if (itemInternals.size() < 50 || !ALLOW_UPDATE_IN_BACKGROUND) {

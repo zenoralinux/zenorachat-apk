@@ -115,6 +115,21 @@ public class SQLiteDatabase {
         commitTransaction(sqliteHandle);
     }
 
+    public void rollbackTransaction() {
+        if (!inTransaction) {
+            return;
+        }
+        try {
+            executeFast("ROLLBACK").stepThis().dispose();
+        } catch (SQLiteException e) {
+            if (BuildVars.LOGS_ENABLED) {
+                FileLog.e(e.getMessage(), e);
+            }
+        } finally {
+            inTransaction = false;
+        }
+    }
+
 	native long opendb(String fileName, String tempDir) throws SQLiteException;
 	native void closedb(long sqliteHandle) throws SQLiteException;
     native void beginTransaction(long sqliteHandle);

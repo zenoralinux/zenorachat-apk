@@ -341,6 +341,7 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void muteUntil(long did, long topicId, int selectedTimeInSeconds) {
+        if (ZenoraChatController.handleMuteUntil(currentAccount, did, topicId, selectedTimeInSeconds)) return;
         if (did != 0) {
             SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
             SharedPreferences.Editor editor = preferences.edit();
@@ -6059,6 +6060,22 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void setDialogNotificationsSettings(long dialog_id, long topicId, int setting) {
+        setDialogNotificationsSettingsInternal(dialog_id, topicId, setting, true);
+    }
+
+    /**
+     * Explicit legacy path used only by the existing swipe gesture. Its behavior
+     * is intentionally kept unchanged as requested; all menu and selection
+     * actions use the Zenora API interception above.
+     */
+    public void setDialogNotificationsSettingsLocal(long dialog_id, long topicId, int setting) {
+        setDialogNotificationsSettingsInternal(dialog_id, topicId, setting, false);
+    }
+
+    private void setDialogNotificationsSettingsInternal(long dialog_id, long topicId, int setting, boolean useZenora) {
+        if (useZenora && ZenoraChatController.handleMuteSetting(UserConfig.selectedAccount, dialog_id, topicId, setting)) {
+            return;
+        }
         SharedPreferences preferences = getAccountInstance().getNotificationsSettings();
         SharedPreferences.Editor editor = preferences.edit();
         TLRPC.Dialog dialog = MessagesController.getInstance(UserConfig.selectedAccount).dialogs_dict.get(dialog_id);
@@ -6340,6 +6357,7 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void muteDialog(long dialog_id, long topicId, boolean mute) {
+        if (ZenoraChatController.handleMuteDialog(currentAccount, dialog_id, topicId, mute)) return;
         if (mute) {
             NotificationsController.getInstance(currentAccount).muteUntil(dialog_id, topicId, Integer.MAX_VALUE);
         } else {

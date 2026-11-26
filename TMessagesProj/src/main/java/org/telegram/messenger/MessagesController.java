@@ -1259,6 +1259,7 @@ public class MessagesController extends BaseController implements NotificationCe
         public long lastTime;
         public long userId;
         public TLRPC.SendMessageAction action;
+        public boolean isZenora;
     }
 
     public static int DIALOG_FILTER_FLAG_CONTACTS = 0x00000001;
@@ -9315,6 +9316,38 @@ public class MessagesController extends BaseController implements NotificationCe
         return inputWallPaper;
     }
 
+    public void updateZenoraDialogPreview(long dialogId, MessageObject updated) {
+        if (updated == null || updated.messageOwner == null || updated.getDialogId() != dialogId) return;
+        ArrayList<MessageObject> preview = dialogMessage.get(dialogId);
+        boolean replaced = false;
+        if (preview != null) {
+            for (int i = 0; i < preview.size(); i++) {
+                MessageObject current = preview.get(i);
+                if (current != null && current.getId() == updated.getId()) {
+                    preview.set(i, updated);
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+        TLRPC.Dialog dialog = dialogs_dict.get(dialogId);
+        if (dialog != null && dialog.top_message == updated.getId()) {
+            if (!replaced) {
+                ArrayList<MessageObject> latest = new ArrayList<>(1);
+                latest.add(updated);
+                dialogMessage.put(dialogId, latest);
+            }
+            dialog.last_message_date = updated.messageOwner.date;
+            if (updated.messageOwner.peer_id != null && updated.messageOwner.peer_id.channel_id == 0) {
+                MessageObject mapped = dialogMessagesByIds.get(updated.getId());
+                if (mapped == null || mapped.getDialogId() == dialogId) {
+                    dialogMessagesByIds.put(updated.getId(), updated);
+                }
+            }
+            getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+        }
+    }
+
     public void markDialogMessageAsDeleted(long dialogId, ArrayList<Integer> messages) {
         ArrayList<MessageObject> objs = dialogMessage.get(dialogId);
         if (objs != null) {
@@ -9333,6 +9366,46 @@ public class MessagesController extends BaseController implements NotificationCe
         }
     }
 
+
+    /**
+     * Apply a confirmed Zenora delete to local Telegram models and SQLite only.
+     * This deliberately does not call deleteMessages() or construct any MTProto request.
+     */
+    public boolean applyZenoraMessageDeletionLocally(long dialogId, ArrayList<Integer> messageIds) {
+        if (!ZenoraChatController.isZenoraDialog(currentAccount, dialogId)
+                || DialogObject.isEncryptedDialog(dialogId)
+                || messageIds == null || messageIds.isEmpty() || messageIds.size() > 50) {
+            return false;
+        }
+        ArrayList<Integer> ids = new ArrayList<>();
+        HashSet<Integer> unique = new HashSet<>();
+        for (Integer id : messageIds) {
+            if (id == null || id == 0 || !unique.add(id)) return false;
+            ids.add(id);
+        }
+
+        long channelId = 0L;
+        if (DialogObject.isChatDialog(dialogId)) {
+            TLRPC.Chat chat = getChat(-dialogId);
+            if (ChatObject.isChannel(chat)) channelId = chat.id;
+        }
+        for (Integer id : ids) {
+            MessageObject object = dialogMessagesByIds.get(id);
+            if (object != null && object.getDialogId() == dialogId) {
+                object.deleted = true;
+            }
+        }
+        markDialogMessageAsDeleted(dialogId, ids);
+        ZenoraHistoryController.invalidateReplyPreviews(currentAccount, dialogId, ids);
+        getMessagesStorage().markMessagesAsDeleted(dialogId, ids, true, true,
+                ChatActivity.MODE_DEFAULT, 0);
+        getMessagesStorage().updateDialogsWithDeletedMessages(dialogId, channelId, ids, null);
+        getNotificationCenter().postNotificationName(
+                NotificationCenter.messagesDeleted, ids, channelId, false, false, false, 0);
+        getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+        return true;
+    }
+
     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, int topicId, boolean forAll, int mode) {
         deleteMessages(messages, randoms, encryptedChat, dialogId, forAll, mode, false, 0, null, topicId);
     }
@@ -9346,6 +9419,12 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void deleteMessages(ArrayList<Integer> messages, ArrayList<Long> randoms, TLRPC.EncryptedChat encryptedChat, long dialogId, boolean forAll, int mode, boolean cacheOnly, long taskId, TLObject taskRequest, int topicId, boolean movedToScheduled, int movedToScheduledMessageId) {
+        // Hard safety barrier: Zenora deletes must use the authenticated Zenora API path.
+        // Never allow an overlooked caller to reach Telegram/MTProto deletion for a Zenora room.
+        if (ZenoraChatController.isZenoraDialog(currentAccount, dialogId)) {
+            FileLog.e("Blocked Telegram/MTProto deleteMessages call for Zenora dialog " + dialogId);
+            return;
+        }
         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
         final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
         final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;
@@ -9871,6 +9950,14 @@ public class MessagesController extends BaseController implements NotificationCe
 
 
 
+
+    /**
+     * Resets Telegram's pagination cutoff before applying a complete external
+     * dialog snapshot (for example, the ZenoraChat rooms API response).
+     */
+    public void resetDialogsLoadedTillDate() {
+        dialogsLoadedTillDate = Integer.MIN_VALUE;
+    }
 
     public ArrayList<TLRPC.Dialog> getDialogs(int folderId) {
         ArrayList<TLRPC.Dialog> dialogs = dialogsByFolder.get(folderId);
@@ -12011,7 +12098,8 @@ public class MessagesController extends BaseController implements NotificationCe
         } else {
             reload = resCount == 0 && (!isInitialLoading || (SystemClock.elapsedRealtime() - lastServerQueryTime.get(dialogId, 0L)) > 60 * 1000 || (isCache && isTopic));
         }
-        if (!DialogObject.isEncryptedDialog(dialogId) && isCache && reload) {
+        if (!DialogObject.isEncryptedDialog(dialogId) && isCache && reload
+                && !ZenoraChatController.isZenoraDialog(currentAccount, dialogId)) {
             if (mode == ChatActivity.MODE_SCHEDULED) {
                 lastScheduledServerQueryTime.put(dialogId, SystemClock.elapsedRealtime());
             } else if (mode == ChatActivity.MODE_QUICK_REPLIES) {
@@ -12263,6 +12351,29 @@ public class MessagesController extends BaseController implements NotificationCe
             }
             if (!webpagesToReload.isEmpty()) {
                 reloadWebPages(dialogId, webpagesToReload, mode);
+            }
+
+            // The local Telegram cache has now been delivered to ChatActivity.
+            // Only after that notification may Zenora issue its HTTP history request.
+            if (isCache && mode == ChatActivity.MODE_DEFAULT && load_type == LOAD_BACKWARD
+                    && ZenoraChatController.isZenoraDialog(currentAccount, dialogId)
+                    && loadIndex < 0) {
+                if (max_id == 0) {
+                    ZenoraHistoryController.loadInitialHistory(
+                            currentAccount, dialogId, classGuid, Math.abs(loadIndex), count);
+                } else if (ZenoraHistoryPolicy.reachedLocalCacheBoundary(resCount, count)) {
+                    long localBeforeMessageId = max_id;
+                    for (int i = 0; i < messagesRes.messages.size(); i++) {
+                        int messageId = messagesRes.messages.get(i).id;
+                        if (messageId > 0 && (localBeforeMessageId <= 0
+                                || messageId < localBeforeMessageId)) {
+                            localBeforeMessageId = messageId;
+                        }
+                    }
+                    ZenoraHistoryController.loadOlderHistory(
+                            currentAccount, dialogId, classGuid, Math.abs(loadIndex),
+                            count, localBeforeMessageId);
+                }
             }
 
             Timer.done(t3);
@@ -21911,6 +22022,73 @@ public class MessagesController extends BaseController implements NotificationCe
             return null;
         }
         return threads.get(threadId);
+    }
+
+    /**
+     * Replace only Zenora-owned typing entries while preserving Telegram's
+     * native typing actions from other transports.
+     */
+    public void applyZenoraTypingSnapshot(HashMap<Long, ArrayList<Long>> typingByDialog) {
+        AndroidUtilities.runOnUIThread(() -> {
+            for (Map.Entry<Long, ConcurrentHashMap<Integer, ArrayList<PrintingUser>>> dialogEntry : printingUsers.entrySet()) {
+                ConcurrentHashMap<Integer, ArrayList<PrintingUser>> threads = dialogEntry.getValue();
+                if (threads == null) continue;
+                for (Map.Entry<Integer, ArrayList<PrintingUser>> threadEntry : threads.entrySet()) {
+                    ArrayList<PrintingUser> users = threadEntry.getValue();
+                    if (users == null) continue;
+                    synchronized (users) {
+                        for (int i = users.size() - 1; i >= 0; i--) {
+                            if (users.get(i).isZenora) users.remove(i);
+                        }
+                        if (users.isEmpty() && threads.get(threadEntry.getKey()) == users) {
+                            threads.remove(threadEntry.getKey());
+                        }
+                    }
+                }
+                if (threads.isEmpty() && printingUsers.get(dialogEntry.getKey()) == threads) {
+                    printingUsers.remove(dialogEntry.getKey());
+                }
+            }
+
+            if (typingByDialog != null) {
+                for (Map.Entry<Long, ArrayList<Long>> dialogEntry : typingByDialog.entrySet()) {
+                    Long dialogId = dialogEntry.getKey();
+                    ArrayList<Long> userIds = dialogEntry.getValue();
+                    if (dialogId == null || userIds == null || userIds.isEmpty()) continue;
+                    ConcurrentHashMap<Integer, ArrayList<PrintingUser>> threads = printingUsers.get(dialogId);
+                    if (threads == null) {
+                        ConcurrentHashMap<Integer, ArrayList<PrintingUser>> created = new ConcurrentHashMap<>();
+                        ConcurrentHashMap<Integer, ArrayList<PrintingUser>> existing = printingUsers.putIfAbsent(dialogId, created);
+                        threads = existing == null ? created : existing;
+                    }
+                    ArrayList<PrintingUser> newZenoraUsers = new ArrayList<>();
+                    long now = System.currentTimeMillis();
+                    for (Long userId : userIds) {
+                        if (userId == null || userId <= 0) continue;
+                        PrintingUser typingUser = new PrintingUser();
+                        typingUser.userId = userId;
+                        typingUser.lastTime = now;
+                        typingUser.action = new TLRPC.TL_sendMessageTypingAction();
+                        typingUser.isZenora = true;
+                        newZenoraUsers.add(typingUser);
+                    }
+                    if (!newZenoraUsers.isEmpty()) {
+                        ArrayList<PrintingUser> existingUsers = threads.get(0);
+                        if (existingUsers == null) {
+                            ArrayList<PrintingUser> createdUsers = new ArrayList<>();
+                            ArrayList<PrintingUser> racedUsers = threads.putIfAbsent(0, createdUsers);
+                            existingUsers = racedUsers == null ? createdUsers : racedUsers;
+                        }
+                        synchronized (existingUsers) {
+                            existingUsers.addAll(newZenoraUsers);
+                        }
+                    }
+                }
+            }
+
+            updatePrintingStrings();
+            getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, UPDATE_MASK_USER_PRINT);
+        });
     }
 
     private boolean updatePrintingUsersWithNewMessages(long uid, ArrayList<MessageObject> messages) {

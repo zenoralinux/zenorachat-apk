@@ -121,6 +121,7 @@ import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.VideoEditedInfo;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
@@ -2210,7 +2211,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                             performSelectedDialogsAction(selectedDialogs, read, true, false);
                                         } else if (SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_MUTE) {
                                             if (!getMessagesController().isDialogMuted(dialogId, 0)) {
-                                                NotificationsController.getInstance(UserConfig.selectedAccount).setDialogNotificationsSettings(dialogId, 0, NotificationsController.SETTING_MUTE_FOREVER);
+                                                // Keep the pre-existing swipe gesture path unchanged.
+                                                NotificationsController.getInstance(UserConfig.selectedAccount).setDialogNotificationsSettingsLocal(dialogId, 0, NotificationsController.SETTING_MUTE_FOREVER);
                                                 if (BulletinFactory.canShowBulletin(DialogsActivity.this)) {
                                                     BulletinFactory.createMuteBulletin(DialogsActivity.this, NotificationsController.SETTING_MUTE_FOREVER).show();
                                                 }
@@ -2230,7 +2232,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                         } else if (SharedConfig.getChatSwipeAction(currentAccount) == SwipeGestureSettingsView.SWIPE_GESTURE_DELETE) {
                                             ArrayList<Long> selectedDialogs = new ArrayList<>();
                                             selectedDialogs.add(dialogId);
-                                            performSelectedDialogsAction(selectedDialogs, delete, true, false);
+                                            performSelectedDialogsAction(selectedDialogs, delete, true, false, null, false);
                                         }
                                     }
                                 }
@@ -2472,7 +2474,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             DialogCell dialogCell = (DialogCell) target.itemView;
             long dialogId = dialogCell.getDialogId();
             TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(dialogId);
-            if (dialog == null || !isDialogPinned(dialog) || DialogObject.isFolderDialogId(dialogId)) {
+            if (dialog == null || !isDialogPinned(dialog) || DialogObject.isFolderDialogId(dialogId)
+                    || ZenoraChatController.isZenoraEnabled()
+                    && (parentPage.dialogsAdapter.getDialogsType() == 7 || parentPage.dialogsAdapter.getDialogsType() == 8)) {
                 return false;
             }
             int fromIndex = source.getAdapterPosition();
@@ -2528,6 +2532,39 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     ArrayList<Long> selectedDialogs = new ArrayList<>();
                     selectedDialogs.add(dialogId);
                     performSelectedDialogsAction(selectedDialogs, community_ungroup, true, false);
+                    return;
+                }
+
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    final boolean archiveNow = folderId == 0;
+                    ArrayList<Long> zenoraDialogIds = new ArrayList<>();
+                    zenoraDialogIds.add(dialogId);
+                    ZenoraChatController.setDialogsArchived(currentAccount, zenoraDialogIds,
+                            archiveNow, false, (success, errorMessage) -> {
+                                if (!success) {
+                                    parentPage.updateList(true);
+                                    if (getParentActivity() != null) {
+                                        android.widget.Toast.makeText(getParentActivity(),
+                                                errorMessage == null ? "تغییر وضعیت آرشیو ناموفق بود." : errorMessage,
+                                                android.widget.Toast.LENGTH_LONG).show();
+                                    }
+                                    return;
+                                }
+                                if (archiveNow) {
+                                    UndoView undo = getUndoView();
+                                    if (undo != null) {
+                                        undo.showWithAction(dialogId, UndoView.ACTION_ARCHIVE, null, () ->
+                                                ZenoraChatController.setDialogsArchived(currentAccount,
+                                                        zenoraDialogIds, false, true, (undoSuccess, undoError) -> {
+                                                            if (!undoSuccess && getParentActivity() != null) {
+                                                                android.widget.Toast.makeText(getParentActivity(),
+                                                                        undoError == null ? "بازگردانی گفتگو ناموفق بود." : undoError,
+                                                                        android.widget.Toast.LENGTH_LONG).show();
+                                                            }
+                                                        }));
+                                    }
+                                }
+                            });
                     return;
                 }
 
@@ -2871,8 +2908,23 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
 
         loadDialogs(getAccountInstance());
-        getMessagesController().getStoriesController().loadAllStories();
-        getMessagesController().loadPinnedDialogs(folderId, 0, null);
+        if (!ZenoraChatController.isZenoraEnabled()) {
+            getMessagesController().getStoriesController().loadAllStories();
+            getMessagesController().loadPinnedDialogs(folderId, 0, null);
+            if (isArchive()) {
+                getMessagesController().getStoriesController().loadHiddenStories();
+            } else {
+                getMessagesController().getStoriesController().loadStories();
+            }
+            getContactsController().loadGlobalPrivacySetting();
+            if (getMessagesController().savedViewAsChats) {
+                getMessagesController().getSavedMessagesController().preloadDialogs(true);
+            }
+            if (communityId != 0) {
+                getMessagesController().loadFullChat(communityId, 0, true);
+            }
+            BirthdayController.getInstance(currentAccount).check();
+        }
         if (databaseMigrationHint != null && !getMessagesStorage().isDatabaseMigrationInProgress()) {
             View localView = databaseMigrationHint;
             if (localView.getParent() != null) {
@@ -2880,32 +2932,31 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             databaseMigrationHint = null;
         }
-        if (isArchive()) {
-            getMessagesController().getStoriesController().loadHiddenStories();
-        } else {
-            getMessagesController().getStoriesController().loadStories();
-        }
-
-        getContactsController().loadGlobalPrivacySetting();
-
-        if (getMessagesController().savedViewAsChats) {
-            getMessagesController().getSavedMessagesController().preloadDialogs(true);
-        }
-
-        if (communityId != 0) {
-            getMessagesController().loadFullChat(communityId, 0, true);
-        }
-
-        BirthdayController.getInstance(currentAccount).check();
         additionNavigationBarHeight = hasMainTabs ? dp(MAIN_TABS_HEIGHT_WITH_MARGINS) : 0;
         additionFloatingButtonOffset = hasMainTabs ? dp(DialogsActivity.MAIN_TABS_HEIGHT + DialogsActivity.MAIN_TABS_MARGIN) : 0;
 
         return true;
     }
 
+    public static void resetZenoraLoadState(int account) {
+        if (account >= 0 && account < dialogsLoaded.length) {
+            dialogsLoaded[account] = false;
+        }
+    }
+
+    public static void markZenoraLoadComplete(int account) {
+        if (account >= 0 && account < dialogsLoaded.length) {
+            dialogsLoaded[account] = true;
+        }
+    }
+
     public static void loadDialogs(AccountInstance accountInstance) {
         int currentAccount = accountInstance.getCurrentAccount();
         if (!dialogsLoaded[currentAccount]) {
+            if (ZenoraChatController.isZenoraEnabled()) {
+                ZenoraChatController.loadDialogs(accountInstance);
+                return;
+            }
             MessagesController messagesController = accountInstance.getMessagesController();
             messagesController.loadGlobalNotificationsSettings();
             messagesController.loadDialogs(0, 0, 100, true);
@@ -6944,6 +6995,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onResume() {
         super.onResume();
+        if (!onlySelect && communityId == 0) {
+            // The main list and Archive are two views of the same account snapshot.
+            ZenoraChatController.setDialogsScreenVisible(currentAccount, true);
+        }
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
         }
@@ -7164,6 +7219,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onPause() {
         super.onPause();
+        if (!onlySelect && communityId == 0) {
+            ZenoraChatController.setDialogsScreenVisible(currentAccount, false);
+        }
         if (storiesBulletin != null) {
             storiesBulletin.hide();
             storiesBulletin = null;
@@ -7736,6 +7794,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
     private void checkListLoad(ViewPage viewPage, int firstVisibleItem, int lastVisibleItem) {
         if (tabsAnimationInProgress || startedTracking || filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isAnimatingIndicator()) {
+            return;
+        }
+        // The Zenora API returns a complete list; do not invoke Telegram's MTProto pagination.
+        if (ZenoraChatController.isZenoraEnabled()) {
             return;
         }
         int visibleItemCount = Math.abs(lastVisibleItem - firstVisibleItem) + 1;
@@ -8656,6 +8718,35 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             unpinItem.setOnClickListener(e -> {
                 finishPreviewFragment();
                 AndroidUtilities.runOnUIThread(() -> {
+                    if (ZenoraChatController.isZenoraEnabled()) {
+                        if (filter != null) {
+                            android.widget.Toast.makeText(getParentActivity(),
+                                    "سنجاق گفتگو در پوشه‌های سفارشی تلگرام برای حساب زنورا پشتیبانی نمی‌شود.",
+                                    android.widget.Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        final boolean pinOnServer = !isDialogPinned(dialog);
+                        ArrayList<Long> zenoraPinIds = new ArrayList<>();
+                        zenoraPinIds.add(dialogId);
+                        ZenoraChatController.setDialogsPinned(currentAccount, zenoraPinIds, pinOnServer,
+                                (success, errorMessage) -> {
+                                    if (!success) {
+                                        if (getParentActivity() != null) {
+                                            android.widget.Toast.makeText(getParentActivity(),
+                                                    errorMessage == null ? "تغییر وضعیت سنجاق ناموفق بود." : errorMessage,
+                                                    android.widget.Toast.LENGTH_LONG).show();
+                                        }
+                                        return;
+                                    }
+                                    UndoView zenoraUndo = getUndoView();
+                                    if (zenoraUndo != null) {
+                                        zenoraUndo.showWithAction(0,
+                                                pinOnServer ? UndoView.ACTION_PIN_DIALOGS : UndoView.ACTION_UNPIN_DIALOGS,
+                                                1, 1600, null, null);
+                                    }
+                                });
+                        return;
+                    }
                     int minPinnedNum = Integer.MAX_VALUE;
                     if (filter != null && isDialogPinned(dialog)) {
                         for (int c = 0, N = filter.pinnedDialogs.size(); c < N; c++) {
@@ -9027,7 +9118,27 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             movingDialogFilters.clear();
         }
         if (movingWas) {
-            getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+            if (ZenoraChatController.isZenoraEnabled()) {
+                ArrayList<Long> orderedPinnedDialogIds = new ArrayList<>();
+                ArrayList<TLRPC.Dialog> currentDialogs = getDialogsArray(
+                        currentAccount, viewPages[0].dialogsType, folderId, false);
+                // Preserve the actual visual order produced by DialogsAdapter.moveDialogs.
+                for (TLRPC.Dialog dialog : currentDialogs) {
+                    if (dialog != null && dialog.pinned) {
+                        orderedPinnedDialogIds.add(dialog.id);
+                    }
+                }
+                ZenoraChatController.reorderPinnedDialogs(currentAccount, orderedPinnedDialogIds,
+                        (success, errorMessage) -> {
+                            if (!success && getParentActivity() != null) {
+                                android.widget.Toast.makeText(getParentActivity(),
+                                        errorMessage == null ? "ذخیره ترتیب گفتگوهای سنجاق‌شده ناموفق بود." : errorMessage,
+                                        android.widget.Toast.LENGTH_LONG).show();
+                            }
+                        });
+            } else {
+                getMessagesController().reorderPinnedDialogs(folderId, null, 0);
+            }
             movingWas = false;
         }
         updateCounters(true);
@@ -9080,10 +9191,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress) {
-        performSelectedDialogsAction(selectedDialogs, action, alert, longPress, null);
+        performSelectedDialogsAction(selectedDialogs, action, alert, longPress, null, true);
     }
 
     private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress, HashSet<Long> dialogsIdsToRevoke) {
+        performSelectedDialogsAction(selectedDialogs, action, alert, longPress, dialogsIdsToRevoke, true);
+    }
+
+    private void performSelectedDialogsAction(ArrayList<Long> selectedDialogs, int action, boolean alert, boolean longPress, HashSet<Long> dialogsIdsToRevoke, boolean allowZenoraDelete) {
         if (getParentActivity() == null) {
             return;
         }
@@ -9095,9 +9210,98 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             filter = null;
         }
         int count = selectedDialogs.size();
+        // Multi-select delete is committed to Zenora only after the native
+        // UndoView callback re-enters this method with alert=false. The swipe
+        // gesture explicitly passes allowZenoraDelete=false.
+        if (action == delete && !alert && allowZenoraDelete
+                && count > 1 && ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> deleteIds = new ArrayList<>(selectedDialogs);
+            ZenoraChatController.deleteDialogs(currentAccount, deleteIds, dialogsIdsToRevoke, 0,
+                    (success, errorMessage) -> {
+                        if (!success && getParentActivity() != null) {
+                            android.widget.Toast.makeText(getParentActivity(),
+                                    errorMessage == null ? "حذف یا ترک گفتگو ناموفق بود." : errorMessage,
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
+                    });
+            return;
+        }
+        if (ZenoraChatController.isZenoraEnabled() && (action == pin || action == pin2)) {
+            if (filter != null || viewPages != null
+                    && (viewPages[0].dialogsType == 7 || viewPages[0].dialogsType == 8)) {
+                android.widget.Toast.makeText(getParentActivity(),
+                        "سنجاق گفتگو در پوشه‌های سفارشی تلگرام برای حساب زنورا پشتیبانی نمی‌شود.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            final boolean pinOnServer = canPinCount != 0;
+            ArrayList<Long> zenoraPinIds = new ArrayList<>();
+            for (Long selectedDialog : selectedDialogs) {
+                TLRPC.Dialog selected = getMessagesController().dialogs_dict.get(selectedDialog);
+                if (selected != null && (pinOnServer ? !isDialogPinned(selected) : isDialogPinned(selected))) {
+                    zenoraPinIds.add(selectedDialog);
+                }
+            }
+            if (zenoraPinIds.isEmpty()) {
+                hideActionMode(false);
+                return;
+            }
+            final int changedCount = zenoraPinIds.size();
+            ZenoraChatController.setDialogsPinned(currentAccount, zenoraPinIds, pinOnServer,
+                    (success, errorMessage) -> {
+                        if (!success) {
+                            if (getParentActivity() != null) {
+                                android.widget.Toast.makeText(getParentActivity(),
+                                        errorMessage == null ? "تغییر وضعیت سنجاق ناموفق بود." : errorMessage,
+                                        android.widget.Toast.LENGTH_LONG).show();
+                            }
+                            return;
+                        }
+                        hideActionMode(false);
+                        UndoView undoView = getUndoView();
+                        if (searchIsShowed && undoView != null) {
+                            undoView.showWithAction(0,
+                                    pinOnServer ? UndoView.ACTION_PIN_DIALOGS : UndoView.ACTION_UNPIN_DIALOGS,
+                                    changedCount);
+                        }
+                    });
+            return;
+        }
         int pinnedActionCount = 0;
         if (action == archive || action == archive2) {
             ArrayList<Long> copy = new ArrayList<>(selectedDialogs);
+            if (ZenoraChatController.isZenoraEnabled()) {
+                final boolean archiveNow = canUnarchiveCount == 0;
+                ZenoraChatController.setDialogsArchived(currentAccount, copy, archiveNow, false,
+                        (success, errorMessage) -> {
+                            if (!success) {
+                                if (getParentActivity() != null) {
+                                    android.widget.Toast.makeText(getParentActivity(),
+                                            errorMessage == null ? "تغییر وضعیت آرشیو ناموفق بود." : errorMessage,
+                                            android.widget.Toast.LENGTH_LONG).show();
+                                }
+                                return;
+                            }
+                            hideActionMode(false);
+                            if (archiveNow) {
+                                int undoAction = copy.size() > 1
+                                        ? UndoView.ACTION_ARCHIVE_FEW : UndoView.ACTION_ARCHIVE;
+                                UndoView undo = getUndoView();
+                                if (undo != null) {
+                                    undo.showWithAction(0, undoAction, null, () ->
+                                            ZenoraChatController.setDialogsArchived(currentAccount,
+                                                    copy, false, true, (undoSuccess, undoError) -> {
+                                                        if (!undoSuccess && getParentActivity() != null) {
+                                                            android.widget.Toast.makeText(getParentActivity(),
+                                                                    undoError == null ? "بازگردانی گفتگوها ناموفق بود." : undoError,
+                                                                    android.widget.Toast.LENGTH_LONG).show();
+                                                        }
+                                                    }));
+                                }
+                            }
+                        });
+                return;
+            }
             getMessagesController().addDialogToFolder(copy, canUnarchiveCount == 0 ? 1 : 0, -1, null, 0);
             if (canUnarchiveCount == 0) {
                 SharedPreferences preferences = MessagesController.getGlobalMainSettings();
@@ -9199,11 +9403,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else if ((action == delete || action == clear) && count > 1 && alert) {
             boolean hasDialogsToRevoke = false;
             HashSet<Long> dialogsIdsPossibleToRevoke = new HashSet<>();
+            boolean zenoraDeleteAllAvailable = ZenoraChatController.isZenoraEnabled();
             boolean canRevokePmInbox = MessagesController.getInstance(currentAccount).canRevokePmInbox;
             long revokeTimePmLimit = MessagesController.getInstance(currentAccount).revokeTimePmLimit;
-            if (action == delete && canRevokePmInbox && revokeTimePmLimit == 0x7fffffff) {
+            if (action == delete && (zenoraDeleteAllAvailable
+                    || canRevokePmInbox && revokeTimePmLimit == 0x7fffffff)) {
                 for (Long selectedDialog : selectedDialogs) {
-                    if (DialogObject.isUserDialog(selectedDialog) || DialogObject.isEncryptedDialog(selectedDialog)) {
+                    if (DialogObject.isUserDialog(selectedDialog)
+                            || !zenoraDeleteAllAvailable && DialogObject.isEncryptedDialog(selectedDialog)) {
                         TLRPC.User user = null;
                         if (DialogObject.isEncryptedDialog(selectedDialog)) {
                             TLRPC.EncryptedChat encryptedChat = getMessagesController().getEncryptedChat(DialogObject.getEncryptedChatId(selectedDialog));
@@ -9236,7 +9443,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         undoView.showWithAction(didsCopy, action == delete ? UndoView.ACTION_DELETE_FEW : UndoView.ACTION_CLEAR_FEW, null, null, () -> {
                             if (action == delete) {
                                 getMessagesController().setDialogsInTransaction(true);
-                                performSelectedDialogsAction(didsCopy, action, false, false, param ? dialogsIdsPossibleToRevoke : null);
+                                performSelectedDialogsAction(didsCopy, action, false, false, param ? dialogsIdsPossibleToRevoke : null, allowZenoraDelete);
                                 getMessagesController().setDialogsInTransaction(false);
                                 getMessagesController().checkIfFolderEmpty(folderId);
                                 if (folderId != 0 && getDialogsArray(currentAccount, viewPages[0].dialogsType, folderId, false).size() == 0) {
@@ -9383,7 +9590,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
                                 final UndoView undoView = getUndoView();
                                 if (undoView != null) {
-                                    undoView.showWithAction(selectedDialog, action == clear ? UndoView.ACTION_CLEAR : param ? UndoView.ACTION_DELETE : UndoView.ACTION_LEAVE, () -> performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, param));
+                                    undoView.showWithAction(selectedDialog, action == clear ? UndoView.ACTION_CLEAR : param ? UndoView.ACTION_DELETE : UndoView.ACTION_LEAVE, () -> performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, param, allowZenoraDelete));
                                 }
 
                                 ArrayList<TLRPC.Dialog> currentDialogs = new ArrayList<>(getDialogsArray(currentAccount, viewPages[0].dialogsType, folderId, false));
@@ -9416,13 +9623,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             getMessagesController().deleteDialog(selectedDialog, 2, false);
                         } else {
                             boolean revoke = dialogsIdsToRevoke != null && dialogsIdsToRevoke.contains(selectedDialog);
-                            performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, revoke);
+                            performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, revoke, allowZenoraDelete);
                         }
                     }
                 }
             } else if (action == mute) {
                 if (count == 1 && canMuteCount == 1) {
-                    showDialog(AlertsCreator.createMuteAlert(this, selectedDialog, 0, null), dialog12 -> hideActionMode(true));
+                    getNotificationsController().setDialogNotificationsSettings(selectedDialog, 0, NotificationsController.SETTING_MUTE_FOREVER);
+                    hideActionMode(true);
                     return;
                 } else {
                     if (canUnmuteCount != 0) {
@@ -9431,7 +9639,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         }
                         getNotificationsController().setDialogNotificationsSettings(selectedDialog, 0, NotificationsController.SETTING_MUTE_UNMUTE);
                     } else if (longPress) {
-                        showDialog(AlertsCreator.createMuteAlert(this, selectedDialogs, 0, null), dialog12 -> hideActionMode(true));
+                        for (int i = 0; i < selectedDialogs.size(); i++) {
+                            getNotificationsController().setDialogNotificationsSettings(
+                                    selectedDialogs.get(i), 0, NotificationsController.SETTING_MUTE_FOREVER);
+                        }
+                        hideActionMode(true);
                         return;
                     } else {
                         if (getMessagesController().isDialogMuted(selectedDialog, 0)) {
@@ -9466,6 +9678,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void markAsRead(long did) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ZenoraChatController.markDialogRead(currentAccount, did, (success, errorMessage) -> {
+                if (!success && getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(),
+                            errorMessage == null ? "علامت‌گذاری گفتگو به‌عنوان خوانده‌شده ناموفق بود." : errorMessage,
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+            return;
+        }
         TLRPC.Dialog dialog = getMessagesController().dialogs_dict.get(did);
         if (dialog instanceof TLRPC.TL_dialogCommunity) {
             final ArrayList<TLRPC.Dialog> dialogs = getMessagesController().getDialogsByCommunity(dialog.community_id);
@@ -9517,6 +9739,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void markAsUnread(long did) {
+        if (ZenoraChatController.isZenoraEnabled()) {
+            ZenoraChatController.markDialogUnread(currentAccount, did, (success, errorMessage) -> {
+                if (!success && getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(),
+                            errorMessage == null ? "علامت‌گذاری گفتگو به‌عنوان خوانده‌نشده ناموفق بود." : errorMessage,
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+            return;
+        }
         getMessagesController().markDialogAsUnread(did, null, 0);
     }
 
@@ -9543,6 +9775,36 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     }
 
     private void performDeleteOrClearDialogAction(int action, long selectedDialog, TLRPC.Chat chat, boolean isBot, boolean revoke) {
+        performDeleteOrClearDialogAction(action, selectedDialog, chat, isBot, revoke, true);
+    }
+
+    private void performDeleteOrClearDialogAction(int action, long selectedDialog, TLRPC.Chat chat, boolean isBot, boolean revoke, boolean allowZenoraDelete) {
+        if (action == delete && allowZenoraDelete && ZenoraChatController.isZenoraEnabled()) {
+            ArrayList<Long> deleteIds = new ArrayList<>();
+            deleteIds.add(selectedDialog);
+            HashSet<Long> revokeIds = new HashSet<>();
+            // For bots the native checkbox means "Block Bot", not
+            // "delete for both". Keep the DM delete scope personal.
+            if (revoke && selectedDialog > 0 && !isBot) {
+                revokeIds.add(selectedDialog);
+            }
+            long blockUserId = isBot && revoke && selectedDialog > 0 ? selectedDialog : 0;
+            ZenoraChatController.deleteDialogs(currentAccount, deleteIds, revokeIds, blockUserId,
+                    (success, errorMessage) -> {
+                        if (!success && getParentActivity() != null) {
+                            android.widget.Toast.makeText(getParentActivity(),
+                                    errorMessage == null ? "حذف یا ترک گفتگو ناموفق بود." : errorMessage,
+                                    android.widget.Toast.LENGTH_LONG).show();
+                        }
+                        if (success) {
+                            if (AndroidUtilities.isTablet()) {
+                                getNotificationCenter().postNotificationName(NotificationCenter.closeChats, selectedDialog);
+                            }
+                            getMessagesController().checkIfFolderEmpty(folderId);
+                        }
+                    });
+            return;
+        }
         if (action == clear) {
             getMessagesController().deleteDialog(selectedDialog, 1, revoke);
         } else {
@@ -10639,6 +10901,24 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
 
             Runnable deleteRunnable = () -> {
+                if (ZenoraChatController.isZenoraEnabled()) {
+                    ArrayList<Long> deleteIds = new ArrayList<>();
+                    deleteIds.add(dialogId);
+                    HashSet<Long> revokeIds = new HashSet<>();
+                    if (revoke && user != null && !user.bot && dialogId > 0) {
+                        revokeIds.add(dialogId);
+                    }
+                    long blockUserId = user != null && user.bot && botBlock ? user.id : 0;
+                    ZenoraChatController.deleteDialogs(account, deleteIds, revokeIds, blockUserId,
+                            (success, errorMessage) -> {
+                                if (!success && getParentActivity() != null) {
+                                    android.widget.Toast.makeText(getParentActivity(),
+                                            errorMessage == null ? "حذف یا ترک گفتگو ناموفق بود." : errorMessage,
+                                            android.widget.Toast.LENGTH_LONG).show();
+                                }
+                            });
+                    return;
+                }
                 if (chat != null) {
                     if (ChatObject.isNotInChat(chat)) {
                         getMessagesController().deleteDialog(dialogId, 0, revoke);
@@ -10756,7 +11036,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else if (id == NotificationCenter.onDatabaseReset) {
             dialogsLoaded[currentAccount] = false;
             loadDialogs(getAccountInstance());
-            getMessagesController().loadPinnedDialogs(folderId, 0, null);
+            if (!ZenoraChatController.isZenoraEnabled()) {
+                getMessagesController().loadPinnedDialogs(folderId, 0, null);
+            }
         } else if (id == NotificationCenter.chatlistFolderUpdate) {
             int filterId = (int) args[0];
             for (int i = 0; i < viewPages.length; ++i) {
