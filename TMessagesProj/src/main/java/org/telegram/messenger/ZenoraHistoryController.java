@@ -582,10 +582,22 @@ public final class ZenoraHistoryController {
         long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
         long zenoraUserId = ZenoraApiClient.getCurrentUserId();
         String clientId = message.params == null ? null : message.params.get("zenora_client_message_id");
+        long replyToId = message.reply_to == null ? 0L : message.reply_to.reply_to_msg_id;
+        MessageObject replyParent = object.replyMessageObject;
+        if (replyParent == null && message.replyMessage != null) {
+            replyParent = new MessageObject(account, message.replyMessage, false, false);
+            object.replyMessageObject = replyParent;
+        }
         if (roomId <= 0 || zenoraUserId <= 0 || zenoraUserId != UserConfig.getInstance(account).getClientUserId()
                 || TextUtils.isEmpty(clientId) || TextUtils.isEmpty(message.message)
                 || !(message.media instanceof TLRPC.TL_messageMediaEmpty)
-                || message.action != null || message.reply_to != null || object.scheduled
+                || message.action != null || object.scheduled
+                || replyToId < 0L
+                || message.reply_to != null && (replyToId <= 0L
+                    || message.reply_to.reply_to_top_id != 0
+                    || message.reply_to.reply_to_peer_id != null)
+                || replyToId > 0L && (message.reply_to == null
+                    || message.reply_to.reply_to_msg_id != replyToId)
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) return false;
 
         long randomId = message.random_id;
@@ -603,7 +615,8 @@ public final class ZenoraHistoryController {
             if (existing != null) createdAt = existing.createdAt;
         }
         PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, message.id,
-                randomId, zenoraUserId, clientId, message.message, object, null, createdAt);
+                randomId, zenoraUserId, clientId, message.message, replyToId,
+                replyParent, object, null, createdAt);
 
         MessagesStorage.getInstance(account).prepareZenoraOutboxRetry(
                 message, roomId, zenoraUserId, clientId, error -> {
