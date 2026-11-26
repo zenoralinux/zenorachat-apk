@@ -1736,6 +1736,22 @@ public class DatabaseMigrationHelper {
             version = 183;
         }
 
+        if (version == 183) {
+            // Additive only: legacy outbox rows become ordinary non-reply sends (reply_to_id=0).
+            // Existing messages_v2 rows and all stable idempotency keys remain untouched.
+            if (!hasColumn(database, "zenora_outbox", "reply_to_id")) {
+                database.executeFast("ALTER TABLE zenora_outbox ADD COLUMN reply_to_id INTEGER NOT NULL DEFAULT 0").stepThis().dispose();
+            }
+            if (!hasColumn(database, "zenora_outbox", "reply_preview_sender_id")) {
+                database.executeFast("ALTER TABLE zenora_outbox ADD COLUMN reply_preview_sender_id INTEGER NOT NULL DEFAULT 0").stepThis().dispose();
+            }
+            if (!hasColumn(database, "zenora_outbox", "reply_preview_body")) {
+                database.executeFast("ALTER TABLE zenora_outbox ADD COLUMN reply_preview_body TEXT NOT NULL DEFAULT ''").stepThis().dispose();
+            }
+            database.executeFast("PRAGMA user_version = 184").stepThis().dispose();
+            version = 184;
+        }
+
         return version;
     }
 
@@ -1798,7 +1814,7 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION && version != 182) {
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 182 && version != 183) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
             }
@@ -1807,6 +1823,11 @@ public class DatabaseMigrationHelper {
             // already has the version-183 table; skip copying the absent old table.
             if (version == 182) {
                 excludeTables.add("zenora_history_state");
+            }
+            // Version 182/183 outbox rows have fewer columns than the v184 table.
+            // Copy the stable legacy columns explicitly; new reply columns use defaults.
+            if (version == 182 || version == 183) {
+                excludeTables.add("zenora_outbox");
             }
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
@@ -1832,6 +1853,14 @@ public class DatabaseMigrationHelper {
                     continue;
                 }
                 newDatabase.executeFast(String.format(Locale.US, "INSERT OR IGNORE INTO %s SELECT * FROM old.%s;", tableName, tableName)).stepThis().dispose();
+            }
+            if (version == 182 || version == 183) {
+                newDatabase.executeFast("INSERT OR IGNORE INTO zenora_outbox(" +
+                        "client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, " +
+                        "body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) " +
+                        "SELECT client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, " +
+                        "body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date " +
+                        "FROM old.zenora_outbox").stepThis().dispose();
             }
 
             SQLiteCursor cursor = newDatabase.queryFinalized("SELECT did FROM old.dialogs");
