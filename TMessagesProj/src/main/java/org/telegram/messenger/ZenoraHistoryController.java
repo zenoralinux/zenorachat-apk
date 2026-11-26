@@ -1356,6 +1356,8 @@ public final class ZenoraHistoryController {
         HashSet<Long> includedUsers = new HashSet<>();
         ArrayList<MessageObject> objects = new ArrayList<>();
         ArrayList<TLRPC.Message> stored = new ArrayList<>();
+        HashMap<Integer, MessageObject> liveObjectsById = new HashMap<>();
+        HashMap<Integer, MessageObject> liveReplyParentsById = new HashMap<>();
         HashSet<Integer> committedIds = new HashSet<>();
         long committedCursor = afterMessageId;
         for (int i = 0; i < ids.size(); i++) {
@@ -1432,7 +1434,24 @@ public final class ZenoraHistoryController {
                 message.params.put("zenora_client_message_id", clientMessageId);
                 message.params.put("zenora_room_id", String.valueOf(roomId));
             }
-            objects.add(new MessageObject(account, message, true, true));
+            MessageObject liveObject = new MessageObject(account, message, true, true);
+            long liveReplyId = replyIds.get(i);
+            if (liveReplyId > 0L && liveReplyId <= Integer.MAX_VALUE) {
+                MessageObject replyObject = liveObjectsById.get((int) liveReplyId);
+                if (replyObject == null) {
+                    replyObject = liveReplyParentsById.get((int) liveReplyId);
+                }
+                if (replyObject == null && message.replyMessage != null) {
+                    replyObject = new MessageObject(account, message.replyMessage, false, false);
+                    liveReplyParentsById.put((int) liveReplyId, replyObject);
+                }
+                if (replyObject != null) {
+                    liveObject.replyMessageObject = replyObject;
+                    message.replyMessage = replyObject.messageOwner;
+                }
+            }
+            liveObjectsById.put(messageId, liveObject);
+            objects.add(liveObject);
             stored.add(message);
             committedIds.add(messageId);
             committedCursor = messageId;
