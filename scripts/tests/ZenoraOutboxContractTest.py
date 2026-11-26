@@ -26,11 +26,15 @@ assert "reply_to_id" in retryStorage
 ack = storage.split("public void acknowledgeZenoraTextMessage(",1)[1].split("public static final class ZenoraHistoryState",1)[0]
 assert "storedReplyToId != replyToId" in ack and "AND reply_to_id = ?" in ack
 
-# Additive migration, with pre-existing 183 databases moved to 184.
+# The reply column remains an additive 183->184 migration, followed by
+# mutation-event cursor/tombstone migrations through the current v186 schema.
 assert "if (version == 181)" in migration and "if (version == 182)" in migration
 assert "if (version == 183)" in migration and "PRAGMA user_version = 184" in migration
 assert "ALTER TABLE zenora_outbox ADD COLUMN reply_to_id" in migration
-assert "LAST_DB_VERSION = 184" in storage
+assert "PRAGMA user_version = 185" in migration and "PRAGMA user_version = 186" in migration
+assert "LAST_DB_VERSION = 186" in storage
+assert "CREATE TABLE zenora_message_mutation_cursor" in storage
+assert "CREATE TABLE zenora_message_mutation_deleted" in storage
 
 # Stable key + stable parent survive retry, network retry and process restore.
 assert "final long replyToId;" in history and "record.replyToId" in history
