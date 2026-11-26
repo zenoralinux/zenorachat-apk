@@ -1726,6 +1726,23 @@ public final class ZenoraHistoryController {
         return true;
     }
 
+    /** Update a cached reply parent even when its full message row is not loaded locally. */
+    public static boolean applyEditedMessageToCachedReplyPreview(int account, long dialogId,
+                                                                 long roomId, int messageId,
+                                                                 String body, String editedAt,
+                                                                 long editVersion) {
+        if (messageId <= 0 || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+            return false;
+        }
+        MessageObject cachedParent = getCachedReplyPreview(account, dialogId, messageId);
+        if (cachedParent == null) return false;
+        ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
+                new CharSequence[]{body}, true);
+        return applyEditedMessage(account, dialogId, roomId, cachedParent,
+                body, entities, editedAt, editVersion);
+    }
+
     public static void refreshEditedMessage(int account, long dialogId, long roomId,
                                             MessageObject target, EditRefreshCallback callback) {
         if (target == null || target.getId() <= 0 || roomId <= 0L

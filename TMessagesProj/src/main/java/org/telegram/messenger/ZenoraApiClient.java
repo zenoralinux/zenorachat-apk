@@ -652,6 +652,43 @@ public final class ZenoraApiClient {
         });
     }
 
+    /**
+     * Fetch the usual history delta and mutation-event delta in the same existing
+     * live-sync polling cycle and serialized API task (no extra poller/service).
+     */
+    public static void fetchBasicTextMessagesAfter(long roomId, long afterMessageId,
+                                                    long afterEventId, int limit,
+                                                    long expectedUserId, Callback callback) {
+        if (roomId <= 0L || roomId > Integer.MAX_VALUE || afterMessageId < 0L
+                || afterEventId < 0L || expectedUserId <= 0L
+                || getCurrentUserId() != expectedUserId) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora live-sync account or cursor"));
+            return;
+        }
+        final int safeLimit = Math.max(1, Math.min(50, limit));
+        executor.execute(() -> {
+            try {
+                if (getCurrentUserId() != expectedUserId) {
+                    throw new IllegalStateException("Zenora account changed before live sync");
+                }
+                String path = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&after_id=" + afterMessageId
+                        + "&limit=" + safeLimit;
+                JSONObject response = request(path, "GET", null, true, expectedUserId);
+                String eventPath = "message_mutation_events.php?room_id=" + roomId
+                        + "&after_event_id=" + afterEventId + "&limit=" + safeLimit;
+                JSONObject eventPage = request(eventPath, "GET", null, true, expectedUserId);
+                if (response == null || eventPage == null || !eventPage.optBoolean("ok", false)) {
+                    throw new IllegalStateException("Zenora mutation event page is invalid");
+                }
+                response.put("mutation_events_page", eventPage);
+                dispatch(callback, response, null);
+            } catch (Exception error) {
+                dispatch(callback, null, error);
+            }
+        });
+    }
+
 
     private interface MessageMutationValidator {
         void validate(JSONObject response) throws Exception;
