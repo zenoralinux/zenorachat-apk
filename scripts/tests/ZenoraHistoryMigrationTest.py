@@ -25,9 +25,9 @@ index_sql = capture(
     MIGRATION, "history state index")
 
 assert migration_sql == fresh_sql, "fresh and upgraded history-state schemas diverged"
-assert "public final static int LAST_DB_VERSION = 183;" in STORAGE
+assert "public final static int LAST_DB_VERSION = 184;" in STORAGE
 assert "PRAGMA user_version = 183" in MIGRATION
-assert "version != MessagesStorage.LAST_DB_VERSION && version != 182" in MIGRATION
+assert "version != MessagesStorage.LAST_DB_VERSION && version != 182 && version != 183" in MIGRATION
 assert 'excludeTables.add("zenora_history_state")' in MIGRATION
 assert '"zenora_outbox"' in STORAGE and '"zenora_history_state"' in STORAGE
 
@@ -41,9 +41,18 @@ db.execute("PRAGMA user_version = 182")
 db.execute(migration_sql)
 db.execute(index_sql)
 db.execute("PRAGMA user_version = 183")
-assert db.execute("PRAGMA user_version").fetchone()[0] == 183
+reply_columns = re.findall(
+    r'database\\.executeFast\\("(ALTER TABLE zenora_outbox ADD COLUMN [^"]+)"\\)',
+    MIGRATION)
+assert len(reply_columns) == 3, "v183->v184 Reply migration must add exactly three columns"
+for sql in reply_columns:
+    db.execute(sql)
+db.execute("PRAGMA user_version = 184")
+assert db.execute("PRAGMA user_version").fetchone()[0] == 184
 assert db.execute("SELECT body FROM messages_v2 WHERE mid=101 AND uid=77").fetchone()[0] == "cached"
 assert db.execute("SELECT status FROM zenora_outbox WHERE client_message_id='client-key'").fetchone()[0] == "UNKNOWN"
+assert db.execute("SELECT reply_to_id, reply_preview_sender_id, reply_preview_body FROM zenora_outbox "
+                  "WHERE client_message_id='client-key'").fetchone() == (0, 0, "")
 
 db.execute(
     "INSERT INTO zenora_history_state(room_id, dialog_id, zenora_user_id, oldest_local_message_id, "
