@@ -8,6 +8,9 @@ import android.text.TextUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.SQLite.SQLiteCursor;
+import org.telegram.tgnet.NativeByteBuffer;
+import org.telegram.ui.ChatActivity;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayDeque;
@@ -28,6 +31,11 @@ public final class ZenoraHistoryController {
     private static final Map<Integer, Map<Long, ArrayList<Target>>> inFlight = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> initialRequestIds = new HashMap<>();
     private static long nextInitialRequestId;
+    // Separate from Initial/Older/Live state: around-fetch must never move a history cursor.
+    private static final Map<Integer, Map<String, ReplyNavigationRequest>> replyNavigationInFlight = new HashMap<>();
+    private static final Map<Integer, HashSet<String>> unavailableReplyTargets = new HashMap<>();
+    private static long nextReplyNavigationRequestId;
+
     private static final Map<Integer, Map<Long, OlderState>> olderStates = new HashMap<>();
     private static final Map<Integer, Map<Long, ArrayDeque<PendingTextSend>>> pendingTextQueues = new HashMap<>();
     private static final Map<Integer, HashSet<Long>> activeTextSendRooms = new HashMap<>();
@@ -206,6 +214,39 @@ public final class ZenoraHistoryController {
         }
     }
 
+    private static final class ReplyNavigationWaiter {
+        final ChatActivity activity;
+        final int classGuid;
+        final int childMessageId;
+        final int fromMessageId;
+
+        ReplyNavigationWaiter(ChatActivity activity, int classGuid,
+                              int childMessageId, int fromMessageId) {
+            this.activity = activity;
+            this.classGuid = classGuid;
+            this.childMessageId = childMessageId;
+            this.fromMessageId = fromMessageId;
+        }
+    }
+
+    private static final class ReplyNavigationRequest {
+        final long requestId;
+        final long dialogId;
+        final long roomId;
+        final long targetMessageId;
+        final long expectedUserId;
+        final ArrayList<ReplyNavigationWaiter> waiters = new ArrayList<>();
+
+        ReplyNavigationRequest(long requestId, long dialogId, long roomId,
+                               long targetMessageId, long expectedUserId) {
+            this.requestId = requestId;
+            this.dialogId = dialogId;
+            this.roomId = roomId;
+            this.targetMessageId = targetMessageId;
+            this.expectedUserId = expectedUserId;
+        }
+    }
+
     private static final class Snapshot {
         final long roomId;
         final JSONArray messages;
@@ -268,6 +309,8 @@ public final class ZenoraHistoryController {
     public static void clearAccount(int account) {
         synchronized (lock) {
             cache.remove(account);
+            replyNavigationInFlight.remove(account);
+            unavailableReplyTargets.remove(account);
             inFlight.remove(account);
             initialRequestIds.remove(account);
             olderStates.remove(account);
@@ -1850,4 +1893,403 @@ public final class ZenoraHistoryController {
                 + ", older=" + target.olderPage + ", failed=" + (error != null));
         return true;
     }
+
+    private static String replyNavigationKey(long dialogId, long targetMessageId) {
+        return dialogId + ":" + targetMessageId;
+    }
+
+    /**
+     * Resolve a Zenora Reply parent without ever calling Telegram's MTProto history API.
+     * Resolution order is current native adapter, SQLite, then the authorized around_id API.
+     */
+    public static void navigateToReplyMessage(ChatActivity activity, int account,
+                                              long dialogId, long roomId,
+                                              int targetMessageId, int childMessageId,
+                                              int classGuid, long expectedUserId) {
+        if (activity == null || account < 0 || dialogId == 0 || roomId <= 0
+                || targetMessageId <= 0 || childMessageId <= 0 || expectedUserId <= 0
+                || !activity.isZenoraReplyNavigationCurrent(
+                        account, dialogId, roomId, classGuid, expectedUserId)) {
+            return;
+        }
+        if (activity.isZenoraReplyPreviewUnavailable(childMessageId, targetMessageId)) {
+            activity.markZenoraReplyUnavailable(childMessageId, targetMessageId);
+            activity.showZenoraReplyNavigationError("This reply message is unavailable.");
+            return;
+        }
+        if (activity.hasZenoraParentInAdapter(targetMessageId)) {
+            activity.navigateToLoadedZenoraParent(targetMessageId, childMessageId);
+            return;
+        }
+
+        final String key = replyNavigationKey(dialogId, targetMessageId);
+        final long requestId;
+        boolean startRequest = false;
+        boolean knownUnavailable;
+        synchronized (lock) {
+            HashSet<String> unavailable = unavailableReplyTargets.get(account);
+            knownUnavailable = unavailable != null && unavailable.contains(key);
+            if (knownUnavailable) {
+                requestId = 0L;
+            } else {
+                Map<String, ReplyNavigationRequest> accountRequests = replyNavigationInFlight.get(account);
+                if (accountRequests == null) {
+                    accountRequests = new HashMap<>();
+                    replyNavigationInFlight.put(account, accountRequests);
+                }
+                ReplyNavigationRequest request = accountRequests.get(key);
+                if (request == null) {
+                    request = new ReplyNavigationRequest(++nextReplyNavigationRequestId,
+                            dialogId, roomId, targetMessageId, expectedUserId);
+                    accountRequests.put(key, request);
+                    startRequest = true;
+                }
+                request.waiters.add(new ReplyNavigationWaiter(
+                        activity, classGuid, childMessageId, childMessageId));
+                requestId = request.requestId;
+            }
+        }
+        if (knownUnavailable) {
+            activity.markZenoraReplyUnavailable(childMessageId, targetMessageId);
+            activity.showZenoraReplyNavigationError("This reply message is unavailable.");
+            return;
+        }
+        if (startRequest) {
+            loadReplyTargetFromStorage(account, dialogId, roomId, targetMessageId,
+                    expectedUserId, requestId);
+        }
+    }
+
+    private static boolean isReplyNavigationRequestActive(int account, long dialogId,
+                                                           long targetMessageId,
+                                                           long expectedUserId,
+                                                           long requestId) {
+        if (ZenoraApiClient.getCurrentUserId() != expectedUserId
+                || !ZenoraApiClient.isZenoraSessionEnabled()
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) <= 0L) {
+            return false;
+        }
+        synchronized (lock) {
+            Map<String, ReplyNavigationRequest> accountRequests = replyNavigationInFlight.get(account);
+            ReplyNavigationRequest request = accountRequests == null ? null
+                    : accountRequests.get(replyNavigationKey(dialogId, targetMessageId));
+            return request != null && request.requestId == requestId
+                    && request.expectedUserId == expectedUserId
+                    && request.roomId == ZenoraChatController.getRoomIdForDialog(account, dialogId);
+        }
+    }
+
+    private static void loadReplyTargetFromStorage(int account, long dialogId, long roomId,
+                                                   int targetMessageId, long expectedUserId,
+                                                   long requestId) {
+        MessagesStorage storage = MessagesStorage.getInstance(account);
+        storage.getStorageQueue().postRunnable(() -> {
+            if (!isReplyNavigationRequestActive(account, dialogId, targetMessageId,
+                    expectedUserId, requestId)) {
+                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                        null, false, null);
+                return;
+            }
+            TLRPC.Message cachedParent = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = storage.getDatabase().queryFinalized(
+                        "SELECT data, mid, date FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1",
+                        dialogId, targetMessageId);
+                if (cursor.next() && !cursor.isNull(0)) {
+                    NativeByteBuffer data = cursor.byteBufferValue(0);
+                    if (data != null) {
+                        TLRPC.Message parent = TLRPC.Message.TLdeserialize(
+                                data, data.readInt32(false), false);
+                        if (parent != null) {
+                            parent.readAttachPath(data, UserConfig.getInstance(account).getClientUserId());
+                            parent.id = cursor.intValue(1);
+                            parent.date = cursor.intValue(2);
+                            parent.dialog_id = dialogId;
+                            if (parent.id == targetMessageId
+                                    && parent.media instanceof TLRPC.TL_messageMediaEmpty
+                                    && !TextUtils.isEmpty(parent.message)
+                                    && !TextUtils.isEmpty(parent.message.trim())) {
+                                cachedParent = parent;
+                            }
+                        }
+                        data.reuse();
+                    }
+                }
+            } catch (Throwable storageError) {
+                FileLog.e(storageError);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+
+            final TLRPC.Message localParent = cachedParent;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (!isReplyNavigationRequestActive(account, dialogId, targetMessageId,
+                        expectedUserId, requestId)) {
+                    finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                            null, false, null);
+                    return;
+                }
+                if (localParent != null) {
+                    ArrayList<TLRPC.Message> localMessages = new ArrayList<>();
+                    localMessages.add(localParent);
+                    TLRPC.TL_messages_messages payload = buildAroundPayload(
+                            account, dialogId, localMessages);
+                    finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                            payload, false, payload == null ? "The cached reply message could not be opened." : null);
+                    return;
+                }
+                if (!ApplicationLoader.isNetworkOnline()) {
+                    finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                            null, false, "This reply message is not cached. Connect to the internet and try again.");
+                    return;
+                }
+                if (!ZenoraApiClient.isZenoraSessionEnabled()
+                        || ZenoraApiClient.getCurrentUserId() != expectedUserId) {
+                    finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                            null, false, "The Zenora account changed. Reopen the chat and try again.");
+                    return;
+                }
+                ZenoraApiClient.fetchBasicTextMessagesAround(roomId, targetMessageId, 50,
+                        expectedUserId, (response, error) -> {
+                            if (!isReplyNavigationRequestActive(account, dialogId, targetMessageId,
+                                    expectedUserId, requestId)) {
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, false, null);
+                                return;
+                            }
+                            if (error != null) {
+                                boolean unavailable = error instanceof ZenoraApiClient.ApiException
+                                        && ((ZenoraApiClient.ApiException) error).statusCode == 404
+                                        && "MESSAGE_NOT_AVAILABLE".equals(
+                                                ((ZenoraApiClient.ApiException) error).errorCode);
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, unavailable,
+                                        unavailable ? null : "Unable to load this reply message. Check your connection and try again.");
+                                return;
+                            }
+                            if (response == null) {
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, false, "The reply service returned an empty response.");
+                                return;
+                            }
+                            if (!response.optBoolean("ok", false)
+                                    && "MESSAGE_NOT_AVAILABLE".equals(response.optString("error", ""))) {
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, true, null);
+                                return;
+                            }
+                            JSONArray rows = response.optJSONArray("messages");
+                            JSONObject pagination = response.optJSONObject("pagination");
+                            if (!isValidBasicTextAroundPage(rows, pagination, roomId, targetMessageId)) {
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, false, "The reply service returned an invalid message window.");
+                                return;
+                            }
+                            ArrayList<TLRPC.Message> mapped = mapAroundRows(
+                                    account, dialogId, roomId, rows);
+                            TLRPC.TL_messages_messages payload = buildAroundPayload(
+                                    account, dialogId, mapped);
+                            if (payload == null || !containsNativeMessage(payload, targetMessageId)) {
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, false, "The original reply message was not included in the response.");
+                                return;
+                            }
+                            finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                    payload, false, null);
+                        });
+            });
+        });
+    }
+
+    private static boolean containsNativeMessage(TLRPC.messages_Messages messages, int targetId) {
+        if (messages == null || messages.messages == null) return false;
+        for (TLRPC.Message message : messages.messages) {
+            if (message != null && message.id == targetId) return true;
+        }
+        return false;
+    }
+
+    private static boolean isValidBasicTextAroundPage(JSONArray rows, JSONObject pagination,
+                                                       long roomId, int targetMessageId) {
+        if (rows == null || rows.length() < 1 || rows.length() > 50 || pagination == null
+                || !"around_id".equals(pagination.optString("direction", ""))
+                || pagination.optLong("around_message_id", 0L) != targetMessageId
+                || pagination.optInt("returned", -1) != rows.length()
+                || pagination.optInt("limit", 0) < rows.length()
+                || pagination.optInt("limit", 0) > 50
+                || !pagination.isNull("next_after_id")) {
+            return false;
+        }
+        long previousId = 0L;
+        boolean foundTarget = false;
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row == null || row.optLong("room_id", 0L) != roomId || row.isNull("text")) return false;
+            long messageId = row.optLong("message_id", 0L);
+            long senderId = row.optLong("sender_id", 0L);
+            String text = row.optString("text", "");
+            if (messageId <= previousId || messageId > Integer.MAX_VALUE
+                    || senderId <= 0 || senderId > Integer.MAX_VALUE
+                    || TextUtils.isEmpty(text) || TextUtils.isEmpty(text.trim())
+                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0
+                    || !isValidReplyContract(row)) {
+                return false;
+            }
+            if (messageId == targetMessageId) foundTarget = true;
+            previousId = messageId;
+        }
+        return foundTarget
+                && pagination.optLong("oldest_message_id", 0L) == rows.optJSONObject(0).optLong("message_id", 0L)
+                && pagination.optLong("newest_message_id", 0L)
+                    == rows.optJSONObject(rows.length() - 1).optLong("message_id", 0L);
+    }
+
+    private static ArrayList<TLRPC.Message> mapAroundRows(int account, long dialogId,
+                                                            long roomId, JSONArray rows) {
+        MessagesController controller = MessagesController.getInstance(account);
+        TLRPC.Dialog dialog = controller.getDialog(dialogId);
+        if (dialog == null || dialog.peer == null) return null;
+        long selfId = UserConfig.getInstance(account).getClientUserId();
+        ArrayList<TLRPC.Message> mapped = new ArrayList<>();
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row == null || row.optLong("room_id", 0L) != roomId) return null;
+            long rawId = row.optLong("message_id", 0L);
+            long senderId = row.optLong("sender_id", 0L);
+            int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+            String body = row.optString("text", "");
+            if (rawId <= 0 || rawId > Integer.MAX_VALUE || senderId <= 0
+                    || senderId > Integer.MAX_VALUE || date <= 0
+                    || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                    || !isValidReplyContract(row)) return null;
+            TLRPC.TL_message message = new TLRPC.TL_message();
+            message.id = (int) rawId;
+            message.date = date;
+            message.dialog_id = dialogId;
+            message.peer_id = dialog.peer;
+            message.message = body;
+            message.media = new TLRPC.TL_messageMediaEmpty();
+            message.out = senderId == selfId;
+            TLRPC.TL_peerUser fromPeer = new TLRPC.TL_peerUser();
+            fromPeer.user_id = senderId;
+            message.from_id = fromPeer;
+            message.flags |= 1 << 8;
+            if (message.out) message.flags |= 1 << 1;
+            applyReplyContractToMessage(message, row, dialogId, dialog.peer, date, selfId);
+            String clientMessageId = row.isNull("client_message_id")
+                    ? "" : row.optString("client_message_id", "");
+            if (!TextUtils.isEmpty(clientMessageId)) {
+                if (message.params == null) message.params = new HashMap<>();
+                message.params.put("zenora_client_message_id", clientMessageId);
+                message.params.put("zenora_room_id", String.valueOf(roomId));
+            }
+            mapped.add(message);
+        }
+        Collections.sort(mapped, (left, right) -> Integer.compare(right.id, left.id));
+        return mapped;
+    }
+
+    private static TLRPC.TL_messages_messages buildAroundPayload(int account, long dialogId,
+                                                                   ArrayList<TLRPC.Message> nativeMessages) {
+        if (nativeMessages == null || nativeMessages.isEmpty()) return null;
+        MessagesController controller = MessagesController.getInstance(account);
+        TLRPC.Dialog dialog = controller.getDialog(dialogId);
+        if (dialog == null || dialog.peer == null) return null;
+        TLRPC.TL_messages_messages result = new TLRPC.TL_messages_messages();
+        HashSet<Long> includedUsers = new HashSet<>();
+        long selfId = UserConfig.getInstance(account).getClientUserId();
+        TLRPC.User self = controller.getUser(selfId);
+        if (self != null && includedUsers.add(selfId)) result.users.add(self);
+        if (dialogId < 0) {
+            TLRPC.Chat chat = controller.getChat(-dialogId);
+            if (chat != null) result.chats.add(chat);
+        } else {
+            TLRPC.User peer = controller.getUser(dialogId);
+            if (peer != null && includedUsers.add(peer.id)) result.users.add(peer);
+        }
+        for (TLRPC.Message message : nativeMessages) {
+            if (message == null || message.id <= 0
+                    || message.dialog_id != dialogId
+                    || !(message.media instanceof TLRPC.TL_messageMediaEmpty)
+                    || TextUtils.isEmpty(message.message) || TextUtils.isEmpty(message.message.trim())) {
+                return null;
+            }
+            if (message.peer_id == null) message.peer_id = dialog.peer;
+            long senderId = MessageObject.getPeerId(message.from_id);
+            if (senderId > 0 && includedUsers.add(senderId)) {
+                TLRPC.User sender = controller.getUser(senderId);
+                if (sender == null) {
+                    sender = ZenoraChatController.makeHistorySenderUser(
+                            senderId, "", "Zenora user " + senderId, false);
+                }
+                if (sender != null) result.users.add(sender);
+            }
+            result.messages.add(message);
+        }
+        Collections.sort(result.messages, (left, right) -> Integer.compare(right.id, left.id));
+        result.count = result.messages.size();
+        return result;
+    }
+
+    private static void finishReplyNavigation(int account, long dialogId, long targetMessageId,
+                                              long requestId, TLRPC.TL_messages_messages payload,
+                                              boolean unavailable, String errorMessage) {
+        final ReplyNavigationRequest request;
+        synchronized (lock) {
+            Map<String, ReplyNavigationRequest> accountRequests = replyNavigationInFlight.get(account);
+            request = accountRequests == null ? null
+                    : accountRequests.get(replyNavigationKey(dialogId, targetMessageId));
+            if (request == null || request.requestId != requestId) return;
+            accountRequests.remove(replyNavigationKey(dialogId, targetMessageId));
+            if (accountRequests.isEmpty()) replyNavigationInFlight.remove(account);
+            if (unavailable) {
+                HashSet<String> unavailableTargets = unavailableReplyTargets.get(account);
+                if (unavailableTargets == null) {
+                    unavailableTargets = new HashSet<>();
+                    unavailableReplyTargets.put(account, unavailableTargets);
+                }
+                unavailableTargets.add(replyNavigationKey(dialogId, targetMessageId));
+            }
+        }
+        if (ZenoraApiClient.getCurrentUserId() != request.expectedUserId
+                || UserConfig.selectedAccount != account
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != request.roomId) {
+            return;
+        }
+
+        ReplyNavigationWaiter activeWaiter = null;
+        for (ReplyNavigationWaiter waiter : request.waiters) {
+            if (waiter != null && waiter.activity != null
+                    && waiter.activity.isZenoraReplyNavigationCurrent(
+                            account, dialogId, request.roomId, waiter.classGuid, request.expectedUserId)) {
+                activeWaiter = waiter;
+                break;
+            }
+        }
+        if (activeWaiter == null) return;
+        ChatActivity activity = activeWaiter.activity;
+        if (unavailable) {
+            activity.markZenoraReplyUnavailable(activeWaiter.childMessageId, (int) targetMessageId);
+            activity.showZenoraReplyNavigationError("This reply message is unavailable.");
+            return;
+        }
+        if (!TextUtils.isEmpty(errorMessage) || payload == null) {
+            activity.showZenoraReplyNavigationError(TextUtils.isEmpty(errorMessage)
+                    ? "Unable to open this reply message." : errorMessage);
+            return;
+        }
+        if (!containsNativeMessage(payload, (int) targetMessageId)) {
+            activity.showZenoraReplyNavigationError("The original reply message was not found.");
+            return;
+        }
+        MessagesStorage.getInstance(account).putMessages(
+                payload.messages, false, true, true, 0, 0, 0);
+        MessagesStorage.getInstance(account).putZenoraReplyPreviews(payload.messages);
+        activity.publishZenoraAroundMessages(payload, (int) targetMessageId,
+                activeWaiter.fromMessageId, request.roomId,
+                request.expectedUserId, activeWaiter.classGuid);
+    }
+
+
 }

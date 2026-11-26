@@ -627,6 +627,38 @@ public final class ZenoraApiClient {
             }
         });
     }
+    /**
+     * Fetch a bounded text-history window around an exact Reply parent.
+     * The expected Zenora user ID binds the request to the account that initiated it.
+     */
+    public static void fetchBasicTextMessagesAround(long roomId, long aroundMessageId,
+                                                      int limit, long expectedUserId,
+                                                      Callback callback) {
+        if (roomId <= 0 || aroundMessageId <= 0 || aroundMessageId > Integer.MAX_VALUE
+                || expectedUserId <= 0 || getCurrentUserId() != expectedUserId) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora around-message request"));
+            return;
+        }
+        final int safeLimit = Math.max(1, Math.min(50, limit));
+        executor.execute(() -> {
+            try {
+                if (getCurrentUserId() != expectedUserId) {
+                    throw new IllegalStateException("Zenora account changed before around request");
+                }
+                String path = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&around_id=" + aroundMessageId
+                        + "&limit=" + safeLimit;
+                JSONObject response = request(path, "GET", null, false, expectedUserId);
+                if (getCurrentUserId() != expectedUserId) {
+                    throw new IllegalStateException("Zenora account changed during around request");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception error) {
+                dispatch(callback, null, error);
+            }
+        });
+    }
+
     /** Fetches a bounded page of newly committed text messages. */
     public static void fetchBasicTextMessagesAfter(long roomId, long afterMessageId,
                                                     int limit, Callback callback) {
