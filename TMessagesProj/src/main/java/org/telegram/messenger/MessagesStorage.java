@@ -118,7 +118,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 183;
+    public final static int LAST_DB_VERSION = 184;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -258,11 +258,15 @@ public class MessagesStorage extends BaseController {
         public final long createdAt;
         public final long nextAttemptAt;
         public final int attemptCount;
+        public final long replyToId;
+        public final long replyPreviewSenderId;
+        public final String replyPreviewBody;
 
         ZenoraOutboxRecord(String clientMessageId, long roomId, long dialogId,
                            int localMessageId, long randomId, long zenoraUserId,
                            String body, int messageDate, String status, long createdAt,
-                           long nextAttemptAt, int attemptCount) {
+                           long nextAttemptAt, int attemptCount, long replyToId,
+                           long replyPreviewSenderId, String replyPreviewBody) {
             this.clientMessageId = clientMessageId;
             this.roomId = roomId;
             this.dialogId = dialogId;
@@ -275,6 +279,9 @@ public class MessagesStorage extends BaseController {
             this.createdAt = createdAt;
             this.nextAttemptAt = nextAttemptAt;
             this.attemptCount = attemptCount;
+            this.replyToId = replyToId;
+            this.replyPreviewSenderId = replyPreviewSenderId;
+            this.replyPreviewBody = replyPreviewBody;
         }
     }
 
@@ -289,6 +296,14 @@ public class MessagesStorage extends BaseController {
      */
     public void storeZenoraTextMessage(TLRPC.Message message, long roomId, long zenoraUserId,
                                        String clientMessageId, Consumer<Exception> callback) {
+        storeZenoraTextMessage(message, roomId, zenoraUserId, clientMessageId,
+                0L, 0L, "", callback);
+    }
+
+    public void storeZenoraTextMessage(TLRPC.Message message, long roomId, long zenoraUserId,
+                                       String clientMessageId, long replyToId,
+                                       long replyPreviewSenderId, String replyPreviewBody,
+                                       Consumer<Exception> callback) {
         storageQueue.postRunnable(() -> {
             boolean inTransaction = false;
             try {
@@ -300,7 +315,7 @@ public class MessagesStorage extends BaseController {
                 putMessagesInternal(messages, false, false, 0, false, ChatActivity.MODE_DEFAULT, 0);
 
                 SQLitePreparedStatement state = database.executeFast(
-                        "INSERT OR REPLACE INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
+                        "INSERT OR REPLACE INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date, reply_to_id, reply_preview_sender_id, reply_preview_body) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0, ?, ?, ?)");
                 try {
                     state.bindString(1, clientMessageId);
                     state.bindLong(2, roomId);
@@ -311,6 +326,9 @@ public class MessagesStorage extends BaseController {
                     state.bindString(7, message.message);
                     state.bindInteger(8, message.date);
                     state.bindLong(9, System.currentTimeMillis());
+                    state.bindLong(10, replyToId);
+                    state.bindLong(11, replyPreviewSenderId);
+                    state.bindString(12, replyPreviewBody == null ? "" : replyPreviewBody);
                     state.step();
                 } finally {
                     state.dispose();
@@ -338,13 +356,14 @@ public class MessagesStorage extends BaseController {
             SQLiteCursor cursor = null;
             try {
                 cursor = database.queryFinalized(
-                        "SELECT client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count FROM zenora_outbox ORDER BY room_id ASC, created_at ASC, local_message_id DESC");
+                        "SELECT client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, reply_to_id, reply_preview_sender_id, reply_preview_body FROM zenora_outbox ORDER BY room_id ASC, created_at ASC, local_message_id DESC");
                 while (cursor.next()) {
                     records.add(new ZenoraOutboxRecord(
                             cursor.stringValue(0), cursor.longValue(1), cursor.longValue(2),
                             cursor.intValue(3), cursor.longValue(4), cursor.longValue(5),
                             cursor.stringValue(6), cursor.intValue(7), cursor.stringValue(8),
-                            cursor.longValue(9), cursor.longValue(10), cursor.intValue(11)));
+                            cursor.longValue(9), cursor.longValue(10), cursor.intValue(11),
+                            cursor.longValue(12), cursor.longValue(13), cursor.stringValue(14)));
                 }
             } catch (Exception error) {
                 failure = error;
@@ -420,14 +439,16 @@ public class MessagesStorage extends BaseController {
                 database.beginTransaction();
                 inTransaction = true;
                 existingCursor = database.queryFinalized(
-                        "SELECT zenora_user_id, room_id, dialog_id, local_message_id, body FROM zenora_outbox WHERE client_message_id = ?",
+                        "SELECT zenora_user_id, room_id, dialog_id, local_message_id, body, reply_to_id FROM zenora_outbox WHERE client_message_id = ?",
                         clientMessageId);
                 boolean exists = existingCursor.next();
                 if (exists && (existingCursor.longValue(0) != zenoraUserId
                         || existingCursor.longValue(1) != roomId
                         || existingCursor.longValue(2) != message.dialog_id
                         || existingCursor.intValue(3) != message.id
-                        || !message.message.equals(existingCursor.stringValue(4)))) {
+                        || !message.message.equals(existingCursor.stringValue(4))
+                        || (message.reply_to == null ? 0L : message.reply_to.reply_to_msg_id)
+                            != existingCursor.longValue(5))) {
                     throw new IllegalStateException("Outbox identity does not match the active Zenora account/message");
                 }
                 existingCursor.dispose();
@@ -441,7 +462,7 @@ public class MessagesStorage extends BaseController {
                     update.dispose();
                 } else {
                     SQLitePreparedStatement insert = database.executeFast(
-                            "INSERT INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0)");
+                            "INSERT INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date, reply_to_id, reply_preview_sender_id, reply_preview_body) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0, ?, ?, ?)");
                     try {
                         insert.bindString(1, clientMessageId);
                         insert.bindLong(2, roomId);
@@ -452,6 +473,14 @@ public class MessagesStorage extends BaseController {
                         insert.bindString(7, message.message);
                         insert.bindInteger(8, message.date);
                         insert.bindLong(9, System.currentTimeMillis());
+                        insert.bindLong(10, message.reply_to == null ? 0L : message.reply_to.reply_to_msg_id);
+                        TLRPC.Message localReply = message.replyMessage;
+                        long previewSender = localReply == null || localReply.from_id == null
+                                ? 0L : MessageObject.getPeerId(localReply.from_id);
+                        String previewBody = localReply == null || localReply.message == null
+                                ? "" : localReply.message.substring(0, Math.min(140, localReply.message.length()));
+                        insert.bindLong(11, previewSender);
+                        insert.bindString(12, previewBody);
                         insert.step();
                     } finally {
                         insert.dispose();
@@ -1212,7 +1241,7 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE widget_state(uid INTEGER, mid INTEGER, local TEXT, PRIMARY KEY(uid, mid));").stepThis().dispose();
         database.executeFast("CREATE TABLE widget_heights(uid INTEGER, mid INTEGER, width INTEGER, height INTEGER, date INTEGER, anchor INTEGER default 0, PRIMARY KEY(uid, mid, width));").stepThis().dispose();
 
-        database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0, reply_to_id INTEGER NOT NULL DEFAULT 0, reply_preview_sender_id INTEGER NOT NULL DEFAULT 0, reply_preview_body TEXT NOT NULL DEFAULT '');").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
         database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
