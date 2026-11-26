@@ -631,6 +631,33 @@ public final class ZenoraApiClient {
             }
         });
     }
+    /** Fetch the current history tail only for the account that initiated the request. */
+    public static void fetchBasicTextHistoryForUser(long roomId, int limit,
+                                                    long expectedUserId, Callback callback) {
+        if (roomId <= 0L || roomId > Integer.MAX_VALUE || expectedUserId <= 0L
+                || getCurrentUserId() != expectedUserId || !isZenoraSessionEnabled()) {
+            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora history account"));
+            return;
+        }
+        final int safeLimit = Math.max(1, Math.min(50, limit));
+        executor.execute(() -> {
+            try {
+                if (getCurrentUserId() != expectedUserId || !isZenoraSessionEnabled()) {
+                    throw new IllegalStateException("Zenora account changed before history refresh");
+                }
+                String path = "messages_fetch.php?room_id=" + roomId
+                        + "&format=basic_text&limit=" + safeLimit;
+                JSONObject response = request(path, "GET", null, true, expectedUserId);
+                if (getCurrentUserId() != expectedUserId || !isZenoraSessionEnabled()) {
+                    throw new IllegalStateException("Zenora account changed during history refresh");
+                }
+                dispatch(callback, response, null);
+            } catch (Exception error) {
+                dispatch(callback, null, error);
+            }
+        });
+    }
+
     /** Fetches a bounded page of newly committed text messages. */
     public static void fetchBasicTextMessagesAfter(long roomId, long afterMessageId,
                                                     int limit, Callback callback) {

@@ -365,7 +365,7 @@ public final class ZenoraLiveMessageSyncController {
     private static void refreshLastServerPreview(Session session, long expectedMessageCursor,
                                                    ArrayList<Integer> deletedMessageIds) {
         final long expectedUserId = session.userId;
-        ZenoraApiClient.fetchBasicTextHistory(session.roomId, 1, (response, error) -> {
+        ZenoraApiClient.fetchBasicTextHistoryForUser(session.roomId, 1, expectedUserId, (response, error) -> {
             synchronized (lock) {
                 if (!isCurrentLocked(session) || session.cursor != expectedMessageCursor
                         || ZenoraApiClient.getCurrentUserId() != expectedUserId

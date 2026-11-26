@@ -48,6 +48,7 @@ checks = {
     "dialog last-message pointer is recalculated after deletion": "UPDATE dialogs SET (last_mid, last_mid_group)" in apply,
     "deleting the dialog tail triggers one bounded server replacement fetch": "previousTopMessageId" in live and "deletedPreviousTop" in live and "refreshLastServerPreview(session, appliedCursor, deletedIds)" in live and "fetchBasicTextHistory(session.roomId, 1" in live,
     "server replacement callback rejects stale message cursors and account changes": "session.cursor != expectedMessageCursor" in live and "ZenoraApiClient.getCurrentUserId() != expectedUserId" in live,
+    "server replacement request is bound to the initiating account": "fetchBasicTextHistoryForUser" in live and "request(path, \"GET\", null, true, expectedUserId)" in api and "isZenoraSessionEnabled()" in api,
     "server replacement is validated and cannot be another deleted row": "isValidBasicTextPage(messages, pagination, roomId, 1, 0L)" in history and "deletedMessageIds.contains((int) rawMessageId)" in history,
     "server replacement persists and updates native dialog preview": "MessagesStorage.getInstance(account).putMessages(stored" in history and "controller.updateZenoraDialogPreview(dialogId, object)" in history and "dialog.top_message = messageId" in history,
     "same API request fetches message and mutation pages": "message_mutation_events.php?room_id=" in api and "mutation_events_page" in api,
