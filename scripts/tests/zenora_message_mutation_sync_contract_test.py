@@ -19,6 +19,9 @@ apply = storage[apply_start:apply_end]
 create_tables_start = storage.index("public static void createTables(")
 create_tables_end = storage.index("public boolean isDatabaseMigrationInProgress", create_tables_start)
 create_tables = storage[create_tables_start:create_tables_end]
+recovery_tables_start = storage.index("public final static String[] DATABASE_TABLES")
+recovery_tables_end = storage.index("};", recovery_tables_start)
+recovery_tables = storage[recovery_tables_start:recovery_tables_end]
 poll_start = live.index("private static void poll(")
 poll_end = live.index("private static void handleResponse(", poll_start)
 poll = live[poll_start:poll_end]
@@ -39,6 +42,7 @@ checks = {
     "late edit events check persistent per-account deletion tombstones": "SELECT 1 FROM zenora_message_mutation_deleted" in apply and "alreadyDeletedLocally" in apply,
     "tombstoned edit previews are suppressed in native UI callback": "suppressedEditMessageIds" in live and "storedIds.addAll(suppressedEditMessageIds)" in live,
     "database recovery handles older cursor-only and pre-cursor schemas": "version != 185" in migration and 'excludeTables.add("zenora_message_mutation_deleted")' in migration,
+    "database recovery preserves both mutation state tables on compatible backups": '"zenora_message_mutation_cursor"' in recovery_tables and '"zenora_message_mutation_deleted"' in recovery_tables,
     "stale edit event cannot downgrade local message": "message.zenoraEditVersion > editVersion" in apply and "editedMessages.add(message)" in apply,
     "personal and global deletes remove SQLite cache rows": "message.deleted_for_me" in apply and "message.deleted_for_all" in apply and "String[] tables = {\"messages_v2\", \"messages_topics\", \"media_v4\", \"media_topics\"}" in apply and 'DELETE FROM " + table + " WHERE uid = ? AND mid = ?' in apply,
     "dialog last-message pointer is recalculated after deletion": "UPDATE dialogs SET (last_mid, last_mid_group)" in apply,
