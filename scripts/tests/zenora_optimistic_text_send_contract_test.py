@@ -63,10 +63,21 @@ require('containsKey("zenora_client_message_id")' in SEND
 require("retryTextMessage(currentAccount, messageObject)" in SEND,
         "Zenora retry is not routed to the PHP transport")
 
-# The composer is cleared at enqueue time; the delayed native animation must not clear new input.
-require("Clear only after optimistic local publication is accepted." in ENTER,
-        "Composer is not cleared on local enqueue")
+# The composer and selected Reply are cleared only after the optimistic message
+# and durable Outbox row have committed in the same SQLite transaction.
+require("if (onPersisted != null) onPersisted.run();" in HISTORY,
+        "Composer persistence callback does not run after local Outbox commit")
+STORAGE = (MESSENGER / "MessagesStorage.java").read_text()
+store = STORAGE.split("public void storeZenoraTextMessage(", 1)[1].split("public void loadZenoraOutbox(", 1)[0]
+require("database.beginTransaction()" in store and "database.commitTransaction()" in store,
+        "optimistic message and Outbox are not stored in one transaction")
+require("zenoraTextSendPersisting" in ENTER and "sameDraft && sameReply" in ENTER,
+        "Composer does not protect a draft or selected Reply while saving")
+require("if (selectedReply != null) setReplyingMessageObject(null, null, null);" in ENTER,
+        "successful local persistence does not clear the selected native Reply")
+require("Your draft and Reply selection were kept." in ENTER,
+        "local persistence/send failure does not preserve Composer state")
 require("!zenoraOptimisticText" in ENTER,
-        "delayed send animation can still erase text typed after an optimistic send")
+        "delayed send animation can still clear text typed after an optimistic send")
 
 print("PASS: Zenora optimistic text-send source contract")
