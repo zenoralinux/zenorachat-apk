@@ -29,6 +29,8 @@ checks = {
     "failure rolls back local state and cursor": "database.rollbackTransaction()" in apply,
     "edited event validates text, date and version": "message.edited" in apply and "editVersion <= 0L" in apply and "parseHistoryDate(editedAt)" in apply,
     "edit version is persisted to serialized message custom params": "MessageCustomParamsHelper.writeLocalParams(message)" in apply and "ZenoraMessageMutationController.applyEditMetadata" in apply,
+    "edited entities are prepared before starting the SQLite transaction": "prepareEditedMessageEntities(session, page.events)" in live and "editEntitiesByMessageId" in live,
+    "edited body, entity vector and version are serialized before cursor commit": "new ArrayList<>(parsedEntities)" in apply and "message.flags |= 1 << 7" in apply and "message.flags |= 1 << 8" in apply,
     "stale edit event cannot downgrade local message": "message.zenoraEditVersion > editVersion" in apply and "editedMessages.add(message)" in apply,
     "personal and global deletes remove SQLite cache rows": "message.deleted_for_me" in apply and "message.deleted_for_all" in apply and "String[] tables = {\"messages_v2\", \"messages_topics\", \"media_v4\", \"media_topics\"}" in apply and 'DELETE FROM " + table + " WHERE uid = ? AND mid = ?' in apply,
     "dialog last-message pointer is recalculated after deletion": "UPDATE dialogs SET (last_mid, last_mid_group)" in apply,

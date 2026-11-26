@@ -14098,6 +14098,7 @@ public class MessagesStorage extends BaseController {
     public void applyZenoraMessageMutationEvents(long roomId, long dialogId, long zenoraUserId,
                                                  long expectedAfterEventId, long nextEventId,
                                                  JSONArray events,
+                                                 HashMap<Integer, ArrayList<TLRPC.MessageEntity>> editEntitiesByMessageId,
                                                  ZenoraMessageMutationApplyCallback callback) {
         if (roomId <= 0L || dialogId == 0L || zenoraUserId <= 0L
                 || expectedAfterEventId < 0L || nextEventId < expectedAfterEventId
@@ -14193,8 +14194,15 @@ public class MessagesStorage extends BaseController {
                                 editedMessages.add(message);
                                 continue;
                             }
+                            ArrayList<TLRPC.MessageEntity> parsedEntities =
+                                    editEntitiesByMessageId == null ? null : editEntitiesByMessageId.get(messageId);
+                            if (parsedEntities == null) {
+                                throw new IllegalStateException("Edited message entities were not prepared before SQLite commit");
+                            }
                             message.message = body;
-                            message.entities = new ArrayList<>();
+                            message.entities = new ArrayList<>(parsedEntities);
+                            if (message.entities.isEmpty()) message.flags &= ~(1 << 7);
+                            else message.flags |= 1 << 7;
                             message.flags |= 1 << 8;
                             ZenoraMessageMutationController.applyEditMetadata(message, editedAt, editVersion);
 

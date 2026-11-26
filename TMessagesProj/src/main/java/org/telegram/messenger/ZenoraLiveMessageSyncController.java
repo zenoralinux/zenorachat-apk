@@ -310,9 +310,17 @@ public final class ZenoraLiveMessageSyncController {
             return;
         }
 
+        final HashMap<Integer, ArrayList<TLRPC.MessageEntity>> editEntitiesByMessageId;
+        try {
+            editEntitiesByMessageId = prepareEditedMessageEntities(session, page.events);
+        } catch (Exception errorPreparingEntities) {
+            fail(session, errorPreparingEntities);
+            return;
+        }
         MessagesStorage.getInstance(session.account).applyZenoraMessageMutationEvents(
                 session.roomId, session.dialogId, session.userId, requestedEventCursor,
-                page.nextCursor, page.events, (committedCursor, editedMessages, deletedIds, applyError) -> {
+                page.nextCursor, page.events, editEntitiesByMessageId,
+                (committedCursor, editedMessages, deletedIds, applyError) -> {
                     if (applyError != null || committedCursor != page.nextCursor) {
                         fail(session, applyError != null ? applyError
                                 : new IllegalStateException("Mutation cursor was not committed"));
@@ -402,6 +410,26 @@ public final class ZenoraLiveMessageSyncController {
             throw new IllegalStateException("Mutation event page cursor moved backwards");
         }
         return new MutationPage(events, nextCursor, hasMore);
+    }
+
+    /** Parse entities on the UI thread so body, entities, edit metadata and cursor commit together. */
+    private static HashMap<Integer, ArrayList<TLRPC.MessageEntity>> prepareEditedMessageEntities(
+            Session session, JSONArray events) {
+        HashMap<Integer, ArrayList<TLRPC.MessageEntity>> result = new HashMap<>();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
+            int messageId = (int) event.optLong("message_id", 0L);
+            JSONObject payload = event.optJSONObject("payload");
+            String body = payload == null ? "" : payload.optString("text", "");
+            if (messageId <= 0 || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
+                throw new IllegalStateException("Cannot prepare entities for invalid edited message");
+            }
+            ArrayList<TLRPC.MessageEntity> parsed = MediaDataController.getInstance(session.account)
+                    .getEntities(new CharSequence[]{body}, true);
+            result.put(messageId, parsed == null ? new ArrayList<>() : new ArrayList<>(parsed));
+        }
+        return result;
     }
 
     private static void applyEditedMessages(Session session, JSONArray events,
