@@ -2276,7 +2276,7 @@ public final class ZenoraHistoryController {
                     unavailableTargets = new HashSet<>();
                     unavailableReplyTargets.put(account, unavailableTargets);
                 }
-                unavailableTargets.add(replyNavigationKey(dialogId, targetMessageId));
+                unavailableTargets.add(replyNavigationKey(request.expectedUserId, request.roomId, dialogId, targetMessageId));
             }
         }
         if (ZenoraApiClient.getCurrentUserId() != request.expectedUserId
