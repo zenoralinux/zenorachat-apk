@@ -38434,6 +38434,10 @@ public class ChatActivity extends BaseFragment implements
 
                     @Override
                     public void didPressReplyMessage(ChatActionCell cell, int id) {
+                        // Core Reply does not navigate to parent messages yet.
+                        if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0L) {
+                            return;
+                        }
                         Runnable scroll = () -> {
                             MessageObject messageObject = cell.getMessageObject();
                             scrollToMessageId(id, messageObject.getId(), true, messageObject.getDialogId() == mergeDialogId ? 1 : 0, true, 0);
@@ -42012,6 +42016,11 @@ public class ChatActivity extends BaseFragment implements
 
         @Override
         public void didPressReplyMessage(ChatMessageCell cell, int id, float x, float y, boolean longpress) {
+            // Core Reply intentionally does not include parent-message navigation yet.
+            // Do not invoke Telegram's scroll/load path for Zenora previews.
+            if (ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id) > 0L) {
+                return;
+            }
             if (!canPerformActions()) {
                 if (!longpress) {
                     if (actionBar.isActionModeShowed() || isReport()) {
