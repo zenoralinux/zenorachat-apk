@@ -1221,6 +1221,8 @@ public final class ZenoraHistoryController {
         ArrayList<String> bodies = new ArrayList<>();
         ArrayList<String> clientMessageIds = new ArrayList<>();
         ArrayList<Integer> dates = new ArrayList<>();
+        ArrayList<Long> replyIds = new ArrayList<>();
+        ArrayList<JSONObject> replyPreviews = new ArrayList<>();
         HashSet<Integer> pageIds = new HashSet<>();
         long previousId = afterMessageId;
         for (int i = 0; i < messages.length(); i++) {
@@ -1232,9 +1234,11 @@ public final class ZenoraHistoryController {
             long senderId = row.optLong("sender_id", 0L);
             String body = row.optString("text", "");
             int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+            long replyToId = replyToIdFromRow(row);
             if (rawId <= previousId || rawId > Integer.MAX_VALUE
                     || senderId <= 0L || senderId > Integer.MAX_VALUE
                     || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim()) || date <= 0
+                    || !isValidReplyContract(row)
                     || !pageIds.add((int) rawId)) {
                 return -1L;
             }
@@ -1243,6 +1247,8 @@ public final class ZenoraHistoryController {
             bodies.add(body);
             clientMessageIds.add((row.isNull("client_message_id") ? "" : row.optString("client_message_id", "")));
             dates.add(date);
+            replyIds.add(replyToId);
+            replyPreviews.add(row.optJSONObject("reply_preview"));
             previousId = rawId;
         }
         if (ids.isEmpty()) return afterMessageId;
@@ -1295,7 +1301,8 @@ public final class ZenoraHistoryController {
                 // ACK and live history may race. Reconciliation is idempotent; do not
                 // skip the server row just because the ACK was already committed.
                 reconciledClientMessage = reconcilePendingTextMessage(account, dialogId, roomId,
-                        clientMessageId, messageId, dates.get(i));
+                        clientMessageId, messageId, dates.get(i), replyIds.get(i),
+                        replyPreviews.get(i), dialog.peer, selfId);
                 reconciledClientMessage |= isCompletedTextMessage(
                         account, dialogId, clientMessageId, messageId);
             }
@@ -1343,6 +1350,17 @@ public final class ZenoraHistoryController {
             message.unread = false;
             message.flags |= 1 << 8;
             if (message.out) message.flags |= 1 << 1;
+            if (replyIds.get(i) > 0L) {
+                JSONObject replyRow = new JSONObject();
+                try {
+                    replyRow.put("reply_to_id", replyIds.get(i));
+                    replyRow.put("reply_preview", replyPreviews.get(i) == null
+                            ? JSONObject.NULL : replyPreviews.get(i));
+                } catch (Exception ignore) {
+                }
+                applyReplyContractToMessage(message, replyRow, dialogId, dialog.peer,
+                        dates.get(i), selfId);
+            }
             if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
                 message.params = new HashMap<>();
                 message.params.put("zenora_client_message_id", clientMessageId);
