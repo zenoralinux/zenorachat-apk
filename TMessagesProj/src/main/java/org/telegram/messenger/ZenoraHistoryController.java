@@ -1894,8 +1894,9 @@ public final class ZenoraHistoryController {
         return true;
     }
 
-    private static String replyNavigationKey(long dialogId, long targetMessageId) {
-        return dialogId + ":" + targetMessageId;
+    private static String replyNavigationKey(long expectedUserId, long roomId,
+                                             long dialogId, long targetMessageId) {
+        return expectedUserId + ":" + roomId + ":" + dialogId + ":" + targetMessageId;
     }
 
     /**
@@ -1922,7 +1923,7 @@ public final class ZenoraHistoryController {
             return;
         }
 
-        final String key = replyNavigationKey(dialogId, targetMessageId);
+        final String key = replyNavigationKey(expectedUserId, roomId, dialogId, targetMessageId);
         final long requestId;
         boolean startRequest = false;
         boolean knownUnavailable;
@@ -1938,6 +1939,11 @@ public final class ZenoraHistoryController {
                     replyNavigationInFlight.put(account, accountRequests);
                 }
                 ReplyNavigationRequest request = accountRequests.get(key);
+                if (request != null && (request.expectedUserId != expectedUserId
+                        || request.roomId != roomId)) {
+                    accountRequests.remove(key);
+                    request = null;
+                }
                 if (request == null) {
                     request = new ReplyNavigationRequest(++nextReplyNavigationRequestId,
                             dialogId, roomId, targetMessageId, expectedUserId);
@@ -1972,7 +1978,9 @@ public final class ZenoraHistoryController {
         synchronized (lock) {
             Map<String, ReplyNavigationRequest> accountRequests = replyNavigationInFlight.get(account);
             ReplyNavigationRequest request = accountRequests == null ? null
-                    : accountRequests.get(replyNavigationKey(dialogId, targetMessageId));
+                    : accountRequests.get(replyNavigationKey(expectedUserId,
+                            ZenoraChatController.getRoomIdForDialog(account, dialogId),
+                            dialogId, targetMessageId));
             return request != null && request.requestId == requestId
                     && request.expectedUserId == expectedUserId
                     && request.roomId == ZenoraChatController.getRoomIdForDialog(account, dialogId);
@@ -2239,9 +2247,28 @@ public final class ZenoraHistoryController {
         synchronized (lock) {
             Map<String, ReplyNavigationRequest> accountRequests = replyNavigationInFlight.get(account);
             request = accountRequests == null ? null
-                    : accountRequests.get(replyNavigationKey(dialogId, targetMessageId));
-            if (request == null || request.requestId != requestId) return;
-            accountRequests.remove(replyNavigationKey(dialogId, targetMessageId));
+                    : accountRequests.get(replyNavigationKey(
+                            ZenoraApiClient.getCurrentUserId(),
+                            ZenoraChatController.getRoomIdForDialog(account, dialogId),
+                            dialogId, targetMessageId));
+            if (request == null || request.requestId != requestId) {
+                // The account/Room may have changed while the API was in flight.
+                // Remove only this request identity; never touch a newer coalesced request.
+                if (accountRequests != null) {
+                    java.util.Iterator<Map.Entry<String, ReplyNavigationRequest>> iterator =
+                            accountRequests.entrySet().iterator();
+                    while (iterator.hasNext()) {
+                        Map.Entry<String, ReplyNavigationRequest> entry = iterator.next();
+                        if (entry.getValue() != null && entry.getValue().requestId == requestId) {
+                            iterator.remove();
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+            accountRequests.remove(replyNavigationKey(
+                    request.expectedUserId, request.roomId, dialogId, targetMessageId));
             if (accountRequests.isEmpty()) replyNavigationInFlight.remove(account);
             if (unavailable) {
                 HashSet<String> unavailableTargets = unavailableReplyTargets.get(account);
