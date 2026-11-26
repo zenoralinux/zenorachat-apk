@@ -109,7 +109,7 @@ assert "Core Reply intentionally does not include parent-message navigation yet.
 # Non-Zenora Telegram paths remain present.
 assert "scrollToMessageId(id, messageObject.getId()" in CHAT
 assert "loadZenoraLocalReplyMessages(messages, dialogId, callback)" in loader
-assert "getMessagesController().getMediaDataController().loadReplyMessagesForMessages" in read(
+assert "getMediaDataController().loadReplyMessagesForMessages(objects, dialogId, mode" in read(
     "TMessagesProj/src/main/java/org/telegram/messenger/MessagesController.java")
 
 print("Zenora Core Reply source contract checks passed")
