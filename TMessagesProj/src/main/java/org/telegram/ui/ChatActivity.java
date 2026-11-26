@@ -17751,7 +17751,7 @@ public class ChatActivity extends BaseFragment implements
                 || !isZenoraReplyNavigationCurrent(currentAccount, dialog_id,
                         expectedRoomId, expectedClassGuid, expectedUserId)
                 || chatMode != MODE_DEFAULT || clearOnLoad || firstLoading
-                || targetMessageId <= 0 || targetMessageId == Integer.MAX_VALUE) {
+                || targetMessageId <= 0) {
             showZenoraReplyNavigationError("The chat is not ready to open this reply message.");
             return;
         }
@@ -42286,7 +42286,7 @@ public class ChatActivity extends BaseFragment implements
         public void didPressReplyMessage(ChatMessageCell cell, int id, float x, float y, boolean longpress) {
             long zenoraRoomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
             if (zenoraRoomId > 0L) {
-                if (longpress || cell == null || id <= 0 || id == Integer.MAX_VALUE) {
+                if (longpress || cell == null || id <= 0) {
                     return;
                 }
                 MessageObject owner = cell.getMessageObject();

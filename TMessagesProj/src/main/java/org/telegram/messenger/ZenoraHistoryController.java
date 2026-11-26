@@ -1970,7 +1970,8 @@ public final class ZenoraHistoryController {
                                                            long targetMessageId,
                                                            long expectedUserId,
                                                            long requestId) {
-        if (ZenoraApiClient.getCurrentUserId() != expectedUserId
+        if (UserConfig.selectedAccount != account
+                || ZenoraApiClient.getCurrentUserId() != expectedUserId
                 || !ZenoraApiClient.isZenoraSessionEnabled()
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) <= 0L) {
             return false;
