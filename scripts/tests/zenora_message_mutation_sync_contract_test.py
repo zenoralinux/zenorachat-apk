@@ -16,12 +16,16 @@ mutation = read("TMessagesProj/src/main/java/org/telegram/messenger/ZenoraMessag
 apply_start = storage.index("public void applyZenoraMessageMutationEvents")
 apply_end = storage.index("public void putMessages(", apply_start)
 apply = storage[apply_start:apply_end]
+create_tables_start = storage.index("public static void createTables(")
+create_tables_end = storage.index("public boolean isDatabaseMigrationInProgress", create_tables_start)
+create_tables = storage[create_tables_start:create_tables_end]
 poll_start = live.index("private static void poll(")
 poll_end = live.index("private static void handleResponse(", poll_start)
 poll = live[poll_start:poll_end]
 
 checks = {
     "durable event cursor and deletion tombstones are migrated in SQLite v186": "user_version = 185" in migration and "user_version = 186" in migration and "zenora_message_mutation_cursor" in migration and "zenora_message_mutation_deleted" in migration,
+    "fresh database creation installs both event state tables before schema version 186": "LAST_DB_VERSION = 186" in storage and "CREATE TABLE zenora_message_mutation_cursor" in create_tables and "CREATE TABLE zenora_message_mutation_deleted" in create_tables,
     "cursor is isolated by room, dialog and Zenora account": "PRIMARY KEY(room_id, dialog_id, zenora_user_id)" in migration,
     "cursor load is persisted and not memory-only": "loadZenoraMessageMutationCursor" in storage and "SELECT last_event_id FROM zenora_message_mutation_cursor" in storage,
     "event apply validates expected durable cursor": "storedCursor != expectedAfterEventId" in apply,

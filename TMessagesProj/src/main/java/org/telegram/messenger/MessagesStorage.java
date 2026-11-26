@@ -1300,6 +1300,13 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_history_dialog_idx ON zenora_history_state(dialog_id, zenora_user_id);").stepThis().dispose();
 
+        // Fresh databases must create all Zenora event-sync state before the
+        // schema version is advanced; upgrades create the same tables in migrations.
+        database.executeFast("CREATE TABLE zenora_message_mutation_cursor(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, last_event_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX zenora_mutation_cursor_user_idx ON zenora_message_mutation_cursor(zenora_user_id, room_id);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_message_mutation_deleted(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, deletion_event_id INTEGER NOT NULL, deletion_event_type TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX zenora_mutation_deleted_room_user_idx ON zenora_message_mutation_deleted(room_id, zenora_user_id, message_id);").stepThis().dispose();
+
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
 
     }
