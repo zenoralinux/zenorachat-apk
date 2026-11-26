@@ -44,6 +44,8 @@ public final class ZenoraHistoryController {
     private static final int CACHE_MAX_DIALOGS = 24;
 
     public interface TextSendCallback {
+        default void onQueued() {
+        }
         void onComplete(boolean success, String message);
     }
 
@@ -56,6 +58,10 @@ public final class ZenoraHistoryController {
         final long zenoraUserId;
         final String clientMessageId;
         final String body;
+        final long replyToId;
+        final long replyPreviewSenderId;
+        final String replyPreviewBody;
+        final MessageObject replyMessageObject;
         final long createdAt;
         final MessageObject messageObject;
         final TextSendCallback callback;
@@ -70,6 +76,7 @@ public final class ZenoraHistoryController {
 
         PendingTextSend(int account, long dialogId, long roomId, int localId, long randomId,
                         long zenoraUserId, String clientMessageId, String body,
+                        long replyToId, MessageObject replyMessageObject,
                         MessageObject messageObject, TextSendCallback callback, long createdAt) {
             this.account = account;
             this.dialogId = dialogId;
@@ -79,6 +86,13 @@ public final class ZenoraHistoryController {
             this.zenoraUserId = zenoraUserId;
             this.clientMessageId = clientMessageId;
             this.body = body;
+            this.replyToId = replyToId;
+            this.replyMessageObject = replyMessageObject;
+            this.replyPreviewSenderId = replyMessageObject == null || replyMessageObject.messageOwner.from_id == null
+                    ? 0L : MessageObject.getPeerId(replyMessageObject.messageOwner.from_id);
+            String preview = replyMessageObject == null || replyMessageObject.messageOwner.message == null
+                    ? "" : replyMessageObject.messageOwner.message;
+            this.replyPreviewBody = preview.substring(0, Math.min(140, preview.length()));
             this.messageObject = messageObject;
             this.callback = callback;
             this.createdAt = createdAt;
@@ -455,9 +469,16 @@ public final class ZenoraHistoryController {
     }
 
 
-    /** Persist first, then publish the optimistic bubble and begin its durable FIFO operation. */
+    /** Backward-compatible plain-text entry point. */
     public static boolean sendTextMessage(int account, long dialogId, long roomId,
                                           String body, TextSendCallback callback) {
+        return sendTextMessage(account, dialogId, roomId, body, 0L, null, callback);
+    }
+
+    /** Persist the native optimistic text bubble and its stable Reply payload before publishing it. */
+    public static boolean sendTextMessage(int account, long dialogId, long roomId,
+                                          String body, long replyToId, MessageObject replyParent,
+                                          TextSendCallback callback) {
         long zenoraUserId = ZenoraApiClient.getCurrentUserId();
         if (dialogId == 0 || roomId <= 0 || body == null || body.trim().isEmpty()
                 || zenoraUserId <= 0 || !ZenoraChatController.isZenoraEnabled()
@@ -467,6 +488,23 @@ public final class ZenoraHistoryController {
         long selfId = UserConfig.getInstance(account).getClientUserId();
         if (dialog == null || dialog.peer == null || selfId <= 0
                 || selfId > Integer.MAX_VALUE || selfId != zenoraUserId) return false;
+        if (replyToId < 0L || (replyToId == 0L && replyParent != null)) return false;
+        if (replyToId > 0L) {
+            if (replyParent == null || replyParent.messageOwner == null
+                    || replyParent.messageOwner.id <= 0
+                    || replyParent.messageOwner.id != replyToId
+                    || replyParent.getId() <= 0
+                    || replyParent.getDialogId() != dialogId
+                    || !(replyParent.messageOwner.media instanceof TLRPC.TL_messageMediaEmpty)
+                    || TextUtils.isEmpty(replyParent.messageOwner.message)
+                    || TextUtils.isEmpty(replyParent.messageOwner.message.trim())
+                    || replyParent.messageOwner.action != null
+                    || replyParent.isEphemeral()
+                    || replyParent.messageOwner.from_id == null
+                    || MessageObject.getPeerId(replyParent.messageOwner.from_id) <= 0L) {
+                return false;
+            }
+        }
 
         int localId = UserConfig.getInstance(account).getNewMessageId();
         long randomId = Utilities.random.nextLong();
@@ -493,15 +531,25 @@ public final class ZenoraHistoryController {
         message.params = new HashMap<>();
         message.params.put("zenora_client_message_id", clientMessageId);
         message.params.put("zenora_room_id", String.valueOf(roomId));
+        if (replyToId > 0L) {
+            TLRPC.TL_messageReplyHeader replyHeader = new TLRPC.TL_messageReplyHeader();
+            replyHeader.flags |= 16;
+            replyHeader.reply_to_msg_id = (int) replyToId;
+            message.reply_to = replyHeader;
+            message.replyMessage = replyParent.messageOwner;
+        }
 
         MessageObject object = new MessageObject(account, message, false, true);
         object.wasJustSent = true;
+        if (replyParent != null) object.replyMessageObject = replyParent;
         PendingTextSend pending = new PendingTextSend(account, dialogId, roomId, localId,
-                randomId, zenoraUserId, clientMessageId, body, object, callback, createdAt);
+                randomId, zenoraUserId, clientMessageId, body, replyToId, replyParent,
+                object, callback, createdAt);
 
         // The callback is invoked only after both messages_v2 and zenora_outbox commit.
         MessagesStorage.getInstance(account).storeZenoraTextMessage(
-                message, roomId, zenoraUserId, clientMessageId, error -> {
+                message, roomId, zenoraUserId, clientMessageId, replyToId,
+                pending.replyPreviewSenderId, pending.replyPreviewBody, error -> {
                     if (error != null) {
                         if (callback != null) callback.onComplete(false,
                                 "Unable to save the message to the local outbox.");
@@ -520,6 +568,7 @@ public final class ZenoraHistoryController {
                     NotificationCenter.getInstance(account).postNotificationName(
                             NotificationCenter.dialogsNeedReload);
                     UserConfig.getInstance(account).saveConfig(false);
+                    if (callback != null) callback.onQueued();
                     if (startImmediately) startTextSendRequest(pending);
                 });
         return true;
