@@ -299,6 +299,7 @@ public final class ZenoraLiveMessageSyncController {
             if (!isCurrentLocked(session) || session.cursor != requestedMessageCursor) return;
             session.cursor = appliedCursor;
         }
+        final long committedMessageCursor = appliedCursor;
 
         final MutationPage page;
         try {
@@ -348,7 +349,7 @@ public final class ZenoraLiveMessageSyncController {
                         } else if (deletedPreviousTop) {
                             // The replacement can be older than the live message cursor
                             // and absent from SQLite. Fetch only the current server tail.
-                            refreshLastServerPreview(session, appliedCursor, deletedIds);
+                            refreshLastServerPreview(session, committedMessageCursor, deletedIds);
                         }
                     }
 
