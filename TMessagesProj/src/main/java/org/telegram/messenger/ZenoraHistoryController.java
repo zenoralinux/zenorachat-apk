@@ -706,7 +706,8 @@ public final class ZenoraHistoryController {
                 long selfId = UserConfig.getInstance(account).getClientUserId();
                 if (dialog == null || dialog.peer == null || selfId != currentUserId
                         || record.localMessageId == 0 || TextUtils.isEmpty(record.clientMessageId)
-                        || TextUtils.isEmpty(record.body)) {
+                        || TextUtils.isEmpty(record.body) || record.replyToId < 0L
+                        || record.replyToId > Integer.MAX_VALUE) {
                     waitingForDialogMap = true;
                     continue;
                 }
@@ -743,10 +744,38 @@ public final class ZenoraHistoryController {
                 message.params.put("zenora_client_message_id", record.clientMessageId);
                 message.params.put("zenora_room_id", String.valueOf(record.roomId));
 
+                MessageObject replyParent = null;
+                if (record.replyToId > 0L && record.replyToId <= Integer.MAX_VALUE) {
+                    TLRPC.TL_messageReplyHeader replyHeader = new TLRPC.TL_messageReplyHeader();
+                    replyHeader.flags |= 16;
+                    replyHeader.reply_to_msg_id = (int) record.replyToId;
+                    message.reply_to = replyHeader;
+                    if (record.replyPreviewSenderId > 0L && record.replyPreviewSenderId <= Integer.MAX_VALUE
+                            && !TextUtils.isEmpty(record.replyPreviewBody)) {
+                        TLRPC.TL_message parent = new TLRPC.TL_message();
+                        parent.id = (int) record.replyToId;
+                        parent.local_id = parent.id;
+                        parent.dialog_id = record.dialogId;
+                        parent.peer_id = dialog.peer;
+                        parent.from_id = new TLRPC.TL_peerUser();
+                        parent.from_id.user_id = record.replyPreviewSenderId;
+                        parent.date = record.messageDate;
+                        parent.message = record.replyPreviewBody;
+                        parent.media = new TLRPC.TL_messageMediaEmpty();
+                        parent.out = record.replyPreviewSenderId == selfId;
+                        parent.flags |= 1 << 8;
+                        if (parent.out) parent.flags |= 1 << 1;
+                        message.replyMessage = parent;
+                        replyParent = new MessageObject(account, parent, false, false);
+                    }
+                }
+
                 MessageObject object = new MessageObject(account, message, false, true);
+                if (replyParent != null) object.replyMessageObject = replyParent;
                 PendingTextSend restoredPending = new PendingTextSend(account, record.dialogId,
                         record.roomId, record.localMessageId, record.randomId, record.zenoraUserId,
-                        record.clientMessageId, record.body, object, null, record.createdAt);
+                        record.clientMessageId, record.body, record.replyToId, replyParent,
+                        object, null, record.createdAt);
                 restoredPending.attemptCount = record.attemptCount;
                 restoredPending.nextAttemptAt = record.nextAttemptAt;
                 restoredPending.status = record.status;
