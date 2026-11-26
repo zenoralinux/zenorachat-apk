@@ -1736,7 +1736,8 @@ public final class ZenoraHistoryController {
             return false;
         }
         MessageObject cachedParent = getCachedReplyPreview(account, dialogId, messageId);
-        if (cachedParent == null) return false;
+        if (cachedParent == null || cachedParent.messageOwner == null
+                || cachedParent.messageOwner.zenoraEditVersion > editVersion) return false;
         ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
                 new CharSequence[]{body}, true);
         return applyEditedMessage(account, dialogId, roomId, cachedParent,

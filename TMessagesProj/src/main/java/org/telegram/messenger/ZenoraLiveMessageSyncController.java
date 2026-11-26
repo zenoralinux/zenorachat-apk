@@ -6,12 +6,15 @@ import android.text.TextUtils;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.telegram.tgnet.TLRPC;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 
 /**
- * Lifecycle-bound polling for new Zenora plain-text messages in the visible chat.
- * One request may be outstanding; responses from an old chat are ignored.
+ * Lifecycle-bound polling for new Zenora messages and mutation events in the
+ * same existing two-second chat sync cycle. No socket or second poller is used.
  */
 public final class ZenoraLiveMessageSyncController {
     private static final Object lock = new Object();
@@ -26,21 +29,37 @@ public final class ZenoraLiveMessageSyncController {
 
     private static final class Session {
         final int account;
+        final long userId;
         final long dialogId;
         final long roomId;
         final int classGuid;
         final Runnable pollRunnable;
         long cursor = -1L;
+        long eventCursor = -1L;
         int failures;
+        boolean eventCursorLoading;
         boolean inFlight;
         boolean active = true;
 
-        Session(int account, long dialogId, long roomId, int classGuid) {
+        Session(int account, long userId, long dialogId, long roomId, int classGuid) {
             this.account = account;
+            this.userId = userId;
             this.dialogId = dialogId;
             this.roomId = roomId;
             this.classGuid = classGuid;
             pollRunnable = () -> poll(this);
+        }
+    }
+
+    private static final class MutationPage {
+        final JSONArray events;
+        final long nextCursor;
+        final boolean hasMore;
+
+        MutationPage(JSONArray events, long nextCursor, boolean hasMore) {
+            this.events = events;
+            this.nextCursor = nextCursor;
+            this.hasMore = hasMore;
         }
     }
 
@@ -50,36 +69,44 @@ public final class ZenoraLiveMessageSyncController {
             return;
         }
         long roomId = ZenoraChatController.getRoomIdForDialog(account, dialogId);
-        if (roomId <= 0L) return;
+        long userId = ZenoraApiClient.getCurrentUserId();
+        if (roomId <= 0L || userId <= 0L
+                || UserConfig.getInstance(account).getClientUserId() != userId) {
+            return;
+        }
 
+        Session session;
         synchronized (lock) {
             if (activeSession != null && activeSession.account == account
+                    && activeSession.userId == userId
                     && activeSession.dialogId == dialogId && activeSession.roomId == roomId
                     && activeSession.classGuid == classGuid) {
-                if (activeSession.cursor < 0L) {
+                session = activeSession;
+                if (session.cursor < 0L) {
                     long latest = ZenoraHistoryController.getLatestMessageId(account, dialogId, roomId);
-                    if (latest >= 0L) activeSession.cursor = latest;
+                    if (latest >= 0L) session.cursor = latest;
                 }
-                if (activeSession.cursor >= 0L) scheduleLocked(activeSession, 0L);
-                return;
+            } else {
+                stopLocked(activeSession);
+                session = new Session(account, userId, dialogId, roomId, classGuid);
+                activeSession = session;
+                long latest = ZenoraHistoryController.getLatestMessageId(account, dialogId, roomId);
+                if (latest >= 0L) session.cursor = latest;
+                FileLog.d("[ZenoraChat] Live sync attached; dialog=" + dialogId
+                        + ", room=" + roomId + ", cursor=" + session.cursor);
             }
-            stopLocked(activeSession);
-            Session session = new Session(account, dialogId, roomId, classGuid);
-            activeSession = session;
-            long latest = ZenoraHistoryController.getLatestMessageId(account, dialogId, roomId);
-            if (latest >= 0L) {
-                session.cursor = latest;
-                scheduleLocked(session, 0L);
-            }
-            FileLog.d("[ZenoraChat] Live sync attached; dialog=" + dialogId
-                    + ", room=" + roomId + ", cursor=" + session.cursor);
+        }
+        ensureMutationCursorLoaded(session);
+        synchronized (lock) {
+            if (isCurrentLocked(session)) scheduleLocked(session, 0L);
         }
     }
 
     /** Called after initial native history has been applied. */
     public static void onHistoryApplied(int account, long dialogId, long roomId, int classGuid) {
+        Session session;
         synchronized (lock) {
-            Session session = activeSession;
+            session = activeSession;
             if (!isCurrentLocked(session) || session.account != account
                     || session.dialogId != dialogId || session.roomId != roomId
                     || session.classGuid != classGuid) {
@@ -87,10 +114,12 @@ public final class ZenoraLiveMessageSyncController {
             }
             if (session.cursor < 0L) {
                 long latest = ZenoraHistoryController.getLatestMessageId(account, dialogId, roomId);
-                // Recover from cursor zero if the initial history request failed.
                 session.cursor = Math.max(0L, latest);
             }
-            scheduleLocked(session, 0L);
+        }
+        ensureMutationCursorLoaded(session);
+        synchronized (lock) {
+            if (isCurrentLocked(session)) scheduleLocked(session, 0L);
         }
     }
 
@@ -106,11 +135,52 @@ public final class ZenoraLiveMessageSyncController {
         }
     }
 
+    private static void ensureMutationCursorLoaded(Session session) {
+        synchronized (lock) {
+            if (!isCurrentLocked(session) || session.eventCursor >= 0L
+                    || session.eventCursorLoading) return;
+            if (ZenoraApiClient.getCurrentUserId() != session.userId
+                    || UserConfig.getInstance(session.account).getClientUserId() != session.userId) {
+                stopLocked(session);
+                activeSession = null;
+                return;
+            }
+            session.eventCursorLoading = true;
+        }
+        MessagesStorage.getInstance(session.account).loadZenoraMessageMutationCursor(
+                session.roomId, session.dialogId, session.userId, (cursor, error) -> {
+                    long retryDelay = 0L;
+                    synchronized (lock) {
+                        if (!isCurrentLocked(session)) return;
+                        session.eventCursorLoading = false;
+                        if (error == null && cursor >= 0L) {
+                            session.eventCursor = cursor;
+                            session.failures = 0;
+                        } else {
+                            session.failures = Math.min(session.failures + 1, 8);
+                            retryDelay = Math.min(MAX_BACKOFF_MS,
+                                    POLL_INTERVAL_MS << Math.min(4, session.failures - 1));
+                        }
+                    }
+                    if (error == null) {
+                        synchronized (lock) {
+                            if (isCurrentLocked(session)) scheduleLocked(session, 0L);
+                        }
+                    } else {
+                        FileLog.w("[ZenoraChat] Mutation cursor load failed; room=" + session.roomId
+                                + ", reason=" + error.getMessage());
+                        final long delay = retryDelay;
+                        mainHandler.postDelayed(() -> ensureMutationCursorLoaded(session), delay);
+                    }
+                });
+    }
+
     private static void stopLocked(Session session) {
         if (session == null) return;
         session.active = false;
         mainHandler.removeCallbacks(session.pollRunnable);
         session.inFlight = false;
+        session.eventCursorLoading = false;
     }
 
     private static boolean isCurrentLocked(Session session) {
@@ -118,41 +188,51 @@ public final class ZenoraLiveMessageSyncController {
     }
 
     private static void scheduleLocked(Session session, long delayMs) {
-        if (!isCurrentLocked(session) || session.inFlight) return;
+        if (!isCurrentLocked(session) || session.inFlight
+                || session.cursor < 0L || session.eventCursor < 0L) return;
         mainHandler.removeCallbacks(session.pollRunnable);
         mainHandler.postDelayed(session.pollRunnable, Math.max(0L, delayMs));
     }
 
     private static void poll(Session session) {
-        final long requestedCursor;
+        final long requestedMessageCursor;
+        final long requestedEventCursor;
         synchronized (lock) {
-            if (!isCurrentLocked(session) || session.inFlight || session.cursor < 0L) return;
+            if (!isCurrentLocked(session) || session.inFlight
+                    || session.cursor < 0L || session.eventCursor < 0L) return;
             if (!ZenoraChatController.isZenoraEnabled()
-                    || ZenoraChatController.getRoomIdForDialog(session.account, session.dialogId) != session.roomId) {
+                    || ZenoraChatController.getRoomIdForDialog(session.account, session.dialogId) != session.roomId
+                    || ZenoraApiClient.getCurrentUserId() != session.userId
+                    || UserConfig.getInstance(session.account).getClientUserId() != session.userId) {
                 stopLocked(session);
                 activeSession = null;
                 return;
             }
             session.inFlight = true;
-            requestedCursor = session.cursor;
+            requestedMessageCursor = session.cursor;
+            requestedEventCursor = session.eventCursor;
         }
-        ZenoraApiClient.fetchBasicTextMessagesAfter(session.roomId, requestedCursor, PAGE_SIZE,
-                (response, error) -> handleResponse(session, requestedCursor, response, error));
+        ZenoraApiClient.fetchBasicTextMessagesAfter(session.roomId, requestedMessageCursor,
+                requestedEventCursor, PAGE_SIZE, session.userId,
+                (response, error) -> handleResponse(session, requestedMessageCursor,
+                        requestedEventCursor, response, error));
     }
 
-    private static void handleResponse(Session session, long requestedCursor,
-                                       JSONObject response, Exception error) {
+    private static void handleResponse(Session session, long requestedMessageCursor,
+                                       long requestedEventCursor, JSONObject response,
+                                       Exception error) {
         synchronized (lock) {
             if (!isCurrentLocked(session)) return;
             if (!ZenoraChatController.isZenoraEnabled()
-                    || ZenoraChatController.getRoomIdForDialog(session.account, session.dialogId) != session.roomId) {
+                    || ZenoraChatController.getRoomIdForDialog(session.account, session.dialogId) != session.roomId
+                    || ZenoraApiClient.getCurrentUserId() != session.userId) {
                 stopLocked(session);
                 activeSession = null;
                 return;
             }
         }
         if (error != null || response == null || !response.optBoolean("ok", false)) {
-            fail(session, error != null ? error : new IllegalStateException("Invalid live-message response"));
+            fail(session, error != null ? error : new IllegalStateException("Invalid live-sync response"));
             return;
         }
 
@@ -166,68 +246,207 @@ public final class ZenoraLiveMessageSyncController {
             return;
         }
 
-        boolean hasMore = pagination.optBoolean("has_more_newer", false);
+        boolean hasMoreMessages = pagination.optBoolean("has_more_newer", false);
+        long appliedMessageCursor = requestedMessageCursor;
         if (messages.length() == 0) {
-            if (hasMore || !pagination.isNull("next_after_id")) {
+            if (hasMoreMessages || !pagination.isNull("next_after_id")) {
                 fail(session, new IllegalStateException("Empty live-message page has an invalid cursor"));
                 return;
             }
-            synchronized (lock) {
-                if (!isCurrentLocked(session)) return;
-                session.inFlight = false;
-                session.failures = 0;
-                scheduleLocked(session, POLL_INTERVAL_MS);
+        } else {
+            long previousId = requestedMessageCursor;
+            long lastId = 0L;
+            HashSet<Long> pageIds = new HashSet<>();
+            HashSet<String> pageClientMessageIds = new HashSet<>();
+            for (int i = 0; i < messages.length(); i++) {
+                JSONObject row = messages.optJSONObject(i);
+                if (row == null || row.optLong("room_id", 0L) != session.roomId || row.isNull("text")) {
+                    fail(session, new IllegalStateException("Live message does not belong to the active room"));
+                    return;
+                }
+                long id = row.optLong("message_id", 0L);
+                long senderId = row.optLong("sender_id", 0L);
+                String body = row.optString("text", "");
+                String clientMessageId = row.isNull("client_message_id")
+                        ? "" : row.optString("client_message_id", "");
+                if (id <= previousId || id > Integer.MAX_VALUE || !pageIds.add(id)
+                        || senderId <= 0L || senderId > Integer.MAX_VALUE
+                        || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                        || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0
+                        || !TextUtils.isEmpty(clientMessageId)
+                        && (!clientMessageId.matches("[A-Za-z0-9._:-]{8,64}")
+                        || !pageClientMessageIds.add(clientMessageId))) {
+                    fail(session, new IllegalStateException("Live message failed validation"));
+                    return;
+                }
+                previousId = id;
+                lastId = id;
             }
-            return;
-        }
-
-        long previousId = requestedCursor;
-        long lastId = 0L;
-        HashSet<Long> pageIds = new HashSet<>();
-        HashSet<String> pageClientMessageIds = new HashSet<>();
-        for (int i = 0; i < messages.length(); i++) {
-            JSONObject row = messages.optJSONObject(i);
-            if (row == null || row.optLong("room_id", 0L) != session.roomId || row.isNull("text")) {
-                fail(session, new IllegalStateException("Live message does not belong to the active room"));
+            long responseCursor = pagination.optLong("next_after_id", -1L);
+            if (responseCursor != lastId || (hasMoreMessages && messages.length() != PAGE_SIZE)) {
+                fail(session, new IllegalStateException("Live-message cursor does not match the returned page"));
                 return;
             }
-            long id = row.optLong("message_id", 0L);
-            long senderId = row.optLong("sender_id", 0L);
-            String body = row.optString("text", "");
-            String clientMessageId = row.isNull("client_message_id")
-                    ? "" : row.optString("client_message_id", "");
-            if (id <= previousId || id > Integer.MAX_VALUE || !pageIds.add(id)
-                    || senderId <= 0L || senderId > Integer.MAX_VALUE
-                    || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
-                    || ZenoraChatController.parseHistoryDate(row.optString("created_at", "")) <= 0
-                    || !TextUtils.isEmpty(clientMessageId)
-                    && (!clientMessageId.matches("[A-Za-z0-9._:-]{8,64}")
-                    || !pageClientMessageIds.add(clientMessageId))) {
-                fail(session, new IllegalStateException("Live message failed validation"));
+            appliedMessageCursor = ZenoraHistoryController.applyLiveTextMessages(
+                    session.account, session.dialogId, session.roomId, messages, requestedMessageCursor);
+            if (appliedMessageCursor != lastId) {
+                fail(session, new IllegalStateException("Native message application did not commit the page"));
                 return;
             }
-            previousId = id;
-            lastId = id;
-        }
-        long responseCursor = pagination.optLong("next_after_id", -1L);
-        if (responseCursor != lastId || (hasMore && messages.length() != PAGE_SIZE)) {
-            fail(session, new IllegalStateException("Live-message cursor does not match the returned page"));
-            return;
-        }
-
-        long appliedCursor = ZenoraHistoryController.applyLiveTextMessages(
-                session.account, session.dialogId, session.roomId, messages, requestedCursor);
-        if (appliedCursor != lastId) {
-            fail(session, new IllegalStateException("Native message application did not commit the page"));
-            return;
         }
 
         synchronized (lock) {
-            if (!isCurrentLocked(session) || session.cursor != requestedCursor) return;
-            session.cursor = appliedCursor;
-            session.failures = 0;
-            session.inFlight = false;
-            scheduleLocked(session, hasMore ? 0L : POLL_INTERVAL_MS);
+            if (!isCurrentLocked(session) || session.cursor != requestedMessageCursor) return;
+            session.cursor = appliedMessageCursor;
+        }
+
+        final MutationPage page;
+        try {
+            page = validateMutationEventPage(
+                    response.optJSONObject("mutation_events_page"), session.roomId,
+                    requestedEventCursor, PAGE_SIZE);
+        } catch (Exception invalidPage) {
+            fail(session, invalidPage);
+            return;
+        }
+
+        MessagesStorage.getInstance(session.account).applyZenoraMessageMutationEvents(
+                session.roomId, session.dialogId, session.userId, requestedEventCursor,
+                page.nextCursor, page.events, (committedCursor, editedMessages, deletedIds, applyError) -> {
+                    if (applyError != null || committedCursor != page.nextCursor) {
+                        fail(session, applyError != null ? applyError
+                                : new IllegalStateException("Mutation cursor was not committed"));
+                        return;
+                    }
+                    synchronized (lock) {
+                        if (!isCurrentLocked(session)
+                                || ZenoraApiClient.getCurrentUserId() != session.userId
+                                || ZenoraChatController.getRoomIdForDialog(session.account, session.dialogId) != session.roomId) {
+                            return;
+                        }
+                    }
+
+                    applyEditedMessages(session, page.events, editedMessages);
+                    if (deletedIds != null && !deletedIds.isEmpty()) {
+                        boolean removed = MessagesController.getInstance(session.account)
+                                .applyZenoraMessageDeletionLocally(session.dialogId, deletedIds);
+                        if (!removed) {
+                            FileLog.w("[ZenoraChat] Mutation event deletion already absent from active cache; dialog="
+                                    + session.dialogId);
+                        }
+                    }
+
+                    synchronized (lock) {
+                        if (!isCurrentLocked(session) || session.eventCursor != requestedEventCursor) return;
+                        session.eventCursor = committedCursor;
+                        session.failures = 0;
+                        session.inFlight = false;
+                        scheduleLocked(session, hasMoreMessages || page.hasMore ? 0L : POLL_INTERVAL_MS);
+                    }
+                });
+    }
+
+    private static MutationPage validateMutationEventPage(JSONObject page, long roomId,
+                                                           long requestedCursor, int limit) {
+        if (page == null || !page.optBoolean("ok", false)
+                || page.optLong("room_id", 0L) != roomId
+                || page.optLong("after_event_id", -1L) != requestedCursor) {
+            throw new IllegalStateException("Mutation event page belongs to another account or room cursor");
+        }
+        JSONArray events = page.optJSONArray("events");
+        int scannedCount = page.optInt("scanned_count", -1);
+        long nextCursor = page.optLong("next_after_event_id", -1L);
+        boolean hasMore = page.optBoolean("has_more", false);
+        if (events == null || events.length() > limit || scannedCount < events.length()
+                || scannedCount < 0 || scannedCount > limit || nextCursor < requestedCursor
+                || hasMore != (scannedCount == limit)
+                || (scannedCount == 0 && nextCursor != requestedCursor)
+                || (scannedCount > 0 && nextCursor <= requestedCursor)) {
+            throw new IllegalStateException("Mutation event cursor metadata is invalid");
+        }
+
+        long previousId = requestedCursor;
+        HashSet<Long> eventIds = new HashSet<>();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event == null || event.optLong("room_id", 0L) != roomId) {
+                throw new IllegalStateException("Mutation event belongs to another room");
+            }
+            long eventId = event.optLong("event_id", 0L);
+            long messageId = event.optLong("message_id", 0L);
+            long actorId = event.optLong("actor_user_id", 0L);
+            String type = event.optString("event_type", "");
+            JSONObject payload = event.optJSONObject("payload");
+            if (eventId <= previousId || eventId > nextCursor || !eventIds.add(eventId)
+                    || messageId <= 0L || messageId > Integer.MAX_VALUE || actorId <= 0L
+                    || payload == null
+                    || !("message.edited".equals(type)
+                    || "message.deleted_for_me".equals(type)
+                    || "message.deleted_for_all".equals(type))) {
+                throw new IllegalStateException("Mutation event failed identity or type validation");
+            }
+            if ("message.edited".equals(type)) {
+                String body = payload.optString("text", "");
+                String editedAt = payload.optString("edited_at", "");
+                long version = payload.optLong("edit_version", 0L);
+                if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                        || TextUtils.isEmpty(editedAt)
+                        || ZenoraChatController.parseHistoryDate(editedAt) <= 0
+                        || version <= 0L || version > Integer.MAX_VALUE) {
+                    throw new IllegalStateException("Mutation edit payload is invalid");
+                }
+            }
+            previousId = eventId;
+        }
+        if (events.length() > 0 && events.optJSONObject(events.length() - 1).optLong("event_id", 0L) > nextCursor) {
+            throw new IllegalStateException("Mutation event page cursor moved backwards");
+        }
+        return new MutationPage(events, nextCursor, hasMore);
+    }
+
+    private static void applyEditedMessages(Session session, JSONArray events,
+                                            ArrayList<TLRPC.Message> messages) {
+        HashMap<String, JSONObject> metadata = new HashMap<>();
+        HashSet<Integer> storedIds = new HashSet<>();
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
+            JSONObject payload = event.optJSONObject("payload");
+            if (payload == null) continue;
+            String key = event.optLong("message_id", 0L) + ":" + payload.optLong("edit_version", 0L);
+            metadata.put(key, payload);
+        }
+        if (messages != null) {
+            for (TLRPC.Message message : messages) {
+                if (message == null || message.id <= 0) continue;
+                storedIds.add(message.id);
+                String key = message.id + ":" + message.zenoraEditVersion;
+                JSONObject payload = metadata.get(key);
+                if (payload == null) continue;
+                String body = payload.optString("text", message.message);
+                String editedAt = payload.optString("edited_at", "");
+                ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(session.account)
+                        .getEntities(new CharSequence[]{body}, true);
+                MessageObject object = new MessageObject(session.account, message, true, true);
+                boolean updated = ZenoraHistoryController.applyEditedMessage(
+                        session.account, session.dialogId, session.roomId, object,
+                        body, entities, editedAt, message.zenoraEditVersion);
+                if (!updated) FileLog.w("[ZenoraChat] Stored edited message could not refresh active UI; id=" + message.id);
+            }
+        }
+        // A reply parent can be cached as a lightweight preview without its full
+        // row in messages_v2; keep that preview and all dependent replies current.
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
+            int messageId = (int) event.optLong("message_id", 0L);
+            if (messageId <= 0 || storedIds.contains(messageId)) continue;
+            JSONObject payload = event.optJSONObject("payload");
+            if (payload == null) continue;
+            ZenoraHistoryController.applyEditedMessageToCachedReplyPreview(
+                    session.account, session.dialogId, session.roomId, messageId,
+                    payload.optString("text", ""), payload.optString("edited_at", ""),
+                    payload.optLong("edit_version", 0L));
         }
     }
 
@@ -239,7 +458,8 @@ public final class ZenoraLiveMessageSyncController {
             long delay = Math.min(MAX_BACKOFF_MS,
                     POLL_INTERVAL_MS << Math.min(4, session.failures - 1));
             FileLog.w("[ZenoraChat] Live sync retry scheduled; dialog=" + session.dialogId
-                    + ", cursor=" + session.cursor + ", delayMs=" + delay
+                    + ", messageCursor=" + session.cursor + ", eventCursor=" + session.eventCursor
+                    + ", delayMs=" + delay
                     + ", reason=" + (error == null ? "unknown" : error.getMessage()));
             scheduleLocked(session, delay);
         }

@@ -14184,9 +14184,9 @@ public class MessagesStorage extends BaseController {
                         // A message not present in the local history is still safe to
                         // consume: a later server history page supplies its canonical row.
                         if (message != null) {
-                            if (message.id != messageId || message.dialog_id != dialogId) {
-                                throw new IllegalStateException("Stored message identity does not match mutation event");
-                            }
+                            // Telegram stores the message body separately from SQLite's mid/uid columns.
+                            message.id = messageId;
+                            message.dialog_id = dialogId;
                             if (message.zenoraEditVersion > editVersion) {
                                 continue;
                             }
