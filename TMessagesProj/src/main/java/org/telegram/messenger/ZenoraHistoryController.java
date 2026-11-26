@@ -92,7 +92,7 @@ public final class ZenoraHistoryController {
                     ? 0L : MessageObject.getPeerId(replyMessageObject.messageOwner.from_id);
             String preview = replyMessageObject == null || replyMessageObject.messageOwner.message == null
                     ? "" : replyMessageObject.messageOwner.message;
-            this.replyPreviewBody = preview.substring(0, Math.min(140, preview.length()));
+            this.replyPreviewBody = limitReplyPreviewText(preview);
             this.messageObject = messageObject;
             this.callback = callback;
             this.createdAt = createdAt;
@@ -107,6 +107,18 @@ public final class ZenoraHistoryController {
         return row.optLong("reply_to_id", -1L);
     }
 
+    private static boolean isValidReplyPreviewText(String text) {
+        return !TextUtils.isEmpty(text == null ? "" : text.trim())
+                && text.codePointCount(0, text.length()) <= 140;
+    }
+
+    private static String limitReplyPreviewText(String text) {
+        if (text == null) return "";
+        int count = text.codePointCount(0, text.length());
+        if (count <= 140) return text;
+        return text.substring(0, text.offsetByCodePoints(0, 140));
+    }
+
     private static boolean isValidReplyContract(JSONObject row) {
         long replyToId = replyToIdFromRow(row);
         if (replyToId < 0L || replyToId > Integer.MAX_VALUE) return false;
@@ -116,12 +128,12 @@ public final class ZenoraHistoryController {
         if (preview == null) return false;
         String status = preview.optString("status", "");
         if ("unavailable".equals(status)) return true;
+        String previewText = preview.optString("text", "");
         return "available".equals(status)
                 && preview.optLong("message_id", 0L) == replyToId
                 && preview.optLong("sender_id", 0L) > 0L
                 && preview.optLong("sender_id", 0L) <= Integer.MAX_VALUE
-                && !TextUtils.isEmpty(preview.optString("text", "").trim())
-                && preview.optString("text", "").length() <= 140;
+                && isValidReplyPreviewText(previewText);
     }
 
     private static TLRPC.Message createReplyPreviewMessage(long dialogId, TLRPC.Peer peer,
@@ -134,6 +146,7 @@ public final class ZenoraHistoryController {
         if (senderId <= 0L || senderId > Integer.MAX_VALUE
                 || preview.optLong("message_id", 0L) != replyToId
                 || TextUtils.isEmpty(text.trim()) || text.length() > 140) return null;
+        if (!isValidReplyPreviewText(text)) return null;
         TLRPC.TL_message parent = new TLRPC.TL_message();
         parent.id = (int) replyToId;
         parent.local_id = parent.id;
@@ -159,8 +172,13 @@ public final class ZenoraHistoryController {
         header.flags |= 16;
         header.reply_to_msg_id = (int) replyToId;
         message.reply_to = header;
+        JSONObject preview = row.optJSONObject("reply_preview");
         message.replyMessage = createReplyPreviewMessage(
-                dialogId, peer, date, replyToId, row.optJSONObject("reply_preview"), selfId);
+                dialogId, peer, date, replyToId, preview, selfId);
+        if (message.params == null) message.params = new HashMap<>();
+        message.params.put("zenora_reply_preview_status",
+                preview != null && "available".equals(preview.optString("status", ""))
+                        && message.replyMessage != null ? "available" : "unavailable");
     }
 
     private static final class Target {
@@ -1135,6 +1153,8 @@ public final class ZenoraHistoryController {
             TLRPC.Message parent = createReplyPreviewMessage(
                     pending.dialogId, peer, serverDate, replyToId, replyPreview, selfId);
             message.replyMessage = parent;
+            if (message.params == null) message.params = new HashMap<>();
+            message.params.put("zenora_reply_preview_status", parent == null ? "unavailable" : "available");
             pending.messageObject.replyMessageObject = parent == null
                     ? null : new MessageObject(pending.account, parent, false, false);
             clearReplyPreview = parent == null;
