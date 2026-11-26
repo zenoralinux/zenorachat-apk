@@ -5,6 +5,7 @@ import android.text.TextUtils;
 import android.os.Looper;
 
 import org.json.JSONObject;
+import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
 import java.util.HashSet;
