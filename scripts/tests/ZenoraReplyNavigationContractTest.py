@@ -55,6 +55,16 @@ assert "messages.contains(parent)" in in_adapter
 assert "chatAdapter.getMessages().contains(parent)" in in_adapter
 assert "chatAdapter.isFiltered" in in_adapter
 
+# A locally persisted Reply Preview snapshot is itself a valid offline parent source.
+preview_parent = method_body(CHAT, "public TLRPC.Message getZenoraReplyPreviewParent(")
+for token in (
+    "child.replyMessageObject", "repliesMessagesDict.get(targetMessageId)",
+    "child.messageOwner.replyMessage", "parent.id != targetMessageId",
+    "parent.dialog_id != dialog_id", "TL_messageMediaEmpty",
+    "zenora_reply_preview_status", "parent.from_id == null",
+):
+    assert token in preview_parent
+
 loaded_scroll = method_body(CHAT, "public void navigateToLoadedZenoraParent(")
 assert loaded_scroll.index("hasZenoraParentInAdapter") < loaded_scroll.index("scrollToMessageId(")
 
@@ -111,6 +121,10 @@ assert "getStorageQueue().postRunnable" in storage_load
 assert "SELECT data, mid, date FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1" in storage_load
 assert "ApplicationLoader.isNetworkOnline()" in storage_load
 assert "fetchBasicTextMessagesAround(" in storage_load
+assert "findCachedReplyPreviewFromWaiters(" in storage_load
+assert storage_load.index("findCachedReplyPreviewFromWaiters(") < storage_load.index("ApplicationLoader.isNetworkOnline()")
+assert "response.optBoolean(\"ok\", false)" in storage_load
+assert "responseRoom.optLong(\"id\", 0L) != roomId" in storage_load
 assert "ConnectionsManager.sendRequest" not in storage_load
 assert "TL_messages_getMessages" not in storage_load
 assert "TL_channels_getMessages" not in storage_load
