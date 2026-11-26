@@ -42,7 +42,7 @@ db.execute(migration_sql)
 db.execute(index_sql)
 db.execute("PRAGMA user_version = 183")
 reply_columns = re.findall(
-    r'database\\.executeFast\\("(ALTER TABLE zenora_outbox ADD COLUMN [^"]+)"\\)',
+    r'database\.executeFast\("(ALTER TABLE zenora_outbox ADD COLUMN [^"]+)"\)',
     MIGRATION)
 assert len(reply_columns) == 3, "v183->v184 Reply migration must add exactly three columns"
 for sql in reply_columns:
