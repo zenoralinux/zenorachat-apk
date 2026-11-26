@@ -348,7 +348,7 @@ public final class ZenoraLiveMessageSyncController {
                         } else if (deletedPreviousTop) {
                             // The replacement can be older than the live message cursor
                             // and absent from SQLite. Fetch only the current server tail.
-                            refreshLastServerPreview(session, requestedMessageCursor, deletedIds);
+                            refreshLastServerPreview(session, appliedCursor, deletedIds);
                         }
                     }
 
