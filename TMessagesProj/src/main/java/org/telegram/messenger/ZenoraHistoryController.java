@@ -833,22 +833,31 @@ public final class ZenoraHistoryController {
                     replyHeader.flags |= 16;
                     replyHeader.reply_to_msg_id = (int) record.replyToId;
                     message.reply_to = replyHeader;
-                    if (record.replyPreviewSenderId > 0L && record.replyPreviewSenderId <= Integer.MAX_VALUE
-                            && !TextUtils.isEmpty(record.replyPreviewBody)) {
+                    boolean hasVisiblePreview = record.replyPreviewSenderId > 0L
+                            && record.replyPreviewSenderId <= Integer.MAX_VALUE
+                            && !TextUtils.isEmpty(record.replyPreviewBody);
+                    boolean hasUnavailablePreview = record.replyPreviewSenderId == 0L
+                            && "Message unavailable".equals(record.replyPreviewBody);
+                    if (hasVisiblePreview || hasUnavailablePreview) {
                         TLRPC.TL_message parent = new TLRPC.TL_message();
                         parent.id = (int) record.replyToId;
                         parent.local_id = parent.id;
                         parent.dialog_id = record.dialogId;
                         parent.peer_id = dialog.peer;
-                        parent.from_id = new TLRPC.TL_peerUser();
-                        parent.from_id.user_id = record.replyPreviewSenderId;
+                        if (hasVisiblePreview) {
+                            parent.from_id = new TLRPC.TL_peerUser();
+                            parent.from_id.user_id = record.replyPreviewSenderId;
+                            parent.out = record.replyPreviewSenderId == selfId;
+                            parent.flags |= 1 << 8;
+                            if (parent.out) parent.flags |= 1 << 1;
+                        }
                         parent.date = record.messageDate;
                         parent.message = record.replyPreviewBody;
                         parent.media = new TLRPC.TL_messageMediaEmpty();
-                        parent.out = record.replyPreviewSenderId == selfId;
-                        parent.flags |= 1 << 8;
-                        if (parent.out) parent.flags |= 1 << 1;
                         message.replyMessage = parent;
+                        if (message.params == null) message.params = new HashMap<>();
+                        message.params.put("zenora_reply_preview_status",
+                                hasVisiblePreview ? "available" : "unavailable");
                         replyParent = new MessageObject(account, parent, false, false);
                     }
                 }
