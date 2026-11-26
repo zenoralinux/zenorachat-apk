@@ -581,6 +581,14 @@ public class MessagesStorage extends BaseController {
                                               int serverId, int serverDate,
                                               String clientMessageId, boolean clearReplyPreview,
                                               Consumer<Boolean> callback) {
+        acknowledgeZenoraTextMessage(randomId, dialogId, localId, serverId, serverDate,
+                clientMessageId, null, clearReplyPreview, callback);
+    }
+
+    public void acknowledgeZenoraTextMessage(long randomId, long dialogId, int localId,
+                                              int serverId, int serverDate,
+                                              String clientMessageId, TLRPC.Message replyPreviewMessage,
+                                              boolean clearReplyPreview, Consumer<Boolean> callback) {
         storageQueue.postRunnable(() -> {
             boolean inTransaction = false;
             boolean success = false;
@@ -596,7 +604,24 @@ public class MessagesStorage extends BaseController {
                 sent.step();
                 sent.dispose();
 
-                if (clearReplyPreview) {
+                if (replyPreviewMessage != null) {
+                    NativeByteBuffer replyData = new NativeByteBuffer(replyPreviewMessage.getObjectSize());
+                    try {
+                        replyPreviewMessage.serializeToStream(replyData);
+                        SQLitePreparedStatement savePreview = database.executeFast(
+                                "UPDATE messages_v2 SET replydata = ? WHERE mid = ? AND uid = ?");
+                        try {
+                            savePreview.bindByteBuffer(1, replyData);
+                            savePreview.bindInteger(2, localId);
+                            savePreview.bindLong(3, dialogId);
+                            savePreview.step();
+                        } finally {
+                            savePreview.dispose();
+                        }
+                    } finally {
+                        replyData.reuse();
+                    }
+                } else if (clearReplyPreview) {
                     SQLitePreparedStatement clearPreview = database.executeFast(
                             "UPDATE messages_v2 SET replydata = NULL WHERE mid = ? AND uid = ?");
                     try {
