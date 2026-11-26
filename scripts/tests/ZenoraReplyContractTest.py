@@ -65,6 +65,10 @@ assert "ackReplyToId != pending.replyToId" in HISTORY
 assert "acknowledgePendingTextSend(pending, (int) rawId, serverDate," in HISTORY
 assert "applyReplyContractToMessage(message, row" in HISTORY
 assert "applyReplyContractToMessage(message, replyRow" in HISTORY
+live_apply = method_body(HISTORY, "public static long applyLiveTextMessages(")
+assert "liveObject.replyMessageObject = replyObject" in live_apply
+assert "liveObjectsById.get((int) liveReplyId)" in live_apply
+assert "liveReplyParentsById" in live_apply
 
 # v184 Outbox stores stable reply id plus safe text preview; old rows get neutral defaults.
 assert "LAST_DB_VERSION = 184" in STORAGE
