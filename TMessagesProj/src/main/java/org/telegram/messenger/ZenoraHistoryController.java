@@ -2008,6 +2008,40 @@ public final class ZenoraHistoryController {
         }
     }
 
+    /**
+     * A Reply Preview can contain the only locally cached copy of its parent
+     * (messages_v2.replydata), even when no standalone messages_v2 row exists.
+     * This lookup runs on the UI thread and is scoped to the current coalesced request.
+     */
+    private static TLRPC.Message findCachedReplyPreviewFromWaiters(
+            int account, long dialogId, long roomId, int targetMessageId,
+            long expectedUserId, long requestId) {
+        final ArrayList<ReplyNavigationWaiter> waiters;
+        synchronized (lock) {
+            Map<String, ReplyNavigationRequest> accountRequests = replyNavigationInFlight.get(account);
+            ReplyNavigationRequest request = accountRequests == null ? null
+                    : accountRequests.get(replyNavigationKey(
+                            expectedUserId, roomId, dialogId, targetMessageId));
+            if (request == null || request.requestId != requestId
+                    || request.expectedUserId != expectedUserId
+                    || request.roomId != roomId) {
+                return null;
+            }
+            waiters = new ArrayList<>(request.waiters);
+        }
+        for (ReplyNavigationWaiter waiter : waiters) {
+            if (waiter == null || waiter.activity == null
+                    || !waiter.activity.isZenoraReplyNavigationCurrent(
+                            account, dialogId, roomId, waiter.classGuid, expectedUserId)) {
+                continue;
+            }
+            TLRPC.Message previewParent = waiter.activity.getZenoraReplyPreviewParent(
+                    waiter.childMessageId, targetMessageId);
+            if (previewParent != null) return previewParent;
+        }
+        return null;
+    }
+
     private static void loadReplyTargetFromStorage(int account, long dialogId, long roomId,
                                                    int targetMessageId, long expectedUserId,
                                                    long requestId) {
@@ -2068,6 +2102,18 @@ public final class ZenoraHistoryController {
                             payload, false, payload == null ? "The cached reply message could not be opened." : null);
                     return;
                 }
+                TLRPC.Message previewParent = findCachedReplyPreviewFromWaiters(
+                        account, dialogId, roomId, targetMessageId, expectedUserId, requestId);
+                if (previewParent != null) {
+                    ArrayList<TLRPC.Message> previewMessages = new ArrayList<>();
+                    previewMessages.add(previewParent);
+                    TLRPC.TL_messages_messages payload = buildAroundPayload(
+                            account, dialogId, previewMessages);
+                    finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                            payload, false, payload == null
+                                    ? "The cached Reply Preview could not be opened." : null);
+                    return;
+                }
                 if (!ApplicationLoader.isNetworkOnline()) {
                     finishReplyNavigation(account, dialogId, targetMessageId, requestId,
                             null, false, "This reply message is not cached. Connect to the internet and try again.");
@@ -2102,10 +2148,18 @@ public final class ZenoraHistoryController {
                                         null, false, "The reply service returned an empty response.");
                                 return;
                             }
-                            if (!response.optBoolean("ok", false)
-                                    && "MESSAGE_NOT_AVAILABLE".equals(response.optString("error", ""))) {
+                            if (!response.optBoolean("ok", false)) {
+                                boolean unavailable = "MESSAGE_NOT_AVAILABLE".equals(
+                                        response.optString("error", ""));
                                 finishReplyNavigation(account, dialogId, targetMessageId, requestId,
-                                        null, true, null);
+                                        null, unavailable, unavailable ? null
+                                                : "The reply service rejected this message lookup.");
+                                return;
+                            }
+                            JSONObject responseRoom = response.optJSONObject("room");
+                            if (responseRoom == null || responseRoom.optLong("id", 0L) != roomId) {
+                                finishReplyNavigation(account, dialogId, targetMessageId, requestId,
+                                        null, false, "The reply service returned a different conversation.");
                                 return;
                             }
                             JSONArray rows = response.optJSONArray("messages");
