@@ -1616,7 +1616,7 @@ public final class ZenoraHistoryController {
             String body = row.optString("text", "");
             String editedAt = row.isNull("edited_at") ? null : row.optString("edited_at", "");
             long version = row.optLong("edit_version", 0L);
-            ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getEntities(
+            ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
                     new CharSequence[]{body}, true);
             boolean updated = applyEditedMessage(account, dialogId, roomId, target,
                     body, entities, editedAt, version);
