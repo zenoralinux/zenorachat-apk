@@ -32,7 +32,11 @@ reply_migration_sql = capture(
 assert "PRAGMA user_version = 182" in migration_source
 assert "PRAGMA user_version = 183" in migration_source
 assert "PRAGMA user_version = 184" in migration_source
-assert "public final static int LAST_DB_VERSION = 184;" in storage_source
+assert "public final static int LAST_DB_VERSION = 186;" in storage_source
+assert "PRAGMA user_version = 185" in migration_source
+assert "PRAGMA user_version = 186" in migration_source
+assert "CREATE TABLE zenora_message_mutation_cursor" in storage_source
+assert "CREATE TABLE zenora_message_mutation_deleted" in storage_source
 assert "if (version == 183)" in migration_source
 assert "if (!hasColumn(database, \"zenora_outbox\", \"reply_to_id\"))" in migration_source
 assert '"zenora_outbox"' in storage_source, "backup/restore table list must include the outbox"
