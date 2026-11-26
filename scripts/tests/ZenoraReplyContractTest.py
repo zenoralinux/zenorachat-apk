@@ -95,10 +95,10 @@ assert "messages_v2 WHERE uid = ? AND mid = ?" in resolver
 assert "sendRequest(" not in resolver
 assert "TL_messages_getMessages" not in resolver
 assert "TL_channels_getMessages" not in resolver
-loader = method_body(MEDIA, "public void loadReplyMessagesForMessages(")
+loader_start = MEDIA.index("public void loadReplyMessagesForMessages(")
+loader = MEDIA[loader_start:MEDIA.index("final boolean scheduled", loader_start)]
 zenora_guard = loader.index("if (ZenoraChatController.getRoomIdForDialog")
-normal_path = loader.index("final boolean scheduled")
-assert zenora_guard < normal_path and "loadZenoraLocalReplyMessages" in loader
+assert zenora_guard >= 0 and "loadZenoraLocalReplyMessages(messages, dialogId, callback)" in loader
 
 # Touching a Zenora preview intentionally does not enter Telegram scroll/MTProto navigation yet.
 tap = method_body(CHAT, "public void didPressReplyMessage(ChatMessageCell cell, int id")
