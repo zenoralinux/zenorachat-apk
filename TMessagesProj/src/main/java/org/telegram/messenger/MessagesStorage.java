@@ -313,6 +313,9 @@ public class MessagesStorage extends BaseController {
                 ArrayList<TLRPC.Message> messages = new ArrayList<>();
                 messages.add(message);
                 putMessagesInternal(messages, false, false, 0, false, ChatActivity.MODE_DEFAULT, 0);
+                if (message.reply_to != null) {
+                    updateZenoraReplyPreviewInternal(message);
+                }
 
                 SQLitePreparedStatement state = database.executeFast(
                         "INSERT OR REPLACE INTO zenora_outbox(client_message_id, room_id, dialog_id, local_message_id, random_id, zenora_user_id, body, message_date, status, created_at, next_attempt_at, attempt_count, server_message_id, server_date, reply_to_id, reply_preview_sender_id, reply_preview_body) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'SENDING', ?, 0, 0, 0, 0, ?, ?, ?)");
@@ -345,6 +348,63 @@ public class MessagesStorage extends BaseController {
                 if (callback != null) {
                     AndroidUtilities.runOnUIThread(() -> callback.accept(error));
                 }
+            }
+        });
+    }
+
+    private void updateZenoraReplyPreviewInternal(TLRPC.Message message) throws Exception {
+        if (message == null || message.reply_to == null) return;
+        if (message.replyMessage == null) {
+            SQLitePreparedStatement clear = database.executeFast(
+                    "UPDATE messages_v2 SET replydata = NULL WHERE mid = ? AND uid = ?");
+            try {
+                clear.bindInteger(1, message.id);
+                clear.bindLong(2, message.dialog_id);
+                clear.step();
+            } finally {
+                clear.dispose();
+            }
+            return;
+        }
+        NativeByteBuffer replyData = new NativeByteBuffer(message.replyMessage.getObjectSize());
+        try {
+            message.replyMessage.serializeToStream(replyData);
+            SQLitePreparedStatement update = database.executeFast(
+                    "UPDATE messages_v2 SET replydata = ? WHERE mid = ? AND uid = ?");
+            try {
+                update.bindByteBuffer(1, replyData);
+                update.bindInteger(2, message.id);
+                update.bindLong(3, message.dialog_id);
+                update.step();
+            } finally {
+                update.dispose();
+            }
+        } finally {
+            replyData.reuse();
+        }
+    }
+
+    /**
+     * Persist Zenora's API-supplied safe parent snapshot in Telegram's native
+     * replydata column. This is queued after putMessages on the same storageQueue.
+     */
+    public void putZenoraReplyPreviews(ArrayList<TLRPC.Message> messages) {
+        if (messages == null || messages.isEmpty()) return;
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                for (TLRPC.Message message : messages) {
+                    if (message != null && message.reply_to != null) {
+                        updateZenoraReplyPreviewInternal(message);
+                    }
+                }
+                database.commitTransaction();
+                inTransaction = false;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
             }
         });
     }
