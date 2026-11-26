@@ -104,11 +104,12 @@ loader = MEDIA[loader_start:MEDIA.index("final boolean scheduled", loader_start)
 zenora_guard = loader.index("if (ZenoraChatController.getRoomIdForDialog")
 assert zenora_guard >= 0 and "loadZenoraLocalReplyMessages(messages, dialogId, callback)" in loader
 
-# Touching a Zenora preview intentionally does not enter Telegram scroll/MTProto navigation yet.
+# Zenora preview taps are routed to the dedicated no-MTProto Reply Navigation path.
 tap = method_body(CHAT, "public void didPressReplyMessage(ChatMessageCell cell, int id")
 assert "getRoomIdForDialog(currentAccount, dialog_id)" in tap
-assert tap.index("getRoomIdForDialog") < tap.index("scrollToMessageId") if "scrollToMessageId" in tap else True
-assert "Core Reply intentionally does not include parent-message navigation yet." in tap
+assert tap.index("getRoomIdForDialog") < tap.index("scrollToMessageId")
+assert "ZenoraHistoryController.navigateToReplyMessage(" in tap
+assert "Core Reply intentionally does not include parent-message navigation yet." not in tap
 
 # Non-Zenora Telegram paths remain present.
 assert "scrollToMessageId(id, messageObject.getId()" in CHAT
