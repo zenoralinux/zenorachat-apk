@@ -359,6 +359,26 @@ public final class ZenoraHistoryController {
                 if (accountRequests.isEmpty()) inFlight.remove(account);
             }
 
+            // Remove this Activity from any coalesced Reply Navigation request.
+            // Keep a request alive only while another open Activity still waits for it.
+            Map<String, ReplyNavigationRequest> accountReplyRequests = replyNavigationInFlight.get(account);
+            if (accountReplyRequests != null) {
+                java.util.Iterator<Map.Entry<String, ReplyNavigationRequest>> iterator =
+                        accountReplyRequests.entrySet().iterator();
+                while (iterator.hasNext()) {
+                    ReplyNavigationRequest request = iterator.next().getValue();
+                    if (request == null || request.dialogId != dialogId) continue;
+                    for (int i = request.waiters.size() - 1; i >= 0; i--) {
+                        ReplyNavigationWaiter waiter = request.waiters.get(i);
+                        if (waiter != null && waiter.classGuid == classGuid) {
+                            request.waiters.remove(i);
+                        }
+                    }
+                    if (request.waiters.isEmpty()) iterator.remove();
+                }
+                if (accountReplyRequests.isEmpty()) replyNavigationInFlight.remove(account);
+            }
+
             Map<Long, OlderState> accountOlder = olderStates.get(account);
             OlderState state = accountOlder == null ? null : accountOlder.get(dialogId);
             if (state != null && state.loading && state.loadingClassGuid == classGuid) {
