@@ -75,6 +75,12 @@ assert "ALTER TABLE zenora_outbox ADD COLUMN reply_to_id" in MIGRATION
 assert "ALTER TABLE zenora_outbox ADD COLUMN reply_preview_sender_id" in MIGRATION
 assert "ALTER TABLE zenora_outbox ADD COLUMN reply_preview_body" in MIGRATION
 assert "putZenoraReplyPreviews" in STORAGE and "replydata = ?" in STORAGE
+assert "replyPreviewMessage != null" in STORAGE
+assert "UPDATE messages_v2 SET replydata = ?" in STORAGE
+assert '"Message unavailable"' in HISTORY
+assert "zenora_reply_preview_status" in HISTORY and "previewStatus" in MEDIA
+assert '"Message unavailable".equals(unavailable.message)' in MEDIA
+assert 'SELECT replydata FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1' in MEDIA
 
 # Initial History and incremental Live use the same contract and the native replydata store.
 assert "replyIds.add(replyToId)" in HISTORY
