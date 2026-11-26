@@ -6262,10 +6262,17 @@ public class MediaDataController extends BaseController {
                 String previewStatus = owner.messageOwner.params == null ? null
                         : owner.messageOwner.params.get("zenora_reply_preview_status");
                 if ("unavailable".equals(previewStatus)) {
-                    // The API has explicitly revoked visibility of this parent.
-                    // Do not reuse any previously cached reply object or query SQLite.
-                    owner.replyMessageObject = null;
-                    owner.messageOwner.replyMessage = null;
+                    // Only the generic placeholder may survive a revoked preview.
+                    // Never fall back to a previously cached parent row.
+                    TLRPC.Message unavailable = owner.messageOwner.replyMessage;
+                    if (unavailable != null && unavailable.id == replyId
+                            && "Message unavailable".equals(unavailable.message)
+                            && unavailable.from_id == null) {
+                        owner.replyMessageObject = new MessageObject(currentAccount, unavailable, false, false);
+                    } else {
+                        owner.replyMessageObject = null;
+                        owner.messageOwner.replyMessage = null;
+                    }
                     continue;
                 }
 
