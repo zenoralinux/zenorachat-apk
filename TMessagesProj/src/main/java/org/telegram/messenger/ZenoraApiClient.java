@@ -704,11 +704,32 @@ public final class ZenoraApiClient {
                 JSONObject response = request(path, "GET", null, true, expectedUserId);
                 String eventPath = "message_mutation_events.php?room_id=" + roomId
                         + "&after_event_id=" + afterEventId + "&limit=" + safeLimit;
-                JSONObject eventPage = request(eventPath, "GET", null, true, expectedUserId);
-                if (response == null || eventPage == null || !eventPage.optBoolean("ok", false)) {
-                    throw new IllegalStateException("Zenora mutation event page is invalid");
+                if (response == null || !response.optBoolean("ok", false)) {
+                    throw new IllegalStateException("Zenora live message page is invalid");
                 }
-                response.put("mutation_events_page", eventPage);
+
+                // A transient mutation-event endpoint failure must not discard an
+                // already successful message page. Keep the event cursor unchanged
+                // so the next existing poll retries the same event range.
+                try {
+                    JSONObject eventPage = request(eventPath, "GET", null, true, expectedUserId);
+                    if (eventPage == null || !eventPage.optBoolean("ok", false)) {
+                        throw new IllegalStateException("Zenora mutation event page is invalid");
+                    }
+                    response.put("mutation_events_page", eventPage);
+                } catch (Exception eventError) {
+                    JSONObject emptyEventPage = new JSONObject();
+                    emptyEventPage.put("ok", true);
+                    emptyEventPage.put("room_id", roomId);
+                    emptyEventPage.put("after_event_id", afterEventId);
+                    emptyEventPage.put("next_after_event_id", afterEventId);
+                    emptyEventPage.put("scanned_count", 0);
+                    emptyEventPage.put("has_more", false);
+                    emptyEventPage.put("events", new org.json.JSONArray());
+                    response.put("mutation_events_page", emptyEventPage);
+                    FileLog.w("[ZenoraChat] Mutation event poll deferred without dropping live messages: "
+                            + eventError.getMessage());
+                }
                 dispatch(callback, response, null);
             } catch (Exception error) {
                 dispatch(callback, null, error);
