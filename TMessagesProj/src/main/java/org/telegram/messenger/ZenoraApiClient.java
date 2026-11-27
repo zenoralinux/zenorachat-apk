@@ -727,6 +727,12 @@ public final class ZenoraApiClient {
                     emptyEventPage.put("has_more", false);
                     emptyEventPage.put("events", new org.json.JSONArray());
                     response.put("mutation_events_page", emptyEventPage);
+                    // Keep successful message delivery, but expose the failed
+                    // event poll so the sync coordinator retries the same cursor.
+                    String eventFailure = eventError.getMessage();
+                    response.put("mutation_events_error",
+                            eventFailure == null || eventFailure.isEmpty()
+                                    ? eventError.getClass().getSimpleName() : eventFailure);
                     FileLog.w("[ZenoraChat] Mutation event poll deferred without dropping live messages: "
                             + eventError.getMessage());
                 }
