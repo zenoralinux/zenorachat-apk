@@ -59,6 +59,11 @@ checks = {
         and "dispatch(callback, response, null)" in api
         and "Mutation event poll deferred without dropping live messages" in api
     ),
+    "event endpoint failure is surfaced to the live controller for retry": (
+        "mutation_events_error" in api
+        and "mutation_events_error" in live
+        and "fail(session, new IllegalStateException(" in live
+    ),
     "API request is bound to the expected account": "getCurrentUserId() != expectedUserId" in api and "true, expectedUserId" in api,
     "existing live polling interval remains two seconds": "POLL_INTERVAL_MS = 2000L" in live,
     "single existing poll sends both message and event cursors": "fetchBasicTextMessagesAfter(session.roomId, requestedMessageCursor," in poll and "requestedEventCursor" in poll,
