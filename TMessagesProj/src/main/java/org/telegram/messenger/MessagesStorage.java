@@ -121,7 +121,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 186;
+    public final static int LAST_DB_VERSION = 187;
     private boolean databaseMigrationInProgress;
     private boolean zenoraPendingEditTableReady;
     public boolean showClearDatabaseAlert;
@@ -978,6 +978,7 @@ public class MessagesStorage extends BaseController {
             "zenora_history_state",
             "zenora_message_mutation_cursor",
             "zenora_message_mutation_deleted",
+            "zenora_message_mutation_pending_edit",
             "media_holes_v2",
             "scheduled_messages_v2",
             "quick_replies",
@@ -1309,6 +1310,8 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE INDEX zenora_mutation_cursor_user_idx ON zenora_message_mutation_cursor(zenora_user_id, room_id);").stepThis().dispose();
         database.executeFast("CREATE TABLE zenora_message_mutation_deleted(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, deletion_event_id INTEGER NOT NULL, deletion_event_type TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
         database.executeFast("CREATE INDEX zenora_mutation_deleted_room_user_idx ON zenora_message_mutation_deleted(room_id, zenora_user_id, message_id);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_message_mutation_pending_edit(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, edit_version INTEGER NOT NULL, event_id INTEGER NOT NULL, body TEXT NOT NULL, edited_at TEXT NOT NULL, entities BLOB NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX zenora_mutation_pending_user_idx ON zenora_message_mutation_pending_edit(zenora_user_id, room_id, message_id);").stepThis().dispose();
 
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
 
