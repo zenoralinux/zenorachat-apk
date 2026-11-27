@@ -307,6 +307,8 @@ live_source = read_source(
     "TMessagesProj/src/main/java/org/telegram/messenger/ZenoraLiveMessageSyncController.java"
 )
 storage_source = read_source("TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java")
+tlrpc_source = read_source("TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java")
+local_params_source = read_source("TMessagesProj/src/main/java/org/telegram/messenger/MessageCustomParamsHelper.java")
 
 listener_start = chat_source.find("didReceivedNotification_zenoraMessageEdited")
 listener_end = chat_source.find("public void didReceivedNotification(int id", listener_start)
@@ -347,6 +349,13 @@ check(
     and "bindLong(6,0L)" in storage_source
     and "putMessagesInternal(updated,false,true,0,false,ChatActivity.MODE_DEFAULT,0L)" in storage_source,
     "API acknowledgement persists either the existing message row or an account/room-scoped pending edit in SQLite",
+)
+check(
+    "public String zenoraEditedAt" in tlrpc_source
+    and "message.zenoraEditedAt = editedAt" in mutation_source
+    and "message.zenoraEditedAt" in local_params_source
+    and "case 3:" in local_params_source,
+    "the exact server edited_at value is serialized with message local params and survives app re-entry",
 )
 
 print("OK: SQLite and live-UI reconciliation scenarios passed.")
