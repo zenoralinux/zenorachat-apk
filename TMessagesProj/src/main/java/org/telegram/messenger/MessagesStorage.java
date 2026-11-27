@@ -14300,7 +14300,12 @@ public class MessagesStorage extends BaseController {
                 current=null;
 
                 if(storedMessage!=null){
-                    if(storedMessage.zenoraEditVersion>=editVersion){
+                    boolean sameCanonicalPayload=storedMessage.zenoraEditVersion==editVersion
+                            &&TextUtils.equals(storedMessage.message,body)
+                            &&TextUtils.equals(storedMessage.zenoraEditedAt,editedAt)
+                            &&(storedMessage.flags&TLRPC.MESSAGE_FLAG_EDITED)!=0
+                            &&!storedMessage.edit_hide;
+                    if(storedMessage.zenoraEditVersion>editVersion||sameCanonicalPayload){
                         database.commitTransaction();
                         inTransaction=false;
                         return;
