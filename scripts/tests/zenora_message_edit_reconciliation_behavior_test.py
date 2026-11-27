@@ -310,8 +310,11 @@ storage_source = read_source("TMessagesProj/src/main/java/org/telegram/messenger
 tlrpc_source = read_source("TMessagesProj/src/main/java/org/telegram/tgnet/TLRPC.java")
 local_params_source = read_source("TMessagesProj/src/main/java/org/telegram/messenger/MessageCustomParamsHelper.java")
 
+edit_helper_start = chat_source.find("private void addZenoraEditedObject")
 listener_start = chat_source.find("didReceivedNotification_zenoraMessageEdited")
+helper_end = chat_source.find("private void didReceivedNotification_zenoraMessageEdited", edit_helper_start)
 listener_end = chat_source.find("public void didReceivedNotification(int id", listener_start)
+chat_edit_helper = chat_source[edit_helper_start:helper_end if helper_end > edit_helper_start else None]
 chat_listener = chat_source[listener_start:listener_end if listener_end > listener_start else None]
 canonical_start = history_source.find("public static boolean applyCanonicalEditToObject")
 canonical_end = history_source.find("private static void postCanonicalEditToOpenChat", canonical_start)
@@ -324,7 +327,7 @@ check(
     "NotificationCenter.zenoraMessageEdited" in chat_source
     and "findActiveMessage" in chat_listener
     and "messages" in chat_listener
-    and "applyCanonicalEditToObject" in chat_listener
+    and "applyCanonicalEditToObject" in chat_edit_helper
     and "NotificationCenter.replaceMessagesObjects" in chat_listener,
     "ChatActivity locates a SQLite/history-loaded message even when liveMessageObjects has no entry and uses native RecyclerView replacement",
 )
