@@ -52,6 +52,13 @@ checks = {
     "server replacement is validated and cannot be another deleted row": "isValidBasicTextPage(messages, pagination, roomId, 1, 0L)" in history and "deletedMessageIds.contains((int) rawMessageId)" in history,
     "server replacement persists and updates native dialog preview": "MessagesStorage.getInstance(account).putMessages(stored" in history and "controller.updateZenoraDialogPreview(dialogId, object)" in history and "dialog.top_message = messageId" in history,
     "same API request fetches message and mutation pages": "message_mutation_events.php?room_id=" in api and "mutation_events_page" in api,
+    "event endpoint failure keeps successful message page and does not advance event cursor": (
+        "if (response == null || !response.optBoolean(\"ok\", false))" in api
+        and "catch (Exception eventError)" in api
+        and "next_after_event_id\", afterEventId" in api
+        and "dispatch(callback, response, null)" in api
+        and "Mutation event poll deferred without dropping live messages" in api
+    ),
     "API request is bound to the expected account": "getCurrentUserId() != expectedUserId" in api and "true, expectedUserId" in api,
     "existing live polling interval remains two seconds": "POLL_INTERVAL_MS = 2000L" in live,
     "single existing poll sends both message and event cursors": "fetchBasicTextMessagesAfter(session.roomId, requestedMessageCursor," in poll and "requestedEventCursor" in poll,
