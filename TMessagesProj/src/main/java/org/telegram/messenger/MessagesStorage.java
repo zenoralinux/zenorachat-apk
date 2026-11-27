@@ -123,6 +123,7 @@ public class MessagesStorage extends BaseController {
 
     public final static int LAST_DB_VERSION = 186;
     private boolean databaseMigrationInProgress;
+    private boolean zenoraPendingEditTableReady;
     public boolean showClearDatabaseAlert;
 
     public static final int FORUM_TYPE_CHAT = 1;
@@ -12899,6 +12900,7 @@ public class MessagesStorage extends BaseController {
                     int messageId = message.id;
                     MessageObject.getDialogId(message);
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
+                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message);
 
                     if (message.mentioned && message.media_unread) {
                         ArrayList<Integer> ids = dialogMentionsIdsMap.get(message.dialog_id);
@@ -13435,6 +13437,9 @@ public class MessagesStorage extends BaseController {
                             statement.bindInteger(pointer++, 0);
                         }
                         statement.step();
+                        if (!isTopic && pendingEditResolved) {
+                            deletePendingZenoraMessageEdit(message);
+                        }
 
                         if (repliesData != null) {
                             repliesData.reuse();
@@ -14082,6 +14087,7 @@ public class MessagesStorage extends BaseController {
             Exception failure = null;
             SQLiteCursor cursor = null;
             try {
+                ensureZenoraPendingEditTable();
                 cursor = database.queryFinalized(
                         "SELECT last_event_id FROM zenora_message_mutation_cursor WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
                         roomId, dialogId, zenoraUserId);
@@ -14098,6 +14104,99 @@ public class MessagesStorage extends BaseController {
                 if (callback != null) callback.onComplete(result, resultError);
             });
         });
+    }
+
+    private void ensureZenoraPendingEditTable() {
+        if (zenoraPendingEditTableReady) return;
+        database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_pending_edit (" +
+                "room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, " +
+                "message_id INTEGER NOT NULL, edit_version INTEGER NOT NULL, event_id INTEGER NOT NULL, " +
+                "body TEXT NOT NULL, edited_at TEXT NOT NULL, entities BLOB NOT NULL, updated_at INTEGER NOT NULL, " +
+                "PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_mutation_pending_user_idx " +
+                "ON zenora_message_mutation_pending_edit(zenora_user_id, room_id, message_id);").stepThis().dispose();
+        zenoraPendingEditTableReady = true;
+    }
+
+    /**
+     * Reconcile a durable edit that arrived before this message entered messages_v2.
+     * Called only on storageQueue, before the canonical message is serialized.
+     * The pending row is deleted only after the messages_v2 write succeeds.
+     */
+    private boolean applyPendingZenoraMessageEdit(TLRPC.Message message) throws Exception {
+        if (message == null || message.id <= 0 || message.dialog_id == 0L) return false;
+        long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, message.dialog_id);
+        long userId = UserConfig.getInstance(currentAccount).getClientUserId();
+        if (roomId <= 0L || userId <= 0L) return false;
+
+        ensureZenoraPendingEditTable();
+        SQLiteCursor pending = null;
+        try {
+            pending = database.queryFinalized(
+                    "SELECT edit_version,body,edited_at,entities FROM zenora_message_mutation_pending_edit " +
+                    "WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=? LIMIT 1",
+                    roomId, message.dialog_id, userId, message.id);
+            if (!pending.next()) return false;
+
+            long pendingVersion = pending.longValue(0);
+            String body = pending.stringValue(1);
+            String editedAt = pending.stringValue(2);
+            NativeByteBuffer entityData = pending.byteBufferValue(3);
+            ArrayList<TLRPC.MessageEntity> entities = new ArrayList<>();
+            if (entityData != null) {
+                int count = entityData.readInt32(false);
+                if (count < 0 || count > 4096) {
+                    entityData.reuse();
+                    throw new IllegalStateException("Pending Zenora edit entity count is invalid");
+                }
+                for (int i = 0; i < count; i++) {
+                    TLRPC.MessageEntity entity = TLRPC.MessageEntity.TLdeserialize(
+                            entityData, entityData.readInt32(false), false);
+                    if (entity == null) {
+                        entityData.reuse();
+                        throw new IllegalStateException("Pending Zenora edit entity is invalid");
+                    }
+                    entities.add(entity);
+                }
+                entityData.reuse();
+            }
+            if (pendingVersion <= 0L || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
+                throw new IllegalStateException("Pending Zenora edit payload is invalid");
+            }
+
+            // A newer row wins. Equal-version/different-body data is deliberately
+            // reconciled from the later durable event instead of silently ignored.
+            if (pendingVersion >= Math.max(0L, message.zenoraEditVersion)) {
+                message.message = body;
+                message.entities = entities;
+                if (message.entities.isEmpty()) message.flags &= ~(1 << 7);
+                else message.flags |= 1 << 7;
+                message.flags |= 1 << 8;
+                ZenoraMessageMutationController.applyEditMetadata(message, editedAt, pendingVersion);
+            }
+            return true;
+        } finally {
+            if (pending != null) pending.dispose();
+        }
+    }
+
+    private void deletePendingZenoraMessageEdit(TLRPC.Message message) {
+        if (message == null || message.id <= 0 || message.dialog_id == 0L) return;
+        long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, message.dialog_id);
+        long userId = UserConfig.getInstance(currentAccount).getClientUserId();
+        if (roomId <= 0L || userId <= 0L) return;
+        SQLitePreparedStatement delete = database.executeFast(
+                "DELETE FROM zenora_message_mutation_pending_edit " +
+                "WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=?");
+        try {
+            delete.bindLong(1, roomId);
+            delete.bindLong(2, message.dialog_id);
+            delete.bindLong(3, userId);
+            delete.bindInteger(4, message.id);
+            delete.step();
+        } finally {
+            delete.dispose();
+        }
     }
 
     /**
@@ -14208,8 +14307,61 @@ public class MessagesStorage extends BaseController {
                         cursor.dispose();
                         cursor = null;
 
-                        // A message not present in the local history is still safe to
-                        // consume: a later server history page supplies its canonical row.
+                        // Keep an event for a message that is not loaded yet. It is
+                        // committed atomically with the event cursor and reconciled when
+                        // the canonical history row is next written to messages_v2.
+                        if (message == null) {
+                            ArrayList<TLRPC.MessageEntity> pendingEntities =
+                                    editEntitiesByMessageId == null ? null : editEntitiesByMessageId.get(messageId);
+                            if (pendingEntities == null) {
+                                throw new IllegalStateException("Pending edit entities were not prepared");
+                            }
+                            SQLiteCursor previousPending = database.queryFinalized(
+                                    "SELECT edit_version,event_id FROM zenora_message_mutation_pending_edit " +
+                                    "WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=? LIMIT 1",
+                                    roomId, dialogId, zenoraUserId, messageId);
+                            long previousVersion = 0L;
+                            long previousEventId = 0L;
+                            if (previousPending.next()) {
+                                previousVersion = previousPending.longValue(0);
+                                previousEventId = previousPending.longValue(1);
+                            }
+                            previousPending.dispose();
+                            if (editVersion > previousVersion
+                                    || editVersion == previousVersion && eventId > previousEventId) {
+                                int entitySize = 4;
+                                for (TLRPC.MessageEntity entity : pendingEntities) {
+                                    if (entity != null) entitySize += entity.getObjectSize();
+                                }
+                                NativeByteBuffer entityData = new NativeByteBuffer(entitySize);
+                                entityData.writeInt32(pendingEntities.size());
+                                for (TLRPC.MessageEntity entity : pendingEntities) {
+                                    if (entity != null) entity.serializeToStream(entityData);
+                                }
+                                SQLitePreparedStatement pendingInsert = database.executeFast(
+                                        "REPLACE INTO zenora_message_mutation_pending_edit " +
+                                        "(room_id,dialog_id,zenora_user_id,message_id,edit_version,event_id,body,edited_at,entities,updated_at) " +
+                                        "VALUES(?,?,?,?,?,?,?,?,?,?)");
+                                try {
+                                    pendingInsert.bindLong(1, roomId);
+                                    pendingInsert.bindLong(2, dialogId);
+                                    pendingInsert.bindLong(3, zenoraUserId);
+                                    pendingInsert.bindInteger(4, messageId);
+                                    pendingInsert.bindLong(5, editVersion);
+                                    pendingInsert.bindLong(6, eventId);
+                                    pendingInsert.bindString(7, body);
+                                    pendingInsert.bindString(8, editedAt);
+                                    pendingInsert.bindByteBuffer(9, entityData);
+                                    pendingInsert.bindLong(10, System.currentTimeMillis());
+                                    pendingInsert.step();
+                                } finally {
+                                    pendingInsert.dispose();
+                                    entityData.reuse();
+                                }
+                            }
+                            continue;
+                        }
+
                         if (message != null) {
                             // Telegram stores the message body separately from SQLite's mid/uid columns.
                             message.id = messageId;
