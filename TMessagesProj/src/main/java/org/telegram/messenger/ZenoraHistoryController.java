@@ -1734,6 +1734,8 @@ public final class ZenoraHistoryController {
         object.messageOwner.message = body;
         object.messageOwner.entities = entities == null
                 ? new ArrayList<>() : new ArrayList<>(entities);
+        if (object.messageOwner.entities.isEmpty()) object.messageOwner.flags &= ~(1 << 7);
+        else object.messageOwner.flags |= 1 << 7;
         object.messageOwner.flags |= 1 << 8;
         ZenoraMessageMutationController.applyEditMetadata(object.messageOwner, editedAt, editVersion);
         object.updateMessageText();
