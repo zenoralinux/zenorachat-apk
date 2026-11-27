@@ -301,6 +301,16 @@ public final class ZenoraLiveMessageSyncController {
         }
         final long committedMessageCursor = appliedCursor;
 
+        // A message delta can succeed while the event endpoint fails. Keep the
+        // message delta, but do not acknowledge a synthetic empty event page.
+        // The durable event cursor remains unchanged and the next poll retries it.
+        String mutationEventError = response.optString("mutation_events_error", "");
+        if (!TextUtils.isEmpty(mutationEventError)) {
+            fail(session, new IllegalStateException(
+                    "Mutation event polling failed: " + mutationEventError));
+            return;
+        }
+
         final MutationPage page;
         try {
             page = validateMutationEventPage(
