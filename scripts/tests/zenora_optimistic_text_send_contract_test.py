@@ -39,7 +39,7 @@ require("pending.clientMessageId" in HISTORY, "the same client_message_id is not
 
 # ACK converts the same local MessageObject and emits native ID-remap notifications.
 for fragment in (
-    "message.id = serverId;",
+    "message.local_id = pending.localId;",
     "pending.messageObject",
     # ID remap and outbox deletion now share one storage transaction.
     "storage.acknowledgeZenoraTextMessage(",

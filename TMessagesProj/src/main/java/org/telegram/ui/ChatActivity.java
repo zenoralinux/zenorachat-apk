@@ -23267,7 +23267,9 @@ public class ChatActivity extends BaseFragment implements
                     messagesDict[0].remove(msgId);
                     if (removed != null) {
                         int index = messages.indexOf(removed);
-                        messages.remove(index);
+                        if (index >= 0) {
+                            messages.remove(index);
+                        }
                         MessageObject conversionMsg = conversionMessages.get(removed.getId());
                         if (conversionMsg != null) {
                             conversionMessages.remove(removed.getId());

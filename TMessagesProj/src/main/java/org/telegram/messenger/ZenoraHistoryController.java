@@ -1336,27 +1336,27 @@ public final class ZenoraHistoryController {
                 || !pending.resolved.compareAndSet(false, true)) return;
 
         TLRPC.Message message = pending.messageObject.messageOwner;
-        int previousId = message.id;
-        message.id = serverId;
+        // Keep the local ID until Telegram's native messageReceivedByServer
+        // observers remap ChatActivity dictionaries and the visible row.
+        // Changing message.id earlier makes replaceMessagesObjects target the
+        // server ID while the optimistic row is still indexed by localId.
         message.local_id = pending.localId;
-        message.date = serverDate;
-        message.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
-        pending.messageObject.forceUpdate = true;
         NotificationCenter center = NotificationCenter.getInstance(pending.account);
-        ArrayList<MessageObject> objects = new ArrayList<>();
-        objects.add(pending.messageObject);
-        center.postNotificationName(NotificationCenter.replaceMessagesObjects, pending.dialogId, objects);
-
         MessagesStorage storage = MessagesStorage.getInstance(pending.account);
         storage.acknowledgeZenoraTextMessage(
                 pending.randomId, pending.dialogId, pending.localId, serverId,
                 serverDate, pending.replyToId, pending.clientMessageId, success -> {
                     if (!success) {
                         pending.resolved.set(false);
-                        message.id = previousId;
+                        message.id = pending.localId;
                         message.local_id = pending.localId;
                         message.send_state = MessageObject.MESSAGE_SEND_STATE_SEND_ERROR;
                         pending.messageObject.forceUpdate = true;
+                        center.postNotificationName(NotificationCenter.messageSendError, pending.localId);
+                        ArrayList<MessageObject> failedObjects = new ArrayList<>();
+                        failedObjects.add(pending.messageObject);
+                        center.postNotificationName(NotificationCenter.replaceMessagesObjects,
+                                pending.dialogId, failedObjects);
                         scheduleUnknownTextSend(pending,
                                 new IllegalStateException("Local message/outbox reconciliation failed."), false);
                         return;
@@ -1378,12 +1378,17 @@ public final class ZenoraHistoryController {
                         completed.put(pending.clientMessageId, serverId);
                         if (completed.size() > 512) completed.remove(completed.keySet().iterator().next());
                         // ACK bookkeeping is not proof that the message exists in the
-                        // current ChatActivity. Let history/live publication insert it;
-                        // Telegram's native server-ID reconciliation handles duplicates.
+                        // current ChatActivity. Live/history publication remains the
+                        // canonical source when it wins the race with the POST response.
                         Map<Long, Snapshot> accountCache = cache.get(pending.account);
                         if (accountCache != null) accountCache.remove(pending.dialogId);
                     }
 
+                    // Set the server timestamp/state only after SQLite has committed.
+                    // Keep message.id local: the native notification below owns remapping.
+                    message.date = serverDate;
+                    message.send_state = MessageObject.MESSAGE_SEND_STATE_SENT;
+                    pending.messageObject.forceUpdate = true;
                     center.postNotificationName(NotificationCenter.messageReceivedByServer,
                             pending.localId, serverId, null, pending.dialogId, 0L, -1, false);
                     center.postNotificationName(NotificationCenter.messageReceivedByServer2,
