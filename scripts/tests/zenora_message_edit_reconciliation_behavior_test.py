@@ -309,7 +309,7 @@ live_source = read_source(
 storage_source = read_source("TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java")
 
 listener_start = chat_source.find("didReceivedNotification_zenoraMessageEdited")
-listener_end = chat_source.find("@Override", listener_start)
+listener_end = chat_source.find("public void didReceivedNotification(int id", listener_start)
 chat_listener = chat_source[listener_start:listener_end if listener_end > listener_start else None]
 canonical_start = history_source.find("public static boolean applyCanonicalEditToObject")
 canonical_end = history_source.find("private static void postCanonicalEditToOpenChat", canonical_start)
