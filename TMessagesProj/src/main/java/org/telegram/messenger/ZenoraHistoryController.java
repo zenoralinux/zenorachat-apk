@@ -2019,12 +2019,21 @@ public final class ZenoraHistoryController {
      */
     public static void refreshEditedMessage(int account,long dialogId,long roomId,
                                             int messageId,EditRefreshCallback callback) {
-        if(messageId<=0||roomId<=0L||ZenoraChatController.getRoomIdForDialog(account,dialogId)!=roomId){
+        long expectedUserId=UserConfig.getInstance(account).getClientUserId();
+        if(messageId<=0||roomId<=0L||expectedUserId<=0L
+                ||ZenoraChatController.getRoomIdForDialog(account,dialogId)!=roomId
+                ||ZenoraApiClient.getCurrentUserId()!=expectedUserId){
             if(callback!=null)callback.onRefreshed(false,new IllegalArgumentException("Invalid Zenora conflict refresh identity"));
             return;
         }
         long beforeId=(long)messageId+1L;
         ZenoraApiClient.fetchBasicTextHistory(roomId,50,beforeId,(response,error)->{
+            if(UserConfig.getInstance(account).getClientUserId()!=expectedUserId
+                    ||ZenoraApiClient.getCurrentUserId()!=expectedUserId
+                    ||ZenoraChatController.getRoomIdForDialog(account,dialogId)!=roomId){
+                if(callback!=null)callback.onRefreshed(false,new IllegalStateException("Zenora account changed during conflict refresh"));
+                return;
+            }
             if(error!=null||response==null){
                 if(callback!=null)callback.onRefreshed(false,error!=null?error:
                         new IllegalStateException("Zenora returned an empty conflict refresh"));
@@ -2051,8 +2060,6 @@ public final class ZenoraHistoryController {
             String body=row.optString("text","");
             String editedAt=row.isNull("edited_at")?null:row.optString("edited_at","");
             long version=row.optLong("edit_version",0L);
-            ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account)
-                    .getEntities(new CharSequence[]{body},true);
             reconcileCanonicalEditPayload(account,dialogId,roomId,messageId,body,editedAt,version);
             if(callback!=null)callback.onRefreshed(true,null);
         });
