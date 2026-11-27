@@ -14228,6 +14228,7 @@ public class MessagesStorage extends BaseController {
             Exception failure = null;
             long committedCursor = -1L;
             try {
+                ensureZenoraPendingEditTable();
                 cursor = database.queryFinalized(
                         "SELECT last_event_id FROM zenora_message_mutation_cursor WHERE room_id = ? AND dialog_id = ? AND zenora_user_id = ?",
                         roomId, dialogId, zenoraUserId);
@@ -14330,11 +14331,15 @@ public class MessagesStorage extends BaseController {
                             if (editVersion > previousVersion
                                     || editVersion == previousVersion && eventId > previousEventId) {
                                 int entitySize = 4;
+                                int entityCount = 0;
                                 for (TLRPC.MessageEntity entity : pendingEntities) {
-                                    if (entity != null) entitySize += entity.getObjectSize();
+                                    if (entity != null) {
+                                        entitySize += entity.getObjectSize();
+                                        entityCount++;
+                                    }
                                 }
                                 NativeByteBuffer entityData = new NativeByteBuffer(entitySize);
-                                entityData.writeInt32(pendingEntities.size());
+                                entityData.writeInt32(entityCount);
                                 for (TLRPC.MessageEntity entity : pendingEntities) {
                                     if (entity != null) entity.serializeToStream(entityData);
                                 }
