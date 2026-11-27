@@ -142,7 +142,10 @@ public final class ZenoraMessageMutationController {
                 return false;
             }
         }
-        final String operationId = UUID.randomUUID().toString();
+        final String operationSeed = account + ":" + expectedUserId + ":" + roomId + ":"
+                + messageId + ":" + expectedEditVersion + ":" + (text == null ? "" : text);
+        final String operationId = UUID.nameUUIDFromBytes(
+                operationSeed.getBytes(java.nio.charset.Charset.forName("UTF-8"))).toString();
         ZenoraApiClient.editMessage(roomId, messageId, text, expectedEditVersion, expectedUserId,
                 operationId, (response, error) -> {
                     synchronized (inFlightEdits) {
