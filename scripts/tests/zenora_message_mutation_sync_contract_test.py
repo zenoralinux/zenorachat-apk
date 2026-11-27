@@ -27,8 +27,8 @@ poll_end = live.index("private static void handleResponse(", poll_start)
 poll = live[poll_start:poll_end]
 
 checks = {
-    "durable event cursor and deletion tombstones are migrated in SQLite v186": "user_version = 185" in migration and "user_version = 186" in migration and "zenora_message_mutation_cursor" in migration and "zenora_message_mutation_deleted" in migration,
-    "fresh database creation installs both event state tables before schema version 186": "LAST_DB_VERSION = 186" in storage and "CREATE TABLE zenora_message_mutation_cursor" in create_tables and "CREATE TABLE zenora_message_mutation_deleted" in create_tables,
+    "durable cursor, tombstones and pending edits migrate through SQLite v187": "user_version = 185" in migration and "user_version = 186" in migration and "user_version = 187" in migration and "zenora_message_mutation_cursor" in migration and "zenora_message_mutation_deleted" in migration and "zenora_message_mutation_pending_edit" in migration,
+    "fresh database creation installs all event state tables before schema version 187": "LAST_DB_VERSION = 187" in storage and "CREATE TABLE zenora_message_mutation_cursor" in create_tables and "CREATE TABLE zenora_message_mutation_deleted" in create_tables and "CREATE TABLE zenora_message_mutation_pending_edit" in create_tables,
     "cursor is isolated by room, dialog and Zenora account": "PRIMARY KEY(room_id, dialog_id, zenora_user_id)" in migration,
     "cursor load is persisted and not memory-only": "loadZenoraMessageMutationCursor" in storage and "SELECT last_event_id FROM zenora_message_mutation_cursor" in storage,
     "event apply validates expected durable cursor": "storedCursor != expectedAfterEventId" in apply,
@@ -41,8 +41,8 @@ checks = {
     "deleted parent tombstones are written inside the same transaction": "REPLACE INTO zenora_message_mutation_deleted" in apply and "deletion_event_id" in apply,
     "late edit events check persistent per-account deletion tombstones": "SELECT 1 FROM zenora_message_mutation_deleted" in apply and "alreadyDeletedLocally" in apply,
     "tombstoned edit previews are suppressed in native UI callback": "suppressedEditMessageIds" in live and "storedIds.addAll(suppressedEditMessageIds)" in live,
-    "database recovery handles older cursor-only and pre-cursor schemas": "version != 185" in migration and 'excludeTables.add("zenora_message_mutation_deleted")' in migration,
-    "database recovery preserves both mutation state tables on compatible backups": '"zenora_message_mutation_cursor"' in recovery_tables and '"zenora_message_mutation_deleted"' in recovery_tables,
+    "database recovery handles pre-pending schemas": "version != 186" in migration and 'excludeTables.add("zenora_message_mutation_deleted")' in migration and 'excludeTables.add("zenora_message_mutation_pending_edit")' in migration,
+    "database recovery preserves every mutation state table on compatible backups": '"zenora_message_mutation_cursor"' in recovery_tables and '"zenora_message_mutation_deleted"' in recovery_tables and '"zenora_message_mutation_pending_edit"' in recovery_tables,
     "stale edit event cannot downgrade local message": "message.zenoraEditVersion > editVersion" in apply and "editedMessages.add(message)" in apply,
     "personal and global deletes remove SQLite cache rows": "message.deleted_for_me" in apply and "message.deleted_for_all" in apply and "String[] tables = {\"messages_v2\", \"messages_topics\", \"media_v4\", \"media_topics\"}" in apply and 'DELETE FROM " + table + " WHERE uid = ? AND mid = ?' in apply,
     "dialog last-message pointer is recalculated after deletion": "UPDATE dialogs SET (last_mid, last_mid_group)" in apply,
@@ -60,7 +60,7 @@ checks = {
     "invisible events can advance cursor without looping": "scannedCount" in live and "next_after_event_id" in live,
     "event cursor is advanced only after successful SQLite commit": live.index("applyZenoraMessageMutationEvents(") < live.index("session.eventCursor = committedCursor"),
     "account switch and room mismatch stop event processing": "ZenoraApiClient.getCurrentUserId() != session.userId" in live and "getRoomIdForDialog(session.account, session.dialogId) != session.roomId" in live,
-    "edited reply previews use canonical body and version": "applyEditedMessageToCachedReplyPreview" in live and "applyEditedMessage(" in history,
+    "edited reply previews use the shared canonical reconciliation path": "reconcileCanonicalEditPayload" in live and "applyEditedMessageToCachedReplyPreview" in history and "rememberMessageEditMetadata" in history,
     "delete events use existing native cache/UI cleanup": "applyZenoraMessageDeletionLocally(session.dialogId, deletedIds)" in live,
     "new Android branch and release tag are registered": "feat/zenora-message-mutation-sync-android-20261126" in workflow and "zenora-message-mutation-sync-android-20261126" in workflow,
     "fast ARM64 release assets remain validated": "EXPECTED_ABIS=\"$ZENORA_ABIS\" bash scripts/validate-apk.sh debug" in workflow and "dist/SHA256SUMS" in workflow and "dist/BUILD-INFO.txt" in workflow,
