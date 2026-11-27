@@ -1436,13 +1436,21 @@ public final class ZenoraHistoryController {
             }
             ids.add((int) rawId);
             senderIds.add(senderId);
+            String editedAt = row.isNull("edited_at") ? null : row.optString("edited_at", "");
+            long editVersion = row.optLong("edit_version", 1L);
+            ZenoraMessageMutationController.EditMetadata cachedEdit =
+                    ZenoraMessageMutationController.getMessageEditMetadata(account, roomId, rawId);
+            if (cachedEdit != null && cachedEdit.body != null && cachedEdit.editVersion >= editVersion) {
+                body = cachedEdit.body;
+                editedAt = cachedEdit.editedAt;
+                editVersion = cachedEdit.editVersion;
+            }
             bodies.add(body);
             clientMessageIds.add((row.isNull("client_message_id") ? "" : row.optString("client_message_id", "")));
             replyToIds.add(replyToId);
             if (replyToId > 0) cacheReplyPreviewFromRow(account, dialogId, replyToId, row.optJSONObject("reply_preview"));
-            ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,rawId,
-                    row.isNull("edited_at") ? null : row.optString("edited_at", ""),
-                    row.optLong("edit_version", 1L));
+            ZenoraMessageMutationController.rememberMessageEditMetadata(
+                    account, roomId, rawId, editedAt, editVersion, body);
             dates.add(date);
             previousId = rawId;
         }
@@ -1658,6 +1666,26 @@ public final class ZenoraHistoryController {
         void onRefreshed(boolean updated, Exception error);
     }
 
+    /**
+     * Shared idempotent in-memory reconciliation for API acknowledgements and
+     * mutation events. Durable Event application is committed by MessagesStorage;
+     * this keeps cache/reply/dialog projections aligned with the same version.
+     */
+    public static void reconcileCanonicalEditPayload(int account, long dialogId, long roomId,
+                                                       int messageId, String body, String editedAt,
+                                                       long editVersion) {
+        if (messageId <= 0 || roomId <= 0L || editVersion <= 0L
+                || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+            return;
+        }
+        ZenoraMessageMutationController.rememberMessageEditMetadata(
+                account, roomId, messageId, editedAt, editVersion, body);
+        applyEditedMessageToCachedReplyPreview(
+                account, dialogId, roomId, messageId, body, editedAt, editVersion);
+        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+    }
+
     private static void updateEditedTextObject(MessageObject object, String body,
                                                ArrayList<TLRPC.MessageEntity> entities,
                                                String editedAt, long editVersion) {
@@ -1680,9 +1708,12 @@ public final class ZenoraHistoryController {
                 || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
             return false;
         }
+        if (target.messageOwner.zenoraEditVersion > editVersion) {
+            return false;
+        }
         updateEditedTextObject(target, body, entities, editedAt, editVersion);
         ZenoraMessageMutationController.rememberMessageEditMetadata(
-                account, roomId, target.getId(), editedAt, editVersion);
+                account, roomId, target.getId(), editedAt, editVersion, body);
 
         MessageObject cachedParent = getCachedReplyPreview(account, dialogId, target.getId());
         if (cachedParent == null) {
@@ -1735,6 +1766,8 @@ public final class ZenoraHistoryController {
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
             return false;
         }
+        ZenoraMessageMutationController.rememberMessageEditMetadata(
+                account, roomId, messageId, editedAt, editVersion, body);
         MessageObject cachedParent = getCachedReplyPreview(account, dialogId, messageId);
         if (cachedParent == null || cachedParent.messageOwner == null
                 || cachedParent.messageOwner.zenoraEditVersion > editVersion) return false;
