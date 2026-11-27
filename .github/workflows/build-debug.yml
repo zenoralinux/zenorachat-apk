@@ -148,6 +148,8 @@ jobs:
 
       - name: Test Zenora message mutation event synchronization contract
         run: python3 scripts/tests/zenora_message_mutation_sync_contract_test.py
+      - name: Test Zenora message edit reconciliation behavior in SQLite
+        run: python3 scripts/tests/zenora_message_edit_reconciliation_behavior_test.py
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.4
