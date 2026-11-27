@@ -112,7 +112,7 @@ def persist_api_ack(db, key, message_id, version, body):
     db.execute("BEGIN IMMEDIATE")
     try:
         row = db.execute(
-            "SELECT version FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
+            "SELECT version,body FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
             (*key, message_id)
         ).fetchone()
         if row is None:
