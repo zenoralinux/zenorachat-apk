@@ -25,10 +25,10 @@ index_sql = capture(
     MIGRATION, "history state index")
 
 assert migration_sql == fresh_sql, "fresh and upgraded history-state schemas diverged"
-assert "public final static int LAST_DB_VERSION = 186;" in STORAGE
+assert "public final static int LAST_DB_VERSION = 187;" in STORAGE
 assert "PRAGMA user_version = 183" in MIGRATION
-assert "PRAGMA user_version = 185" in MIGRATION and "PRAGMA user_version = 186" in MIGRATION
-assert "version != MessagesStorage.LAST_DB_VERSION && version != 185" in MIGRATION
+assert "PRAGMA user_version = 185" in MIGRATION and "PRAGMA user_version = 186" in MIGRATION and "PRAGMA user_version = 187" in MIGRATION
+assert "version != MessagesStorage.LAST_DB_VERSION && version != 186" in MIGRATION
 assert "version != 184 && version != 183 && version != 182" in MIGRATION
 assert 'excludeTables.add("zenora_history_state")' in MIGRATION
 assert '"zenora_outbox"' in STORAGE and '"zenora_history_state"' in STORAGE
