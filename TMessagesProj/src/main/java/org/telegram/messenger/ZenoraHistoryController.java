@@ -1600,11 +1600,13 @@ public final class ZenoraHistoryController {
                 ZenoraMessageMutationController.applyEditMetadata(
                         message, editMetadata.editedAt, editMetadata.editVersion);
             }
+            TLRPC.Message storageSnapshot = cloneMessageForStorage(account, message);
+            if (storageSnapshot == null) return -1L;
             MessageObject messageObject = new MessageObject(account, message, true, true);
             rememberLiveMessageObject(account, dialogId, messageObject);
             attachReplyPreview(account, dialogId, messageObject, replyToId);
             objects.add(messageObject);
-            stored.add(message);
+            stored.add(storageSnapshot);
             committedIds.add(messageId);
             committedCursor = messageId;
         }
@@ -1955,12 +1957,14 @@ public final class ZenoraHistoryController {
                 row.optLong("edit_version", 1L));
         if (message.params == null) message.params = new HashMap<>();
         message.params.put("zenora_room_id", String.valueOf(roomId));
+        TLRPC.Message storageSnapshot = cloneMessageForStorage(account, message);
+        if (storageSnapshot == null) return false;
         MessageObject object = new MessageObject(account, message, true, true);
         rememberLiveMessageObject(account, dialogId, object);
         attachReplyPreview(account, dialogId, object, replyToId);
 
         ArrayList<TLRPC.Message> stored = new ArrayList<>();
-        stored.add(message);
+        stored.add(storageSnapshot);
         ArrayList<MessageObject> objects = new ArrayList<>();
         objects.add(object);
         controller.updateInterfaceWithMessages(dialogId, objects, 0);
