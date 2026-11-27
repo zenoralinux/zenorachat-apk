@@ -36,7 +36,8 @@ public class MessageCustomParamsHelper {
             message.translatedRichMessage == null &&
             message.errorAllowedPriceStars == 0 &&
             message.errorNewPriceStars == 0 &&
-            message.zenoraEditVersion == 0L
+            message.zenoraEditVersion == 0L &&
+            message.zenoraEditedAt == null
         );
     }
 
@@ -56,6 +57,7 @@ public class MessageCustomParamsHelper {
         toMessage.errorAllowedPriceStars = fromMessage.errorAllowedPriceStars;
         toMessage.errorNewPriceStars = fromMessage.errorNewPriceStars;
         toMessage.zenoraEditVersion = fromMessage.zenoraEditVersion;
+        toMessage.zenoraEditedAt = fromMessage.zenoraEditedAt;
         toMessage.translatedVoiceTranscription = fromMessage.translatedVoiceTranscription;
         toMessage.summarizedOpen = fromMessage.summarizedOpen;
         toMessage.summaryText = fromMessage.summaryText;
@@ -73,6 +75,7 @@ public class MessageCustomParamsHelper {
         switch (version) {
             case 1:
             case 2:
+            case 3:
                 params = new Params_v1(message, version);
                 break;
             default:
@@ -85,7 +88,8 @@ public class MessageCustomParamsHelper {
         if (isEmpty(message)) {
             return null;
         }
-        TLObject params = new Params_v1(message, message.zenoraEditVersion > 0L ? 2 : 1);
+        int paramsVersion = message.zenoraEditedAt != null ? 3 : message.zenoraEditVersion > 0L ? 2 : 1;
+        TLObject params = new Params_v1(message, paramsVersion);
         try {
             NativeByteBuffer nativeByteBuffer = new NativeByteBuffer(params.getObjectSize());
             params.serializeToStream(nativeByteBuffer);
@@ -180,6 +184,9 @@ public class MessageCustomParamsHelper {
             if (version >= 2) {
                 stream.writeInt64(message.zenoraEditVersion);
             }
+            if (version >= 3) {
+                stream.writeString(message.zenoraEditedAt == null ? "" : message.zenoraEditedAt);
+            }
         }
 
         @Override
@@ -237,6 +244,10 @@ public class MessageCustomParamsHelper {
             }
             if (version >= 2) {
                 message.zenoraEditVersion = stream.readInt64(exception);
+            }
+            if (version >= 3) {
+                String editedAt = stream.readString(exception);
+                message.zenoraEditedAt = editedAt == null || editedAt.isEmpty() ? null : editedAt;
             }
         }
 
