@@ -235,4 +235,56 @@ finally:
     except FileNotFoundError:
         pass
 
-print("OK: SQLite behavioral reconciliation scenarios passed.")
+# Source-wiring regression: a history/SQLite MessageObject can be absent from
+# liveMessageObjects while still being present in ChatActivity's active message
+# list. The API acknowledgement and Event path must converge on the same object
+# updater and that updater must persist a storage-owned snapshot.
+def read_source(relative_path):
+    with open(relative_path, "r", encoding="utf-8") as source_file:
+        return source_file.read()
+
+history_source = read_source(
+    "TMessagesProj/src/main/java/org/telegram/messenger/ZenoraHistoryController.java"
+)
+chat_source = read_source("TMessagesProj/src/main/java/org/telegram/ui/ChatActivity.java")
+mutation_source = read_source(
+    "TMessagesProj/src/main/java/org/telegram/messenger/ZenoraMessageMutationController.java"
+)
+live_source = read_source(
+    "TMessagesProj/src/main/java/org/telegram/messenger/ZenoraLiveMessageSyncController.java"
+)
+
+listener_start = chat_source.find("didReceivedNotification_zenoraMessageEdited")
+listener_end = chat_source.find("@Override", listener_start)
+chat_listener = chat_source[listener_start:listener_end if listener_end > listener_start else None]
+canonical_start = history_source.find("public static boolean applyCanonicalEditToObject")
+canonical_end = history_source.find("private static void postCanonicalEditToOpenChat", canonical_start)
+canonical_method = history_source[canonical_start:canonical_end]
+event_apply_start = live_source.find("private static void applyEditedMessages")
+event_apply_end = live_source.find("private static void fail", event_apply_start)
+event_apply_method = live_source[event_apply_start:event_apply_end]
+
+check(
+    "NotificationCenter.zenoraMessageEdited" in chat_source
+    and "findActiveMessage" in chat_listener
+    and "messages" in chat_listener
+    and "applyCanonicalEditToObject" in chat_listener,
+    "ChatActivity locates a SQLite/history-loaded message even when liveMessageObjects has no entry",
+)
+check(
+    "putMessages(stored" in canonical_method and "cloneMessageForStorage" in canonical_method,
+    "the shared active-object edit path persists an immutable SQLite snapshot",
+)
+check(
+    "reconcileCanonicalEditPayload" in mutation_source
+    and "applyEditedMessage(" in event_apply_method
+    and "applyCanonicalEditToObject" in history_source,
+    "API acknowledgement and Event application converge on the canonical object updater",
+)
+check(
+    '"EDIT_VERSION_CONFLICT".equals' in mutation_source
+    and "refreshEditedMessage(account,dialogId,roomId" in mutation_source,
+    "EDIT_VERSION_CONFLICT fetches and applies the authoritative server version",
+)
+
+print("OK: SQLite and live-UI reconciliation scenarios passed.")
