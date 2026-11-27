@@ -110,6 +110,13 @@ def reconcile_api_response(db, key, message_id, version, body):
 def insert_history_message(db, key, message_id, version, body):
     db.execute("BEGIN IMMEDIATE")
     try:
+        current = db.execute(
+            "SELECT version,body FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
+            (*key, message_id)
+        ).fetchone()
+        if current is not None and current["version"] > version:
+            # Delayed history pages must not downgrade a row already edited in SQLite.
+            version, body = current["version"], current["body"]
         pending = db.execute(
             "SELECT version,body FROM pending_edit WHERE account=? AND room=? AND dialog=? AND message=?",
             (*key, message_id)
@@ -183,6 +190,13 @@ try:
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
     check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
           "older event cannot overwrite a newer stored message")
+
+    # A delayed history response may arrive after the event transaction already
+    # updated an existing SQLite row. The storage write must preserve that newer row.
+    insert_history_message(db, key, 42, 2, "delayed old history body")
+    row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
+    check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
+          "delayed stale history write cannot downgrade a newer canonical SQLite row")
 
     # Out-of-order and duplicate event delivery never advances the durable cursor.
     try:
