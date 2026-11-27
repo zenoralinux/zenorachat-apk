@@ -1772,6 +1772,12 @@ public final class ZenoraHistoryController {
         if(newest!=null&&newest.editVersion>editVersion&&newest.body!=null){
             body=newest.body;editedAt=newest.editedAt;editVersion=newest.editVersion;
         }
+        ArrayList<TLRPC.MessageEntity> canonicalEntities=MediaDataController.getInstance(account)
+                .getEntities(new CharSequence[]{body},true);
+        if(canonicalEntities==null)canonicalEntities=new ArrayList<>();
+        MessagesStorage.getInstance(account).persistZenoraMessageEditPayload(
+                roomId,dialogId,UserConfig.getInstance(account).getClientUserId(),
+                messageId,editVersion,body,editedAt,canonicalEntities);
         MessageObject live=getLiveMessageObject(account,dialogId,messageId);
         boolean applied=false;
         String liveRoom=live==null||live.messageOwner==null||live.messageOwner.params==null?null:live.messageOwner.params.get("zenora_room_id");
@@ -1779,13 +1785,11 @@ public final class ZenoraHistoryController {
             if(live.messageOwner.zenoraEditVersion>editVersion){
                 body=live.messageOwner.message;editVersion=live.messageOwner.zenoraEditVersion;editedAt=null;
             }
-            ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account).getEntities(new CharSequence[]{body},true);
-            applied=applyEditedMessage(account,dialogId,roomId,live,body,entities,editedAt,editVersion);
+            applied=applyEditedMessage(account,dialogId,roomId,live,body,canonicalEntities,editedAt,editVersion);
         }
         if(!applied)applied=applyEditedMessageToCachedReplyPreview(account,dialogId,roomId,messageId,body,editedAt,editVersion);
         if(!applied){
-            ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account).getEntities(new CharSequence[]{body},true);
-            postCanonicalEditToOpenChat(account,dialogId,roomId,messageId,body,entities,editedAt,editVersion);
+            postCanonicalEditToOpenChat(account,dialogId,roomId,messageId,body,canonicalEntities,editedAt,editVersion);
         }
         NotificationCenter.getInstance(account).postNotificationNameOnUIThread(NotificationCenter.dialogsNeedReload);
     }
