@@ -322,8 +322,9 @@ check(
     "NotificationCenter.zenoraMessageEdited" in chat_source
     and "findActiveMessage" in chat_listener
     and "messages" in chat_listener
-    and "applyCanonicalEditToObject" in chat_listener,
-    "ChatActivity locates a SQLite/history-loaded message even when liveMessageObjects has no entry",
+    and "applyCanonicalEditToObject" in chat_listener
+    and "NotificationCenter.replaceMessagesObjects" in chat_listener,
+    "ChatActivity locates a SQLite/history-loaded message even when liveMessageObjects has no entry and uses native RecyclerView replacement",
 )
 check(
     "putMessages(stored" in canonical_method and "cloneMessageForStorage" in canonical_method,
