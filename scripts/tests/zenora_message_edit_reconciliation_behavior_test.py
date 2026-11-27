@@ -358,7 +358,9 @@ check(
     and "TextUtils.equals(storedMessage.message,body)" in storage_source
     and "zenora_message_mutation_pending_edit" in storage_source
     and "bindLong(6,0L)" in storage_source
-    and "putMessagesInternal(updated,false,true,0,false,ChatActivity.MODE_DEFAULT,0L)" in storage_source,
+    and "putMessagesInternal(updated,false,true,0,false,ChatActivity.MODE_DEFAULT,0L)" in storage_source
+    and "postZenoraEditedDialogPreview(roomId,dialogId,zenoraUserId,storedMessage)" in storage_source
+    and "updateZenoraDialogPreview(dialogId,previewObject)" in storage_source,
     "API acknowledgement persists either the existing message row or an account/room-scoped pending edit in SQLite",
 )
 check(
