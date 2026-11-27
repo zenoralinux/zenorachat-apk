@@ -27561,6 +27561,32 @@ public class ChatActivity extends BaseFragment implements
                 pinnedMessageObjects.put(messageObject.getId(), messageObject);
             }
             MessageObject old = messagesDict[loadIndex].get(messageObject.getId());
+            if (loadIndex == 0 && messageObject.getId() > 0
+                    && messageObject.getDialogId() == dialog_id) {
+                // The primary visible list is authoritative for an open chat. A history
+                // page or adapter transition can temporarily leave messagesDict out of
+                // sync with the actual MessageObject instance rendered on screen.
+                MessageObject visibleMessage = null;
+                for (int i = 0; i < messages.size(); i++) {
+                    MessageObject candidate = messages.get(i);
+                    if (candidate != null && candidate.getId() == messageObject.getId()
+                            && candidate.getDialogId() == dialog_id) {
+                        visibleMessage = candidate;
+                        break;
+                    }
+                }
+                if (visibleMessage != null && old != visibleMessage) {
+                    old = visibleMessage;
+                    messagesDict[loadIndex].put(messageObject.getId(), visibleMessage);
+                    FileLog.w("[ZenoraChat] Repaired primary live-message index before edit replacement; dialog="
+                            + dialog_id + ", message=" + messageObject.getId());
+                }
+            }
+            if (old == null && messageObject.getId() > 0) {
+                FileLog.w("[ZenoraChat] Live message replacement target missing; dialog="
+                        + messageObject.getDialogId() + ", message=" + messageObject.getId()
+                        + ", loadIndex=" + loadIndex);
+            }
             if (messageObject.getId() > 0 && old == null && UserObject.isBot(currentUser)) {
                 old = BotForumHelper.getInstance(currentAccount).onBotForumDraftCheckNewMessages(currentUser.id, (int) getTopicId(), messageObject.getId(), messageObject.messageText.toString());
                 if (old != null) {
