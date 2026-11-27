@@ -236,9 +236,9 @@ try:
           == "canonical v4", "API-response-after-Event is idempotent")
 
     # Equal version but different body must reconcile; higher local version beats stale API/Event.
-    apply_event(db, key, 4, 42, 4, "reconciled equal-version payload")
+    apply_event(db, key, 4, 42, 4, "canonical v4 same-version correction")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
-    check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
+    check((row["version"], row["body"]) == (4, "canonical v4 same-version correction"),
           "equal version with different content is reconciled")
     persist_api_ack(db, key, 42, 4, "canonical v4 same-version correction")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
@@ -247,14 +247,14 @@ try:
     reconcile_api_response(db, key, 42, 2, "stale API response v2")
     apply_event(db, key, 5, 42, 2, "stale Event v2")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
-    check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
+    check((row["version"], row["body"]) == (4, "canonical v4 same-version correction"),
           "older event cannot overwrite a newer stored message")
 
     # A delayed history response may arrive after the event transaction already
     # updated an existing SQLite row. The storage write must preserve that newer row.
     insert_history_message(db, key, 42, 2, "delayed old history body")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
-    check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
+    check((row["version"], row["body"]) == (4, "canonical v4 same-version correction"),
           "delayed stale history write cannot downgrade a newer canonical SQLite row")
 
     # Out-of-order and duplicate event delivery never advances the durable cursor.
@@ -285,7 +285,7 @@ try:
     # Account/room isolation and offline behavior.
     apply_event(db, (2, 7, 101), 1, 42, 2, "other account")
     check(db.execute("SELECT body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()[0]
-          == "reconciled equal-version payload", "other account's mutation cannot alter this account's message")
+          == "canonical v4 same-version correction", "other account's mutation cannot alter this account's message")
     check(cursor(db, (1, 7, 101)) == 5, "offline/no-event state leaves the active account cursor untouched")
     db.close()
 finally:
