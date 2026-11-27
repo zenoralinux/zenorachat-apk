@@ -14255,6 +14255,20 @@ public class MessagesStorage extends BaseController {
      * native message indexes, local params and dialog projections keep their
      * normal storage semantics.
      */
+    private void postZenoraEditedDialogPreview(long roomId,long dialogId,long zenoraUserId,
+                                               TLRPC.Message message) {
+        if(message==null)return;
+        message.dialog_id=dialogId;
+        AndroidUtilities.runOnUIThread(()->{
+            if(UserConfig.getInstance(currentAccount).getClientUserId()!=zenoraUserId
+                    ||ZenoraChatController.getRoomIdForDialog(currentAccount,dialogId)!=roomId){
+                return;
+            }
+            MessageObject previewObject=new MessageObject(currentAccount,message,true,true);
+            MessagesController.getInstance(currentAccount).updateZenoraDialogPreview(dialogId,previewObject);
+        });
+    }
+
     public void persistZenoraMessageEditPayload(long roomId,long dialogId,long zenoraUserId,
             int messageId,long editVersion,String body,String editedAt,
             ArrayList<TLRPC.MessageEntity> entities) {
@@ -14308,6 +14322,7 @@ public class MessagesStorage extends BaseController {
                     if(storedMessage.zenoraEditVersion>editVersion||sameCanonicalPayload){
                         database.commitTransaction();
                         inTransaction=false;
+                        postZenoraEditedDialogPreview(roomId,dialogId,zenoraUserId,storedMessage);
                         return;
                     }
                     storedMessage.id=messageId;
@@ -14374,6 +14389,9 @@ public class MessagesStorage extends BaseController {
                 }
                 database.commitTransaction();
                 inTransaction=false;
+                if(storedMessage!=null){
+                    postZenoraEditedDialogPreview(roomId,dialogId,zenoraUserId,storedMessage);
+                }
             }catch(Exception error){
                 if(inTransaction){
                     try{database.rollbackTransaction();}catch(Exception rollbackError){FileLog.e(rollbackError);}
