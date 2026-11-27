@@ -81,6 +81,29 @@ def apply_event(db, key, event_id, message_id, version, body, fail_before_cursor
         db.rollback()
         raise
 
+def reconcile_api_response(db, key, message_id, version, body):
+    """The API callback and Event callback share this version-aware projection."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        row = db.execute(
+            "SELECT version FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
+            (*key, message_id)
+        ).fetchone()
+        if row is None:
+            db.execute(
+                "INSERT INTO messages VALUES(?,?,?,?,?,?)",
+                (*key, message_id, version, body)
+            )
+        elif version >= row["version"]:
+            db.execute(
+                "UPDATE messages SET version=?,body=? WHERE account=? AND room=? AND dialog=? AND message=?",
+                (version, body, *key, message_id)
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
 def insert_history_message(db, key, message_id, version, body):
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -132,34 +155,41 @@ try:
     check(db.execute("SELECT COUNT(*) FROM pending_edit WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()[0] == 0,
           "pending event is removed only after canonical history row is stored")
 
-    # Event/API response order: same canonical payload is idempotent either way.
+    # API response before Event: the API callback is projected first, then the
+    # durable Event arrives with the same canonical version and body.
+    reconcile_api_response(db, key, 42, 3, "canonical v3")
+    check(db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()["body"]
+          == "canonical v3", "API-response-before-Event updates the active canonical message")
     apply_event(db, key, 2, 42, 3, "canonical v3")
     check(db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()["body"]
-          == "canonical v3", "Event-first canonical edit is applied")
-    # Simulate late API response for the same version and same payload.
-    apply_event(db, key, 3, 42, 3, "canonical v3")
-    check(db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()["body"]
-          == "canonical v3", "API-response-after-Event replay keeps the same canonical edit")
+          == "canonical v3", "Event-after-API-response is idempotent")
 
-    # Equal version but different body must reconcile; higher local version beats stale event.
-    apply_event(db, key, 4, 42, 3, "reconciled equal-version payload")
+    # Event first, then the API callback: same version/body must remain stable.
+    apply_event(db, key, 3, 42, 4, "canonical v4")
+    reconcile_api_response(db, key, 42, 4, "canonical v4")
+    check(db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()["body"]
+          == "canonical v4", "API-response-after-Event is idempotent")
+
+    # Equal version but different body must reconcile; higher local version beats stale API/Event.
+    apply_event(db, key, 4, 42, 4, "reconciled equal-version payload")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
     check((row["version"], row["body"]) == (3, "reconciled equal-version payload"),
           "equal version with different content is reconciled")
-    apply_event(db, key, 5, 42, 2, "stale v2")
+    reconcile_api_response(db, key, 42, 2, "stale API response v2")
+    apply_event(db, key, 5, 42, 2, "stale Event v2")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
     check((row["version"], row["body"]) == (3, "reconciled equal-version payload"),
           "older event cannot overwrite a newer stored message")
 
     # Out-of-order and duplicate event delivery never advances the durable cursor.
     try:
-        apply_event(db, key, 7, 42, 4, "gap")
+        apply_event(db, key, 7, 42, 5, "gap")
         raise AssertionError("out-of-order event accepted")
     except ValueError as exc:
         check(str(exc) == "out-of-order-event" and cursor(db, key) == 5,
               "out-of-order Event is rejected without moving cursor")
     try:
-        apply_event(db, key, 5, 42, 4, "duplicate")
+        apply_event(db, key, 5, 42, 5, "duplicate")
         raise AssertionError("duplicate event accepted")
     except ValueError as exc:
         check(str(exc) == "duplicate-or-stale-event" and cursor(db, key) == 5,
