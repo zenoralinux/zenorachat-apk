@@ -105,8 +105,10 @@ public final class ZenoraMessageMutationController {
         if (message == null || editVersion <= 0L || editVersion > Integer.MAX_VALUE
                 || message.zenoraEditVersion > editVersion) return;
         message.zenoraEditVersion = editVersion;
-        int editDate = TextUtils.isEmpty(editedAt) ? 0 : ZenoraChatController.parseHistoryDate(editedAt);
-        message.edit_date = Math.max(0, editDate);
+        if (!TextUtils.isEmpty(editedAt)) {
+            int editDate = ZenoraChatController.parseHistoryDate(editedAt);
+            if (editDate > 0) message.edit_date = editDate;
+        }
         if (message.edit_date > 0) {
             message.flags |= TLRPC.MESSAGE_FLAG_EDITED;
             message.edit_hide = false;
