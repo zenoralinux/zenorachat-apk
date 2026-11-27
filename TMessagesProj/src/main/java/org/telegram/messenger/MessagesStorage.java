@@ -14111,7 +14111,7 @@ public class MessagesStorage extends BaseController {
         });
     }
 
-    private void ensureZenoraPendingEditTable() {
+    private void ensureZenoraPendingEditTable() throws Exception {
         if (zenoraPendingEditTableReady) return;
         database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_pending_edit (" +
                 "room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, " +
@@ -14185,7 +14185,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    private void deletePendingZenoraMessageEdit(TLRPC.Message message) {
+    private void deletePendingZenoraMessageEdit(TLRPC.Message message) throws Exception {
         if (message == null || message.id <= 0 || message.dialog_id == 0L) return;
         long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, message.dialog_id);
         long userId = UserConfig.getInstance(currentAccount).getClientUserId();
