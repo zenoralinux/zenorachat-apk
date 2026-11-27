@@ -151,6 +151,19 @@ public final class ZenoraMessageMutationController {
                     synchronized (inFlightEdits) {
                         inFlightEdits.remove(key);
                     }
+                    if(error instanceof ZenoraApiClient.ApiException
+                            &&"EDIT_VERSION_CONFLICT".equals(((ZenoraApiClient.ApiException)error).errorCode)){
+                        final Exception conflictError=error;
+                        ZenoraHistoryController.refreshEditedMessage(account,dialogId,roomId,(int)messageId,
+                                (updated,refreshError)->{
+                                    if(refreshError!=null){
+                                        FileLog.w("[ZenoraChat] Edit-version conflict refresh failed; dialog="
+                                                +dialogId+", message="+messageId+", reason="+refreshError.getMessage());
+                                    }
+                                    if(callback!=null)callback.onComplete(null,conflictError);
+                                });
+                        return;
+                    }
                     if (error == null && response != null
                             && isCurrentZenoraRoom(account, dialogId, roomId, expectedUserId)) {
                         JSONObject message = response.optJSONObject("message");
