@@ -95,9 +95,10 @@ public final class ZenoraMessageMutationController {
 
     public static long getExpectedEditVersion(int account, long roomId, MessageObject object) {
         if (object == null || object.messageOwner == null) return 0L;
-        if (object.messageOwner.zenoraEditVersion > 0L) return object.messageOwner.zenoraEditVersion;
+        long version = Math.max(0L, object.messageOwner.zenoraEditVersion);
         EditMetadata metadata = getMessageEditMetadata(account, roomId, object.getId());
-        return metadata != null && metadata.editVersion > 0L ? metadata.editVersion : 1L;
+        if (metadata != null) version = Math.max(version, metadata.editVersion);
+        return version > 0L ? version : 1L;
     }
 
     public static void applyEditMetadata(TLRPC.Message message, String editedAt, long editVersion) {
@@ -145,7 +146,8 @@ public final class ZenoraMessageMutationController {
                     synchronized (inFlightEdits) {
                         inFlightEdits.remove(key);
                     }
-                    if (error == null && response != null) {
+                    if (error == null && response != null
+                            && isCurrentZenoraRoom(account, dialogId, roomId, expectedUserId)) {
                         JSONObject message = response.optJSONObject("message");
                         if (message != null) {
                             String canonicalBody = message.optString("text", "");
