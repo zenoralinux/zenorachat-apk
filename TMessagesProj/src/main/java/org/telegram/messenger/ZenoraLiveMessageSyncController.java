@@ -336,6 +336,7 @@ public final class ZenoraLiveMessageSyncController {
                     }
 
                     applyEditedMessages(session, page.events, editedMessages, suppressedEditIds);
+                    refreshEditedDialogPreviewIfNeeded(session, page.events, committedMessageCursor);
                     if (deletedIds != null && !deletedIds.isEmpty()) {
                         TLRPC.Dialog dialogBeforeDelete = MessagesController.getInstance(session.account)
                                 .getDialog(session.dialogId);
@@ -361,6 +362,23 @@ public final class ZenoraLiveMessageSyncController {
                         scheduleLocked(session, hasMoreMessages || page.hasMore ? 0L : POLL_INTERVAL_MS);
                     }
                 });
+    }
+
+    private static void refreshEditedDialogPreviewIfNeeded(Session session, JSONArray events,
+                                                               long expectedMessageCursor) {
+        if (events == null) return;
+        TLRPC.Dialog dialog = MessagesController.getInstance(session.account).getDialog(session.dialogId);
+        if (dialog == null || dialog.top_message <= 0) return;
+        for (int i = 0; i < events.length(); i++) {
+            JSONObject event = events.optJSONObject(i);
+            if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
+            if (event.optLong("message_id", 0L) == dialog.top_message) {
+                // Refresh only the authoritative tail when the edited row is the
+                // dialog preview. This is a one-shot refresh, not another poller.
+                refreshLastServerPreview(session, expectedMessageCursor, new ArrayList<>());
+                return;
+            }
+        }
     }
 
     private static void refreshLastServerPreview(Session session, long expectedMessageCursor,
@@ -474,17 +492,8 @@ public final class ZenoraLiveMessageSyncController {
     private static void applyEditedMessages(Session session, JSONArray events,
                                             ArrayList<TLRPC.Message> messages,
                                             ArrayList<Integer> suppressedEditMessageIds) {
-        HashMap<String, JSONObject> metadata = new HashMap<>();
         HashSet<Integer> storedIds = new HashSet<>();
         if (suppressedEditMessageIds != null) storedIds.addAll(suppressedEditMessageIds);
-        for (int i = 0; i < events.length(); i++) {
-            JSONObject event = events.optJSONObject(i);
-            if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
-            JSONObject payload = event.optJSONObject("payload");
-            if (payload == null) continue;
-            String key = event.optLong("message_id", 0L) + ":" + payload.optLong("edit_version", 0L);
-            metadata.put(key, payload);
-        }
         if (messages != null) {
             for (TLRPC.Message message : messages) {
                 if (message == null || message.id <= 0) continue;
@@ -493,22 +502,20 @@ public final class ZenoraLiveMessageSyncController {
                     continue;
                 }
                 storedIds.add(message.id);
-                String key = message.id + ":" + message.zenoraEditVersion;
-                JSONObject payload = metadata.get(key);
-                if (payload == null) continue;
-                String body = payload.optString("text", message.message);
-                String editedAt = payload.optString("edited_at", "");
-                ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(session.account)
-                        .getEntities(new CharSequence[]{body}, true);
+                // SQLite has already selected the newest canonical row by version.
+                // Publish that row even when it is newer than the Event page.
                 MessageObject object = new MessageObject(session.account, message, true, true);
                 boolean updated = ZenoraHistoryController.applyEditedMessage(
                         session.account, session.dialogId, session.roomId, object,
-                        body, entities, editedAt, message.zenoraEditVersion);
+                        message.message, message.entities,
+                        message.edit_date > 0 ? String.valueOf(message.edit_date) : null,
+                        message.zenoraEditVersion);
                 if (!updated) FileLog.w("[ZenoraChat] Stored edited message could not refresh active UI; id=" + message.id);
             }
         }
-        // A reply parent can be cached as a lightweight preview without its full
-        // row in messages_v2; keep that preview and all dependent replies current.
+        // Missing local rows are represented by durable pending records in SQLite.
+        // This common payload path also reconciles reply previews and the history
+        // cache, so a later API response/Event replay is idempotent.
         for (int i = 0; i < events.length(); i++) {
             JSONObject event = events.optJSONObject(i);
             if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
@@ -516,7 +523,7 @@ public final class ZenoraLiveMessageSyncController {
             if (messageId <= 0 || storedIds.contains(messageId)) continue;
             JSONObject payload = event.optJSONObject("payload");
             if (payload == null) continue;
-            ZenoraHistoryController.applyEditedMessageToCachedReplyPreview(
+            ZenoraHistoryController.reconcileCanonicalEditPayload(
                     session.account, session.dialogId, session.roomId, messageId,
                     payload.optString("text", ""), payload.optString("edited_at", ""),
                     payload.optLong("edit_version", 0L));
