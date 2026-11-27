@@ -173,7 +173,7 @@ try:
     # Equal version but different body must reconcile; higher local version beats stale API/Event.
     apply_event(db, key, 4, 42, 4, "reconciled equal-version payload")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
-    check((row["version"], row["body"]) == (3, "reconciled equal-version payload"),
+    check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
           "equal version with different content is reconciled")
     reconcile_api_response(db, key, 42, 2, "stale API response v2")
     apply_event(db, key, 5, 42, 2, "stale Event v2")
