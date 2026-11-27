@@ -1762,6 +1762,15 @@ public class DatabaseMigrationHelper {
             version = 186;
         }
 
+        if (version == 186) {
+            // Keep edits received before their message row exists across history
+            // re-entry and compatible database backup restoration.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_message_mutation_pending_edit(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, edit_version INTEGER NOT NULL, event_id INTEGER NOT NULL, body TEXT NOT NULL, edited_at TEXT NOT NULL, entities BLOB NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_mutation_pending_user_idx ON zenora_message_mutation_pending_edit(zenora_user_id, room_id, message_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 187").stepThis().dispose();
+            version = 187;
+        }
+
         return version;
     }
 
@@ -1824,8 +1833,8 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION && version != 185
-                    && version != 184 && version != 183 && version != 182) {
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 186
+                    && version != 185 && version != 184 && version != 183 && version != 182) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
             }
@@ -1834,6 +1843,7 @@ public class DatabaseMigrationHelper {
             if (version < 183) excludeTables.add("zenora_history_state");
             if (version < 185) excludeTables.add("zenora_message_mutation_cursor");
             if (version < 186) excludeTables.add("zenora_message_mutation_deleted");
+            if (version < 187) excludeTables.add("zenora_message_mutation_pending_edit");
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
             excludeTables.add("scheduled_messages_v2");
