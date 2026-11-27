@@ -106,6 +106,7 @@ public final class ZenoraMessageMutationController {
                 || message.zenoraEditVersion > editVersion) return;
         message.zenoraEditVersion = editVersion;
         if (!TextUtils.isEmpty(editedAt)) {
+            message.zenoraEditedAt = editedAt;
             int editDate = ZenoraChatController.parseHistoryDate(editedAt);
             if (editDate > 0) message.edit_date = editDate;
         }
