@@ -14135,6 +14135,46 @@ public class MessagesStorage extends BaseController {
         if (roomId <= 0L || userId <= 0L) return false;
 
         ensureZenoraPendingEditTable();
+
+        // A delayed history/API write must not replace a newer mutation that has
+        // already reached messages_v2. Both reads run on storageQueue, so this
+        // comparison and the subsequent REPLACE in putMessagesInternal are ordered.
+        SQLiteCursor current = null;
+        try {
+            current = database.queryFinalized(
+                    "SELECT data, custom_params FROM messages_v2 WHERE uid = ? AND mid = ? LIMIT 1",
+                    message.dialog_id, message.id);
+            if (current.next()) {
+                NativeByteBuffer data = current.byteBufferValue(0);
+                TLRPC.Message stored = null;
+                if (data != null) {
+                    stored = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                    if (stored != null) {
+                        stored.readAttachPath(data, getUserConfig().clientUserId);
+                    }
+                    data.reuse();
+                }
+                NativeByteBuffer customParams = current.byteBufferValue(1);
+                if (customParams != null) {
+                    if (stored != null) MessageCustomParamsHelper.readLocalParams(stored, customParams);
+                    customParams.reuse();
+                }
+                if (stored != null && stored.zenoraEditVersion > Math.max(0L, message.zenoraEditVersion)) {
+                    message.message = stored.message;
+                    message.entities = stored.entities == null
+                            ? new ArrayList<>() : new ArrayList<>(stored.entities);
+                    if (message.entities.isEmpty()) message.flags &= ~(1 << 7);
+                    else message.flags |= 1 << 7;
+                    message.edit_date = stored.edit_date;
+                    message.edit_hide = stored.edit_hide;
+                    ZenoraMessageMutationController.applyEditMetadata(
+                            message, null, stored.zenoraEditVersion);
+                }
+            }
+        } finally {
+            if (current != null) current.dispose();
+        }
+
         SQLiteCursor pending = null;
         try {
             pending = database.queryFinalized(
@@ -14169,8 +14209,9 @@ public class MessagesStorage extends BaseController {
                 throw new IllegalStateException("Pending Zenora edit payload is invalid");
             }
 
-            // A newer row wins. Equal-version/different-body data is deliberately
-            // reconciled from the later durable event instead of silently ignored.
+            // A pending event is applied only if it is at least as new as both
+            // the incoming history row and any canonical row already in SQLite.
+            // Equal versions remain reconcilable for Stage 1's idempotent event policy.
             if (pendingVersion >= Math.max(0L, message.zenoraEditVersion)) {
                 message.message = body;
                 message.entities = entities;
