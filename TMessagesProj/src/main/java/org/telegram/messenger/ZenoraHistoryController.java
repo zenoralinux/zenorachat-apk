@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
@@ -27,6 +28,7 @@ public final class ZenoraHistoryController {
     private static final Object lock = new Object();
     private static final Map<Integer, Map<Long, Snapshot>> cache = new HashMap<>();
     private static final Map<Integer, Map<Long, HashMap<Long, MessageObject>>> replyPreviewCache = new HashMap<>();
+    private static final Map<Integer, Map<Long, HashMap<Long, MessageObject>>> liveMessageObjects = new HashMap<>();
     private static final Map<Integer, Map<Long, HashMap<Long, ArrayList<MessageObject>>>> replyPreviewOwners = new HashMap<>();
     private static final Map<Integer, Map<Long, ArrayList<Target>>> inFlight = new HashMap<>();
     private static final Map<Integer, Map<Long, Long>> initialRequestIds = new HashMap<>();
@@ -180,6 +182,7 @@ public final class ZenoraHistoryController {
             inFlight.remove(account);
             initialRequestIds.remove(account);
             olderStates.remove(account);
+            liveMessageObjects.remove(account);
             pendingTextQueues.remove(account);
             activeTextSendRooms.remove(account);
             pendingTextByClientId.remove(account);
@@ -467,6 +470,32 @@ public final class ZenoraHistoryController {
         message.reply_to = new TLRPC.TL_messageReplyHeader();
         message.reply_to.flags |= 16;
         message.reply_to.reply_to_msg_id = (int) replyToId;
+    }
+
+    private static void rememberLiveMessageObject(int account, long dialogId, MessageObject object) {
+        if (object == null || object.messageOwner == null || object.getId() <= 0) return;
+        synchronized (lock) {
+            Map<Long, HashMap<Long, MessageObject>> accountObjects =
+                    liveMessageObjects.computeIfAbsent(account, ignored -> new HashMap<>());
+            HashMap<Long, MessageObject> dialogObjects =
+                    accountObjects.computeIfAbsent(dialogId, ignored -> new HashMap<>());
+            dialogObjects.put((long) object.getId(), object);
+            while (dialogObjects.size() > 256) {
+                Iterator<Long> iterator = dialogObjects.keySet().iterator();
+                if (!iterator.hasNext()) break;
+                iterator.next();
+                iterator.remove();
+            }
+        }
+    }
+
+    private static MessageObject getLiveMessageObject(int account, long dialogId, long messageId) {
+        synchronized (lock) {
+            Map<Long, HashMap<Long, MessageObject>> accountObjects = liveMessageObjects.get(account);
+            HashMap<Long, MessageObject> dialogObjects =
+                    accountObjects == null ? null : accountObjects.get(dialogId);
+            return dialogObjects == null ? null : dialogObjects.get(messageId);
+        }
     }
 
     private static HashMap<Long, MessageObject> getReplyCacheForDialog(int account, long dialogId) {
@@ -1568,6 +1597,7 @@ public final class ZenoraHistoryController {
                         message, editMetadata.editedAt, editMetadata.editVersion);
             }
             MessageObject messageObject = new MessageObject(account, message, true, true);
+            rememberLiveMessageObject(account, dialogId, messageObject);
             attachReplyPreview(account, dialogId, messageObject, replyToId);
             objects.add(messageObject);
             stored.add(message);
@@ -1681,8 +1711,19 @@ public final class ZenoraHistoryController {
         }
         ZenoraMessageMutationController.rememberMessageEditMetadata(
                 account, roomId, messageId, editedAt, editVersion, body);
-        applyEditedMessageToCachedReplyPreview(
-                account, dialogId, roomId, messageId, body, editedAt, editVersion);
+        MessageObject liveObject = getLiveMessageObject(account, dialogId, messageId);
+        boolean appliedToLiveObject = false;
+        if (liveObject != null && liveObject.messageOwner != null
+                && liveObject.messageOwner.zenoraEditVersion <= editVersion) {
+            ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
+                    new CharSequence[]{body}, true);
+            appliedToLiveObject = applyEditedMessage(
+                    account, dialogId, roomId, liveObject, body, entities, editedAt, editVersion);
+        }
+        if (!appliedToLiveObject) {
+            applyEditedMessageToCachedReplyPreview(
+                    account, dialogId, roomId, messageId, body, editedAt, editVersion);
+        }
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
     }
 
@@ -1858,6 +1899,7 @@ public final class ZenoraHistoryController {
                 row.isNull("edited_at") ? null : row.optString("edited_at", ""),
                 row.optLong("edit_version", 1L));
         MessageObject object = new MessageObject(account, message, true, true);
+        rememberLiveMessageObject(account, dialogId, object);
         attachReplyPreview(account, dialogId, object, replyToId);
 
         ArrayList<TLRPC.Message> stored = new ArrayList<>();
