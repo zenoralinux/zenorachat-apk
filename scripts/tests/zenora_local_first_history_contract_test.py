@@ -106,10 +106,12 @@ expect('version != MessagesStorage.LAST_DB_VERSION && version != 185' in MIGRATI
        "database recovery must accept the previous history and mutation schema versions")
 expect('if (version < 183) excludeTables.add("zenora_history_state")' in MIGRATION
        and 'if (version < 185) excludeTables.add("zenora_message_mutation_cursor")' in MIGRATION
-       and 'if (version < 186) excludeTables.add("zenora_message_mutation_deleted")' in MIGRATION,
+       and 'if (version < 186) excludeTables.add("zenora_message_mutation_deleted")' in MIGRATION
+        and 'if (version < 187) excludeTables.add("zenora_message_mutation_pending_edit")' in MIGRATION,
        "recovery must skip only additive state tables absent from the older backup")
 expect('"zenora_message_mutation_cursor"' in tables
-       and '"zenora_message_mutation_deleted"' in tables,
+       and '"zenora_message_mutation_deleted"' in tables
+        and '"zenora_message_mutation_pending_edit"' in tables,
        "backup table list must preserve durable mutation cursors and deletion tombstones")
 
 branch = "fix/zenora-offline-history-cache-first-android-20261126"
