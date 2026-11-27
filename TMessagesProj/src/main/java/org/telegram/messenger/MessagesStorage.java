@@ -14246,6 +14246,144 @@ public class MessagesStorage extends BaseController {
     }
 
     /**
+     * Persist a canonical edit payload from a successful API acknowledgement.
+     *
+     * Unlike the Event cursor path this does not manufacture an event ID. A
+     * missing message is stored as a pending edit with event_id=0; a later real
+     * Event for the same version has a higher event ID and can reconcile it.
+     * Existing SQLite rows are rewritten through putMessagesInternal so all
+     * native message indexes, local params and dialog projections keep their
+     * normal storage semantics.
+     */
+    public void persistZenoraMessageEditPayload(long roomId,long dialogId,long zenoraUserId,
+            int messageId,long editVersion,String body,String editedAt,
+            ArrayList<TLRPC.MessageEntity> entities) {
+        if(roomId<=0L||dialogId==0L||zenoraUserId<=0L||messageId<=0
+                ||editVersion<=0L||editVersion>Integer.MAX_VALUE
+                ||TextUtils.isEmpty(body)||TextUtils.isEmpty(body.trim())
+                ||entities==null) {
+            return;
+        }
+        final ArrayList<TLRPC.MessageEntity> canonicalEntities=new ArrayList<>(entities);
+        storageQueue.postRunnable(()->{
+            SQLiteCursor current=null;
+            SQLiteCursor pending=null;
+            SQLitePreparedStatement pendingInsert=null;
+            NativeByteBuffer entityData=null;
+            boolean inTransaction=false;
+            try{
+                if(UserConfig.getInstance(currentAccount).getClientUserId()!=zenoraUserId
+                        ||ZenoraChatController.getRoomIdForDialog(currentAccount,dialogId)!=roomId){
+                    throw new IllegalStateException("Zenora edit acknowledgement account or room changed");
+                }
+                ensureZenoraPendingEditTable();
+                database.beginTransaction();
+                inTransaction=true;
+                TLRPC.Message storedMessage=null;
+                current=database.queryFinalized(
+                        "SELECT data, custom_params FROM messages_v2 WHERE uid=? AND mid=? LIMIT 1",
+                        dialogId,messageId);
+                if(current.next()){
+                    NativeByteBuffer data=current.byteBufferValue(0);
+                    if(data!=null){
+                        storedMessage=TLRPC.Message.TLdeserialize(data,data.readInt32(false),false);
+                        if(storedMessage!=null)storedMessage.readAttachPath(data,getUserConfig().clientUserId);
+                        data.reuse();
+                    }
+                    NativeByteBuffer localParams=current.byteBufferValue(1);
+                    if(localParams!=null){
+                        if(storedMessage!=null)MessageCustomParamsHelper.readLocalParams(storedMessage,localParams);
+                        localParams.reuse();
+                    }
+                }
+                current.dispose();
+                current=null;
+
+                if(storedMessage!=null){
+                    if(storedMessage.zenoraEditVersion>=editVersion){
+                        database.commitTransaction();
+                        inTransaction=false;
+                        return;
+                    }
+                    storedMessage.id=messageId;
+                    storedMessage.dialog_id=dialogId;
+                    storedMessage.message=body;
+                    storedMessage.entities=new ArrayList<>(canonicalEntities);
+                    if(storedMessage.entities.isEmpty())storedMessage.flags&=~(1<<7);
+                    else storedMessage.flags|=1<<7;
+                    storedMessage.flags|=1<<8;
+                    ZenoraMessageMutationController.applyEditMetadata(storedMessage,editedAt,editVersion);
+                    if(storedMessage.params==null)storedMessage.params=new java.util.HashMap<>();
+                    storedMessage.params.put("zenora_room_id",String.valueOf(roomId));
+                    ArrayList<TLRPC.Message> updated=new ArrayList<>();
+                    updated.add(storedMessage);
+                    // Already on storageQueue and inside this transaction.
+                    putMessagesInternal(updated,false,true,0,false,ChatActivity.MODE_DEFAULT,0L);
+                }else{
+                    long previousVersion=0L;
+                    long previousEventId=0L;
+                    pending=database.queryFinalized(
+                            "SELECT edit_version,event_id FROM zenora_message_mutation_pending_edit "
+                                    +"WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=? LIMIT 1",
+                            roomId,dialogId,zenoraUserId,messageId);
+                    if(pending.next()){
+                        previousVersion=pending.longValue(0);
+                        previousEventId=pending.longValue(1);
+                    }
+                    pending.dispose();
+                    pending=null;
+                    // Real Event records (event_id > 0) win ties over a direct
+                    // API acknowledgement, while a newer API version wins.
+                    if(editVersion>previousVersion
+                            ||(editVersion==previousVersion&&previousEventId==0L)){
+                        int entitySize=4;
+                        int entityCount=0;
+                        for(TLRPC.MessageEntity entity:canonicalEntities){
+                            if(entity!=null){entitySize+=entity.getObjectSize();entityCount++;}
+                        }
+                        entityData=new NativeByteBuffer(entitySize);
+                        entityData.writeInt32(entityCount);
+                        for(TLRPC.MessageEntity entity:canonicalEntities){
+                            if(entity!=null)entity.serializeToStream(entityData);
+                        }
+                        pendingInsert=database.executeFast(
+                                "REPLACE INTO zenora_message_mutation_pending_edit "
+                                        +"(room_id,dialog_id,zenora_user_id,message_id,edit_version,event_id,body,edited_at,entities,updated_at) "
+                                        +"VALUES(?,?,?,?,?,?,?,?,?,?)");
+                        pendingInsert.bindLong(1,roomId);
+                        pendingInsert.bindLong(2,dialogId);
+                        pendingInsert.bindLong(3,zenoraUserId);
+                        pendingInsert.bindInteger(4,messageId);
+                        pendingInsert.bindLong(5,editVersion);
+                        pendingInsert.bindLong(6,0L);
+                        pendingInsert.bindString(7,body);
+                        pendingInsert.bindString(8,editedAt==null?"":editedAt);
+                        pendingInsert.bindByteBuffer(9,entityData);
+                        pendingInsert.bindLong(10,System.currentTimeMillis());
+                        pendingInsert.step();
+                        pendingInsert.dispose();
+                        pendingInsert=null;
+                        entityData.reuse();
+                        entityData=null;
+                    }
+                }
+                database.commitTransaction();
+                inTransaction=false;
+            }catch(Exception error){
+                if(inTransaction){
+                    try{database.rollbackTransaction();}catch(Exception rollbackError){FileLog.e(rollbackError);}
+                }
+                FileLog.e(error);
+            }finally{
+                if(current!=null)current.dispose();
+                if(pending!=null)pending.dispose();
+                if(pendingInsert!=null)pendingInsert.dispose();
+                if(entityData!=null)entityData.reuse();
+            }
+        });
+    }
+
+    /**
      * Apply a fully validated event page and persist its cursor in one SQLite
      * transaction. If any row fails, all changes roll back and the caller retries
      * the exact same event page.
