@@ -21441,10 +21441,11 @@ public class ChatActivity extends BaseFragment implements
             updateReplyMessageHeader(true);
         }
         if(messagePreviewParams!=null)messagePreviewParams.checkEdits(updated);
-        for(int n=0;n<updated.size();n++){
-            int position=messages.indexOf(updated.get(n));
-            if(position>=0&&chatAdapter!=null)chatAdapter.updateRowAtPosition(chatAdapter.messagesStartRow+position);
-        }
+        // Reuse Telegram's standard replacement notification after mutating the existing
+        // MessageObject instances in place. ChatActivity then reconciles adapter rows and
+        // Reply previews through replaceMessageObjects without reloading the conversation.
+        NotificationCenter.getInstance(currentAccount).postNotificationName(
+                NotificationCenter.replaceMessagesObjects,editDialogId,updated);
         if(pinnedMessageObjects.get(messageId)!=null&&currentPinnedMessageId==messageId)updatePinnedMessageView(true);
         MessagesController.getInstance(currentAccount).updateZenoraDialogPreview(editDialogId,primary);
     }
