@@ -1718,10 +1718,32 @@ public final class ZenoraHistoryController {
                 ||!ZenoraMessageEditUiPolicy.canApplyEditVersion(target.messageOwner.zenoraEditVersion,editVersion))return false;
         String targetRoom=target.messageOwner.params==null?null:target.messageOwner.params.get("zenora_room_id");
         if(!TextUtils.isEmpty(targetRoom)&&!String.valueOf(roomId).equals(targetRoom))return false;
+        long previousVersion=target.messageOwner.zenoraEditVersion;
+        String previousBody=target.messageOwner.message;
+        int incomingEditDate=TextUtils.isEmpty(editedAt)?target.messageOwner.edit_date:ZenoraChatController.parseHistoryDate(editedAt);
+        boolean needsStorageUpdate=previousVersion!=editVersion
+                ||!TextUtils.equals(previousBody,body)
+                ||(incomingEditDate>0&&target.messageOwner.edit_date!=incomingEditDate)
+                ||(target.messageOwner.flags&TLRPC.MESSAGE_FLAG_EDITED)==0
+                ||target.messageOwner.edit_hide;
         if(target.messageOwner.params==null)target.messageOwner.params=new HashMap<>();
         target.messageOwner.params.put("zenora_room_id",String.valueOf(roomId));
         updateEditedTextObject(target,body,entities,editedAt,editVersion);
         ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,target.getId(),editedAt,editVersion,body);
+        // ChatActivity can own a history/SQLite MessageObject that never entered
+        // liveMessageObjects. Persist from this shared path as well, so direct API
+        // acknowledgements do not depend on a later mutation Event to reach SQLite.
+        if(needsStorageUpdate){
+            try{
+                TLRPC.Message storageSnapshot=cloneMessageForStorage(account,target.messageOwner);
+                if(storageSnapshot==null)throw new IllegalStateException("Could not snapshot canonical Zenora edit");
+                ArrayList<TLRPC.Message> stored=new ArrayList<>();
+                stored.add(storageSnapshot);
+                MessagesStorage.getInstance(account).putMessages(stored,false,true,false,0,0,0);
+            }catch(Exception storageError){
+                FileLog.e(storageError);
+            }
+        }
         return true;
     }
 
@@ -1839,11 +1861,8 @@ public final class ZenoraHistoryController {
             updateEditedTextObject(cached,body,entities,editedAt,editVersion);
         }
         try{
-            TLRPC.Message storageSnapshot = cloneMessageForStorage(account, target.messageOwner);
-            if (storageSnapshot == null) return false;
-            ArrayList<TLRPC.Message> stored = new ArrayList<>();
-            stored.add(storageSnapshot);
-            MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
+            // applyCanonicalEditToObject already persisted an immutable snapshot;
+            // keep this layer responsible only for dialog/reply projections and UI delivery.
             MessagesController.getInstance(account).updateZenoraDialogPreview(dialogId,target);
             postCanonicalEditToOpenChat(account,dialogId,roomId,target.getId(),body,entities,editedAt,editVersion);
         }catch(Exception error){FileLog.e(error);return false;}
@@ -1987,6 +2006,52 @@ public final class ZenoraHistoryController {
         FileLog.d("[ZenoraChat] Restored server last-message preview; dialog=" + dialogId
                 + ", room=" + roomId + ", message=" + messageId);
         return true;
+    }
+
+    /**
+     * Conflict recovery for an edit whose original MessageObject is no longer
+     * available in the bounded live cache. Fetch the authoritative history row
+     * by ID and route it through the same API/Event reconciliation entry point.
+     */
+    public static void refreshEditedMessage(int account,long dialogId,long roomId,
+                                            int messageId,EditRefreshCallback callback) {
+        if(messageId<=0||roomId<=0L||ZenoraChatController.getRoomIdForDialog(account,dialogId)!=roomId){
+            if(callback!=null)callback.onRefreshed(false,new IllegalArgumentException("Invalid Zenora conflict refresh identity"));
+            return;
+        }
+        long beforeId=(long)messageId+1L;
+        ZenoraApiClient.fetchBasicTextHistory(roomId,50,beforeId,(response,error)->{
+            if(error!=null||response==null){
+                if(callback!=null)callback.onRefreshed(false,error!=null?error:
+                        new IllegalStateException("Zenora returned an empty conflict refresh"));
+                return;
+            }
+            JSONArray rows=response.optJSONArray("messages");
+            JSONObject row=null;
+            if(rows!=null){
+                for(int i=0;i<rows.length();i++){
+                    JSONObject candidate=rows.optJSONObject(i);
+                    if(candidate!=null&&candidate.optLong("message_id",0L)==messageId
+                            &&candidate.optLong("room_id",0L)==roomId){
+                        row=candidate;
+                        break;
+                    }
+                }
+            }
+            if(row==null||row.isNull("text")||!isValidEditMetadata(row)
+                    ||TextUtils.isEmpty(row.optString("text","").trim())){
+                if(callback!=null)callback.onRefreshed(false,
+                        new IllegalStateException("The canonical Zenora message was not found during conflict refresh"));
+                return;
+            }
+            String body=row.optString("text","");
+            String editedAt=row.isNull("edited_at")?null:row.optString("edited_at","");
+            long version=row.optLong("edit_version",0L);
+            ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account)
+                    .getEntities(new CharSequence[]{body},true);
+            reconcileCanonicalEditPayload(account,dialogId,roomId,messageId,body,editedAt,version);
+            if(callback!=null)callback.onRefreshed(true,null);
+        });
     }
 
     public static void refreshEditedMessage(int account, long dialogId, long roomId,
