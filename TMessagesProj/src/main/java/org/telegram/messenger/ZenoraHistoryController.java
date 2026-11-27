@@ -1753,7 +1753,7 @@ public final class ZenoraHistoryController {
         String liveRoom=live==null||live.messageOwner==null||live.messageOwner.params==null?null:live.messageOwner.params.get("zenora_room_id");
         if(live!=null&&live.messageOwner!=null&&String.valueOf(roomId).equals(liveRoom)){
             if(live.messageOwner.zenoraEditVersion>editVersion){
-                body=live.messageOwner.message;editVersion=live.messageOwner.zenoraEditVersion;
+                body=live.messageOwner.message;editVersion=live.messageOwner.zenoraEditVersion;editedAt=null;
             }
             ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account).getEntities(new CharSequence[]{body},true);
             applied=applyEditedMessage(account,dialogId,roomId,live,body,entities,editedAt,editVersion);
