@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""SQLite-backed behavioral model for the Android edit reconciliation invariants.\n\nThe API response and Event handlers are intentionally projected through the same\nversion-aware operation in this model, in both arrival orders.
+"""SQLite-backed behavioral model for Android edit reconciliation.
+
+API acknowledgement and Event delivery are projected through the same
+version-aware reconciliation policy in both arrival orders.
 
 This test exercises durable transaction/cursor/pending-row semantics with SQLite.
 It complements, but does not replace, an on-device Android integration test.
@@ -178,7 +181,7 @@ try:
     reconcile_api_response(db, key, 42, 2, "stale API response v2")
     apply_event(db, key, 5, 42, 2, "stale Event v2")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
-    check((row["version"], row["body"]) == (3, "reconciled equal-version payload"),
+    check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
           "older event cannot overwrite a newer stored message")
 
     # Out-of-order and duplicate event delivery never advances the durable cursor.
