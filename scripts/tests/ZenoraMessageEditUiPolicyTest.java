@@ -17,8 +17,13 @@ public final class ZenoraMessageEditUiPolicyTest {
   Row found=ZenoraMessageEditUiPolicy.findActiveMessage(did,91,staleMap,active,ID);
   check(found==adapter,"active Adapter instance wins over a detached dictionary copy");
   Row history=new Row(did,120,2,"history");
-  found=ZenoraMessageEditUiPolicy.findActiveMessage(did,120,null,Arrays.asList(history),ID);
+  List<Row> sqliteLoadedChatMessages=new ArrayList<>(Arrays.asList(history));
+  // Regression: liveMessageObjects intentionally has no entry (indexedMessage=null),
+  // but ChatActivity still owns this history row in its active adapter list.
+  found=ZenoraMessageEditUiPolicy.findActiveMessage(did,120,null,sqliteLoadedChatMessages,ID);
   check(found==history,"history-loaded row is found without bounded live-object cache");
+  check(found==ZenoraMessageEditUiPolicy.findActiveMessage(did,120,null,sqliteLoadedChatMessages,ID),
+      "missing liveMessageObjects entry does not block updating the existing ChatActivity message");
   check(ZenoraMessageEditUiPolicy.findActiveMessage(did,91,null,null,ID)==null,"missing row is not fabricated or reloaded");
   Row wrongDialog=new Row(did+1,91,3,"other dialog");
   check(ZenoraMessageEditUiPolicy.findActiveMessage(did,91,wrongDialog,Arrays.asList(wrongDialog),ID)==null,"same ID in another dialog is rejected");
