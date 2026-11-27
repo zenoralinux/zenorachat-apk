@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SQLite-backed behavioral model for the Android edit reconciliation invariants.
+"""SQLite-backed behavioral model for the Android edit reconciliation invariants.\n\nThe API response and Event handlers are intentionally projected through the same\nversion-aware operation in this model, in both arrival orders.
 
 This test exercises durable transaction/cursor/pending-row semantics with SQLite.
 It complements, but does not replace, an on-device Android integration test.
