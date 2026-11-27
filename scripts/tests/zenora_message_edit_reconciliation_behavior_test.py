@@ -192,9 +192,11 @@ try:
     # row and no bounded live object exists yet.
     api_key = (1, 9, 101)
     persist_api_ack(db, api_key, 77, 2, "API canonical edit before history")
+    pending_api = db.execute(
+        "SELECT version,body,event_id FROM pending_edit WHERE account=1 AND room=9 AND dialog=101 AND message=77"
+    ).fetchone()
     check(
-        db.execute("SELECT version,body,event_id FROM pending_edit WHERE account=1 AND room=9 AND dialog=101 AND message=77").fetchone()
-        == (2, "API canonical edit before history", 0),
+        tuple(pending_api) == (2, "API canonical edit before history", 0),
         "API acknowledgement is stored durably as a pending edit when the message row is absent",
     )
     insert_history_message(db, api_key, 77, 1, "stale history body")
