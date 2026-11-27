@@ -198,6 +198,7 @@ import org.telegram.messenger.ZenoraChatController;
 import org.telegram.messenger.ZenoraHistoryController;
 import org.telegram.messenger.ZenoraMessageMutationController;
 import org.telegram.messenger.ZenoraLiveMessageSyncController;
+import org.telegram.messenger.ZenoraMessageEditUiPolicy;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.VideoEditedInfo;
@@ -2938,6 +2939,7 @@ public class ChatActivity extends BaseFragment implements
             .add(NotificationCenter.voiceTranscriptionUpdate)
             .add(NotificationCenter.animatedEmojiDocumentLoaded)
             .add(NotificationCenter.replaceMessagesObjects)
+            .add(NotificationCenter.zenoraMessageEdited)
             .add(NotificationCenter.notificationsSettingsUpdated)
             .add(NotificationCenter.replyMessagesDidLoad)
             .add(NotificationCenter.didReceivedWebpages)
@@ -21380,10 +21382,79 @@ public class ChatActivity extends BaseFragment implements
         }
     }
 
+    private void addZenoraEditedObject(ArrayList<MessageObject> updated,MessageObject object,
+            long editDialogId,long roomId,int messageId,String body,ArrayList<TLRPC.MessageEntity> entities,
+            String editedAt,long editVersion){
+        if(object==null||object.getId()!=messageId||object.getDialogId()!=editDialogId)return;
+        if(ZenoraHistoryController.applyCanonicalEditToObject(currentAccount,editDialogId,roomId,object,
+                body,entities,editedAt,editVersion)&&!updated.contains(object))updated.add(object);
+    }
+
+    private void didReceivedNotification_zenoraMessageEdited(int account,Object... args){
+        if(account!=currentAccount||args==null||args.length<7)return;
+        long editDialogId=(Long)args[0],roomId=(Long)args[1];
+        int messageId=(Integer)args[2];
+        String body=(String)args[3];
+        ArrayList<TLRPC.MessageEntity> entities=(ArrayList<TLRPC.MessageEntity>)args[4];
+        String editedAt=(String)args[5];long editVersion=(Long)args[6];
+        if(messageId<=0||roomId<=0L||editVersion<=0L||TextUtils.isEmpty(body)||TextUtils.isEmpty(body.trim())
+                ||(editDialogId!=dialog_id&&editDialogId!=mergeDialogId)
+                ||ZenoraChatController.getRoomIdForDialog(currentAccount,editDialogId)!=roomId)return;
+        if(entities==null)entities=MediaDataController.getInstance(currentAccount).getEntities(new CharSequence[]{body},true);
+        if(entities==null)entities=new ArrayList<>();
+        final int loadIndex=editDialogId==dialog_id?0:1;
+        MessageObject indexed=messagesDict[loadIndex].get(messageId);
+        MessageObject active=ZenoraMessageEditUiPolicy.findActiveMessage(editDialogId,messageId,indexed,messages,
+            new ZenoraMessageEditUiPolicy.MessageIdentity<MessageObject>(){
+                @Override public long getDialogId(MessageObject m){return m.getDialogId();}
+                @Override public long getMessageId(MessageObject m){return m.getId();}
+            });
+        ArrayList<MessageObject> updated=new ArrayList<>();
+        if(active!=null){
+            addZenoraEditedObject(updated,active,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+            messagesDict[loadIndex].put(messageId,active);
+        }
+        if(indexed!=active)addZenoraEditedObject(updated,indexed,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        for(int n=0;n<messages.size();n++){
+            MessageObject candidate=messages.get(n);
+            if(candidate!=active&&candidate!=indexed)addZenoraEditedObject(updated,candidate,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        }
+        MessageObject reply=repliesMessagesDict.get(messageId);
+        if(reply!=active&&reply!=indexed)addZenoraEditedObject(updated,reply,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        MessageObject pinned=pinnedMessageObjects.get(messageId);
+        if(pinned!=active&&pinned!=indexed&&pinned!=reply)addZenoraEditedObject(updated,pinned,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        if(replyingMessageObject!=active&&replyingMessageObject!=indexed&&replyingMessageObject!=reply&&replyingMessageObject!=pinned)
+            addZenoraEditedObject(updated,replyingMessageObject,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        if(replyingTopMessage!=active&&replyingTopMessage!=indexed)
+            addZenoraEditedObject(updated,replyingTopMessage,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        if(editingMessageObject!=active&&editingMessageObject!=indexed)
+            addZenoraEditedObject(updated,editingMessageObject,editDialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        if(updated.isEmpty())return;
+        MessageObject primary=active!=null&&updated.contains(active)?active:updated.get(0);
+        if(editDialogId==dialog_id)updateReplyMessageOwners(messageId,primary);
+        if(replyingMessageObject!=null&&replyingMessageObject.getId()==messageId&&replyingMessageObject.getDialogId()==editDialogId){
+            replyingMessageObject=primary;
+            if(replyingQuote!=null)replyingQuote.checkEdit(primary);
+            if(messagePreviewParams!=null)messagePreviewParams.updateReply(replyingMessageObject,
+                replyingQuoteGroup!=null?replyingQuoteGroup:getGroup(primary.getGroupId()),dialog_id,replyingQuote);
+            fallbackFieldPanel();
+            updateReplyMessageHeader(true);
+        }
+        if(messagePreviewParams!=null)messagePreviewParams.checkEdits(updated);
+        for(int n=0;n<updated.size();n++){
+            int position=messages.indexOf(updated.get(n));
+            if(position>=0&&chatAdapter!=null)chatAdapter.updateRowAtPosition(chatAdapter.messagesStartRow+position);
+        }
+        if(pinnedMessageObjects.get(messageId)!=null&&currentPinnedMessageId==messageId)updatePinnedMessageView(true);
+        MessagesController.getInstance(currentAccount).updateZenoraDialogPreview(editDialogId,primary);
+    }
+
     @Override
     public void didReceivedNotification(int id, int account, final Object... args) {
         if (id == NotificationCenter.messagesDidLoad) {
             didReceivedNotification_messagesDidLoad(id, account, args);
+        } else if (id == NotificationCenter.zenoraMessageEdited) {
+            didReceivedNotification_zenoraMessageEdited(account, args);
         } else {
             didReceivedNotification2(id, account, args);
             didReceivedNotification3(id, account, args);

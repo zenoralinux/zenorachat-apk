@@ -84,6 +84,7 @@ public class NotificationCenter {
     public static final int privacyRulesUpdated = totalEvents++;
     public static final int updateMessageMedia = totalEvents++;
     public static final int replaceMessagesObjects = totalEvents++;
+    public static final int zenoraMessageEdited = totalEvents++;
     public static final int didSetPasscode = totalEvents++;
     public static final int passcodeDismissed = totalEvents++;
     public static final int twoStepPasswordChanged = totalEvents++;

@@ -1700,38 +1700,69 @@ public final class ZenoraHistoryController {
     }
 
     /**
-     * Shared idempotent in-memory reconciliation for API acknowledgements and
-     * mutation events. Durable Event application is committed by MessagesStorage;
-     * this keeps cache/reply/dialog projections aligned with the same version.
+     * Apply canonical Zenora edit data to an existing MessageObject instance.
+     * Callers must be on the main thread because MessageObject is shared with
+     * ChatActivity, its adapter, reply previews and visible cells.
      */
-    public static void reconcileCanonicalEditPayload(int account, long dialogId, long roomId,
-                                                       int messageId, String body, String editedAt,
-                                                       long editVersion) {
-        if (messageId <= 0 || roomId <= 0L || editVersion <= 0L
-                || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
-                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
+    public static boolean applyCanonicalEditToObject(int account,long dialogId,long roomId,
+            MessageObject target,String body,ArrayList<TLRPC.MessageEntity> entities,
+            String editedAt,long editVersion) {
+        if(Looper.myLooper()!=Looper.getMainLooper()||target==null||target.messageOwner==null
+                ||target.getDialogId()!=dialogId||target.getId()<=0||roomId<=0L
+                ||editVersion<=0L||editVersion>Integer.MAX_VALUE
+                ||ZenoraChatController.getRoomIdForDialog(account,dialogId)!=roomId
+                ||TextUtils.isEmpty(body)||TextUtils.isEmpty(body.trim())
+                ||!ZenoraMessageEditUiPolicy.canApplyEditVersion(target.messageOwner.zenoraEditVersion,editVersion))return false;
+        String targetRoom=target.messageOwner.params==null?null:target.messageOwner.params.get("zenora_room_id");
+        if(!TextUtils.isEmpty(targetRoom)&&!String.valueOf(roomId).equals(targetRoom))return false;
+        if(target.messageOwner.params==null)target.messageOwner.params=new HashMap<>();
+        target.messageOwner.params.put("zenora_room_id",String.valueOf(roomId));
+        updateEditedTextObject(target,body,entities,editedAt,editVersion);
+        ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,target.getId(),editedAt,editVersion,body);
+        return true;
+    }
+
+    private static void postCanonicalEditToOpenChat(int account,long dialogId,long roomId,int messageId,
+            String body,ArrayList<TLRPC.MessageEntity> entities,String editedAt,long editVersion) {
+        if(messageId<=0||roomId<=0L||editVersion<=0L||TextUtils.isEmpty(body)||TextUtils.isEmpty(body.trim()))return;
+        ArrayList<TLRPC.MessageEntity> safeEntities=entities==null?new ArrayList<>():new ArrayList<>(entities);
+        NotificationCenter.getInstance(account).postNotificationNameOnUIThread(
+                NotificationCenter.zenoraMessageEdited,dialogId,roomId,messageId,body,safeEntities,editedAt,editVersion);
+    }
+
+    /** Reconcile API acknowledgements and mutation events into the active ChatActivity independently
+     * of the bounded live-object cache. Durable mutation events are committed by MessagesStorage first.
+     */
+    public static void reconcileCanonicalEditPayload(int account,long dialogId,long roomId,int messageId,
+            String body,String editedAt,long editVersion) {
+        if(Looper.myLooper()!=Looper.getMainLooper()){
+            final String queuedBody=body,queuedEditedAt=editedAt;final long queuedVersion=editVersion;
+            outboxHandler.post(()->reconcileCanonicalEditPayload(account,dialogId,roomId,messageId,queuedBody,queuedEditedAt,queuedVersion));
             return;
         }
-        ZenoraMessageMutationController.rememberMessageEditMetadata(
-                account, roomId, messageId, editedAt, editVersion, body);
-        MessageObject liveObject = getLiveMessageObject(account, dialogId, messageId);
-        boolean appliedToLiveObject = false;
-        String liveObjectRoom = liveObject == null || liveObject.messageOwner == null
-                || liveObject.messageOwner.params == null ? null
-                : liveObject.messageOwner.params.get("zenora_room_id");
-        if (liveObject != null && liveObject.messageOwner != null
-                && String.valueOf(roomId).equals(liveObjectRoom)
-                && liveObject.messageOwner.zenoraEditVersion <= editVersion) {
-            ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
-                    new CharSequence[]{body}, true);
-            appliedToLiveObject = applyEditedMessage(
-                    account, dialogId, roomId, liveObject, body, entities, editedAt, editVersion);
+        if(messageId<=0||roomId<=0L||editVersion<=0L||TextUtils.isEmpty(body)||TextUtils.isEmpty(body.trim())
+                ||ZenoraChatController.getRoomIdForDialog(account,dialogId)!=roomId)return;
+        ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,messageId,editedAt,editVersion,body);
+        ZenoraMessageMutationController.EditMetadata newest=ZenoraMessageMutationController.getMessageEditMetadata(account,roomId,messageId);
+        if(newest!=null&&newest.editVersion>editVersion&&newest.body!=null){
+            body=newest.body;editedAt=newest.editedAt;editVersion=newest.editVersion;
         }
-        if (!appliedToLiveObject) {
-            applyEditedMessageToCachedReplyPreview(
-                    account, dialogId, roomId, messageId, body, editedAt, editVersion);
+        MessageObject live=getLiveMessageObject(account,dialogId,messageId);
+        boolean applied=false;
+        String liveRoom=live==null||live.messageOwner==null||live.messageOwner.params==null?null:live.messageOwner.params.get("zenora_room_id");
+        if(live!=null&&live.messageOwner!=null&&String.valueOf(roomId).equals(liveRoom)){
+            if(live.messageOwner.zenoraEditVersion>editVersion){
+                body=live.messageOwner.message;editVersion=live.messageOwner.zenoraEditVersion;
+            }
+            ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account).getEntities(new CharSequence[]{body},true);
+            applied=applyEditedMessage(account,dialogId,roomId,live,body,entities,editedAt,editVersion);
         }
-        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+        if(!applied)applied=applyEditedMessageToCachedReplyPreview(account,dialogId,roomId,messageId,body,editedAt,editVersion);
+        if(!applied){
+            ArrayList<TLRPC.MessageEntity> entities=MediaDataController.getInstance(account).getEntities(new CharSequence[]{body},true);
+            postCanonicalEditToOpenChat(account,dialogId,roomId,messageId,body,entities,editedAt,editVersion);
+        }
+        NotificationCenter.getInstance(account).postNotificationNameOnUIThread(NotificationCenter.dialogsNeedReload);
     }
 
     private static void updateEditedTextObject(MessageObject object, String body,
@@ -1748,69 +1779,31 @@ public final class ZenoraHistoryController {
         object.updateMessageText();
     }
 
-    public static boolean applyEditedMessage(int account, long dialogId, long roomId,
-                                             MessageObject target, String body,
-                                             ArrayList<TLRPC.MessageEntity> entities,
-                                             String editedAt, long editVersion) {
-        if (target == null || target.messageOwner == null || target.getDialogId() != dialogId
-                || target.getId() <= 0 || roomId <= 0L || editVersion <= 0L
-                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId
-                || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
-            return false;
+    public static boolean applyEditedMessage(int account,long dialogId,long roomId,MessageObject target,
+            String body,ArrayList<TLRPC.MessageEntity> entities,String editedAt,long editVersion) {
+        if(Looper.myLooper()!=Looper.getMainLooper()){
+            outboxHandler.post(()->applyEditedMessage(account,dialogId,roomId,target,body,entities,editedAt,editVersion));
+            return true;
         }
-        if (target.messageOwner.zenoraEditVersion > editVersion) {
-            return false;
+        if(!applyCanonicalEditToObject(account,dialogId,roomId,target,body,entities,editedAt,editVersion))return false;
+        MessageObject cached=getCachedReplyPreview(account,dialogId,target.getId());
+        if(cached==null){
+            long sender=target.messageOwner.from_id instanceof TLRPC.TL_peerUser?target.messageOwner.from_id.user_id:0L;
+            cached=createReplyPreviewObject(account,dialogId,target.getId(),sender,body,target.messageOwner.date);
+            if(cached!=null)getReplyCacheForDialog(account,dialogId).put((long)target.getId(),cached);
         }
-        String targetRoom = target.messageOwner.params == null ? null
-                : target.messageOwner.params.get("zenora_room_id");
-        if (!TextUtils.isEmpty(targetRoom) && !String.valueOf(roomId).equals(targetRoom)) {
-            return false;
+        if(cached!=null&&cached!=target&&cached.messageOwner!=null
+                &&ZenoraMessageEditUiPolicy.canApplyEditVersion(cached.messageOwner.zenoraEditVersion,editVersion)){
+            if(cached.messageOwner.params==null)cached.messageOwner.params=new HashMap<>();
+            cached.messageOwner.params.put("zenora_room_id",String.valueOf(roomId));
+            updateEditedTextObject(cached,body,entities,editedAt,editVersion);
         }
-        if (target.messageOwner.params == null) target.messageOwner.params = new HashMap<>();
-        target.messageOwner.params.put("zenora_room_id", String.valueOf(roomId));
-        updateEditedTextObject(target, body, entities, editedAt, editVersion);
-        ZenoraMessageMutationController.rememberMessageEditMetadata(
-                account, roomId, target.getId(), editedAt, editVersion, body);
-
-        MessageObject cachedParent = getCachedReplyPreview(account, dialogId, target.getId());
-        if (cachedParent == null) {
-            long senderId = target.messageOwner.from_id instanceof TLRPC.TL_peerUser
-                    ? target.messageOwner.from_id.user_id : 0L;
-            cachedParent = createReplyPreviewObject(account, dialogId, target.getId(),
-                    senderId, body, target.messageOwner.date);
-            if (cachedParent != null) {
-                getReplyCacheForDialog(account, dialogId).put((long) target.getId(), cachedParent);
-            }
-        }
-        if (cachedParent != null && cachedParent != target) {
-            updateEditedTextObject(cachedParent, body, entities, editedAt, editVersion);
-        }
-
-        ArrayList<MessageObject> affected = new ArrayList<>();
-        affected.add(target);
-        synchronized (lock) {
-            Map<Long, HashMap<Long, ArrayList<MessageObject>>> accountOwners = replyPreviewOwners.get(account);
-            HashMap<Long, ArrayList<MessageObject>> dialogOwners =
-                    accountOwners == null ? null : accountOwners.get(dialogId);
-            ArrayList<MessageObject> owners = dialogOwners == null ? null : dialogOwners.get((long) target.getId());
-            if (owners != null) {
-                for (MessageObject owner : owners) {
-                    if (owner != null && !affected.contains(owner)) affected.add(owner);
-                }
-            }
-        }
-
-        try {
-            ArrayList<TLRPC.Message> stored = new ArrayList<>();
-            stored.add(target.messageOwner);
-            MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
-            MessagesController.getInstance(account).updateZenoraDialogPreview(dialogId, target);
-            NotificationCenter.getInstance(account).postNotificationName(
-                    NotificationCenter.replaceMessagesObjects, dialogId, affected);
-        } catch (Exception error) {
-            FileLog.e(error);
-            return false;
-        }
+        try{
+            ArrayList<TLRPC.Message> stored=new ArrayList<>();stored.add(target.messageOwner);
+            MessagesStorage.getInstance(account).putMessages(stored,false,true,false,0,0,0);
+            MessagesController.getInstance(account).updateZenoraDialogPreview(dialogId,target);
+            postCanonicalEditToOpenChat(account,dialogId,roomId,target.getId(),body,entities,editedAt,editVersion);
+        }catch(Exception error){FileLog.e(error);return false;}
         return true;
     }
 
