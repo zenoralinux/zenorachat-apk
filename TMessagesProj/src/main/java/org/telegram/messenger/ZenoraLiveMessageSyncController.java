@@ -507,9 +507,7 @@ public final class ZenoraLiveMessageSyncController {
                 MessageObject object = new MessageObject(session.account, message, true, true);
                 boolean updated = ZenoraHistoryController.applyEditedMessage(
                         session.account, session.dialogId, session.roomId, object,
-                        message.message, message.entities,
-                        message.edit_date > 0 ? String.valueOf(message.edit_date) : null,
-                        message.zenoraEditVersion);
+                        message.message, message.entities, null, message.zenoraEditVersion);
                 if (!updated) FileLog.w("[ZenoraChat] Stored edited message could not refresh active UI; id=" + message.id);
             }
         }
