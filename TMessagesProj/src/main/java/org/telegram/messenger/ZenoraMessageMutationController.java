@@ -13,6 +13,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Account- and room-scoped coordinator for Zenora message mutations.
@@ -29,10 +30,12 @@ public final class ZenoraMessageMutationController {
     public static final class EditMetadata {
         public final String editedAt;
         public final long editVersion;
+        public final String body;
 
-        EditMetadata(String editedAt, long editVersion) {
+        EditMetadata(String editedAt, long editVersion, String body) {
             this.editedAt = editedAt;
             this.editVersion = editVersion;
+            this.body = body;
         }
     }
 
@@ -45,11 +48,20 @@ public final class ZenoraMessageMutationController {
 
     public static void rememberMessageEditMetadata(int account, long roomId, long messageId,
                                                    String editedAt, long editVersion) {
+        rememberMessageEditMetadata(account, roomId, messageId, editedAt, editVersion, null);
+    }
+
+    public static void rememberMessageEditMetadata(int account, long roomId, long messageId,
+                                                   String editedAt, long editVersion, String body) {
         if (account < 0 || roomId <= 0L || messageId <= 0L
                 || editVersion <= 0L || editVersion > Integer.MAX_VALUE) return;
         synchronized (editMetadata) {
-            editMetadata.put(metadataKey(account, roomId, messageId),
-                    new EditMetadata(editedAt, editVersion));
+            String key = metadataKey(account, roomId, messageId);
+            EditMetadata current = editMetadata.get(key);
+            if (current != null && current.editVersion > editVersion) return;
+            String canonicalBody = body != null ? body
+                    : current != null && current.editVersion == editVersion ? current.body : null;
+            editMetadata.put(key, new EditMetadata(editedAt, editVersion, canonicalBody));
             while (editMetadata.size() > MAX_EDIT_METADATA) {
                 Iterator<Map.Entry<String, EditMetadata>> iterator = editMetadata.entrySet().iterator();
                 if (!iterator.hasNext()) break;
@@ -89,7 +101,8 @@ public final class ZenoraMessageMutationController {
     }
 
     public static void applyEditMetadata(TLRPC.Message message, String editedAt, long editVersion) {
-        if (message == null || editVersion <= 0L || editVersion > Integer.MAX_VALUE) return;
+        if (message == null || editVersion <= 0L || editVersion > Integer.MAX_VALUE
+                || message.zenoraEditVersion > editVersion) return;
         message.zenoraEditVersion = editVersion;
         int editDate = TextUtils.isEmpty(editedAt) ? 0 : ZenoraChatController.parseHistoryDate(editedAt);
         message.edit_date = Math.max(0, editDate);
@@ -126,17 +139,23 @@ public final class ZenoraMessageMutationController {
                 return false;
             }
         }
+        final String operationId = UUID.randomUUID().toString();
         ZenoraApiClient.editMessage(roomId, messageId, text, expectedEditVersion, expectedUserId,
-                (response, error) -> {
+                operationId, (response, error) -> {
                     synchronized (inFlightEdits) {
                         inFlightEdits.remove(key);
                     }
                     if (error == null && response != null) {
                         JSONObject message = response.optJSONObject("message");
                         if (message != null) {
+                            String canonicalBody = message.optString("text", "");
+                            String canonicalEditedAt = message.optString("edited_at", "");
+                            long canonicalVersion = message.optLong("edit_version", 0L);
                             rememberMessageEditMetadata(account, roomId, messageId,
-                                    message.optString("edited_at", ""),
-                                    message.optLong("edit_version", 0L));
+                                    canonicalEditedAt, canonicalVersion, canonicalBody);
+                            ZenoraHistoryController.reconcileCanonicalEditPayload(
+                                    account, dialogId, roomId, (int) messageId,
+                                    canonicalBody, canonicalEditedAt, canonicalVersion);
                         }
                     }
                     if (callback != null) callback.onComplete(response, error);
