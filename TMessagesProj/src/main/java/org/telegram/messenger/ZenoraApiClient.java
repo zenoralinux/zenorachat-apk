@@ -774,10 +774,18 @@ public final class ZenoraApiClient {
 
     public static void editMessage(long roomId, long messageId, String body,
                                    long expectedEditVersion, long expectedUserId, Callback callback) {
+        final String operationId = UUID.randomUUID().toString();
+        editMessage(roomId, messageId, body, expectedEditVersion, expectedUserId, operationId, callback);
+    }
+
+    public static void editMessage(long roomId, long messageId, String body,
+                                   long expectedEditVersion, long expectedUserId,
+                                   String operationId, Callback callback) {
         final String safeBody = body == null ? "" : body;
         if (roomId <= 0L || roomId > Integer.MAX_VALUE || messageId <= 0L || messageId > Integer.MAX_VALUE
                 || safeBody.trim().isEmpty() || expectedEditVersion <= 0L
                 || expectedEditVersion >= Integer.MAX_VALUE || expectedUserId <= 0L
+                || operationId == null || !operationId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
                 || getCurrentUserId() != expectedUserId) {
             dispatch(callback, null, new IllegalArgumentException("Invalid Zenora edit request"));
             return;
@@ -786,7 +794,8 @@ public final class ZenoraApiClient {
             String form = "id=" + encode(String.valueOf(messageId))
                     + "&room_id=" + encode(String.valueOf(roomId))
                     + "&body=" + encode(safeBody)
-                    + "&expected_edit_version=" + encode(String.valueOf(expectedEditVersion));
+                    + "&expected_edit_version=" + encode(String.valueOf(expectedEditVersion))
+                    + "&operation_id=" + encode(operationId);
             executeMessageMutation("message_edit.php", form, expectedUserId, callback, response -> {
                 JSONObject message = response.optJSONObject("message");
                 if (message == null || message.optLong("message_id", 0L) != messageId
