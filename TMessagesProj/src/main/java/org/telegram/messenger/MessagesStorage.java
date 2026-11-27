@@ -12903,7 +12903,6 @@ public class MessagesStorage extends BaseController {
                     int messageId = message.id;
                     MessageObject.getDialogId(message);
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
-                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message);
 
                     if (message.mentioned && message.media_unread) {
                         ArrayList<Integer> ids = dialogMentionsIdsMap.get(message.dialog_id);
@@ -13298,6 +13297,9 @@ public class MessagesStorage extends BaseController {
                     }
                     fixUnsupportedMedia(message);
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
+                    // Reconcile pending edits in the serialization pass so the result flag
+                    // remains in scope until the canonical SQLite row is committed.
+                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message);
 
                     state_messages.requery();
                     int messageId = message.id;
@@ -14325,14 +14327,14 @@ public class MessagesStorage extends BaseController {
                                     "WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=? LIMIT 1",
                                     roomId, dialogId, zenoraUserId, messageId);
                             long previousVersion = 0L;
-                            long previousEventId = 0L;
+                            long previousPendingEventId = 0L;
                             if (previousPending.next()) {
                                 previousVersion = previousPending.longValue(0);
-                                previousEventId = previousPending.longValue(1);
+                                previousPendingEventId = previousPending.longValue(1);
                             }
                             previousPending.dispose();
                             if (editVersion > previousVersion
-                                    || editVersion == previousVersion && eventId > previousEventId) {
+                                    || editVersion == previousVersion && eventId > previousPendingEventId) {
                                 int entitySize = 4;
                                 int entityCount = 0;
                                 for (TLRPC.MessageEntity entity : pendingEntities) {
