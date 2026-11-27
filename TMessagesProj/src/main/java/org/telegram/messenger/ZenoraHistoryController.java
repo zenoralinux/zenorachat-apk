@@ -519,6 +519,9 @@ public final class ZenoraHistoryController {
         parent.peer_id = dialog.peer;
         parent.date = Math.max(1, date);
         parent.message = TextUtils.isEmpty(text) ? "Original message unavailable" : text;
+        parent.params = new HashMap<>();
+        parent.params.put("zenora_room_id", String.valueOf(
+                ZenoraChatController.getRoomIdForDialog(account, dialogId)));
         parent.media = new TLRPC.TL_messageMediaEmpty();
         if (senderId > 0 && senderId <= Integer.MAX_VALUE) {
             TLRPC.TL_peerUser sender = new TLRPC.TL_peerUser();
@@ -1758,6 +1761,13 @@ public final class ZenoraHistoryController {
         if (target.messageOwner.zenoraEditVersion > editVersion) {
             return false;
         }
+        String targetRoom = target.messageOwner.params == null ? null
+                : target.messageOwner.params.get("zenora_room_id");
+        if (!TextUtils.isEmpty(targetRoom) && !String.valueOf(roomId).equals(targetRoom)) {
+            return false;
+        }
+        if (target.messageOwner.params == null) target.messageOwner.params = new HashMap<>();
+        target.messageOwner.params.put("zenora_room_id", String.valueOf(roomId));
         updateEditedTextObject(target, body, entities, editedAt, editVersion);
         ZenoraMessageMutationController.rememberMessageEditMetadata(
                 account, roomId, target.getId(), editedAt, editVersion, body);
@@ -1818,6 +1828,11 @@ public final class ZenoraHistoryController {
         MessageObject cachedParent = getCachedReplyPreview(account, dialogId, messageId);
         if (cachedParent == null || cachedParent.messageOwner == null
                 || cachedParent.messageOwner.zenoraEditVersion > editVersion) return false;
+        String cachedRoom = cachedParent.messageOwner.params == null ? null
+                : cachedParent.messageOwner.params.get("zenora_room_id");
+        if (!TextUtils.isEmpty(cachedRoom) && !String.valueOf(roomId).equals(cachedRoom)) return false;
+        if (cachedParent.messageOwner.params == null) cachedParent.messageOwner.params = new HashMap<>();
+        cachedParent.messageOwner.params.put("zenora_room_id", String.valueOf(roomId));
         ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
                 new CharSequence[]{body}, true);
         return applyEditedMessage(account, dialogId, roomId, cachedParent,
