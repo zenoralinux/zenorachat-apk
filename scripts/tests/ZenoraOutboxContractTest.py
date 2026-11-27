@@ -34,7 +34,8 @@ assert "ALTER TABLE zenora_outbox ADD COLUMN reply_to_id" in migration
 assert "PRAGMA user_version = 185" in migration and "PRAGMA user_version = 186" in migration and "PRAGMA user_version = 187" in migration
 assert "LAST_DB_VERSION = 187" in storage
 assert "CREATE TABLE zenora_message_mutation_cursor" in storage
-assert "CREATE TABLE zenora_message_mutation_deleted" in storage\nassert "CREATE TABLE zenora_message_mutation_pending_edit" in storage
+assert "CREATE TABLE zenora_message_mutation_deleted" in storage
+assert "CREATE TABLE zenora_message_mutation_pending_edit" in storage
 
 # Stable key + stable parent survive retry, network retry and process restore.
 assert "final long replyToId;" in history and "record.replyToId" in history
