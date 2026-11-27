@@ -101,9 +101,9 @@ expect("zenora_outbox" in STORAGE and "loadZenoraOutbox(" in STORAGE,
 tables = STORAGE.split("DATABASE_TABLES", 1)[1].split("};", 1)[0]
 expect(tables.count('"zenora_outbox"') == 1 and tables.count('"zenora_history_state"') == 1,
        "recovery table list must include each Zenora table exactly once")
-expect('version != MessagesStorage.LAST_DB_VERSION && version != 185' in MIGRATION
-       and 'version != 184 && version != 183 && version != 182' in MIGRATION,
-       "database recovery must accept the previous history and mutation schema versions")
+expect('version != MessagesStorage.LAST_DB_VERSION && version != 186' in MIGRATION
+       and 'version != 185 && version != 184 && version != 183 && version != 182' in MIGRATION,
+       "database recovery must accept all previous history and mutation schema versions through 186")
 expect('if (version < 183) excludeTables.add("zenora_history_state")' in MIGRATION
        and 'if (version < 185) excludeTables.add("zenora_message_mutation_cursor")' in MIGRATION
        and 'if (version < 186) excludeTables.add("zenora_message_mutation_deleted")' in MIGRATION
@@ -114,8 +114,8 @@ expect('"zenora_message_mutation_cursor"' in tables
         and '"zenora_message_mutation_pending_edit"' in tables,
        "backup table list must preserve durable mutation cursors and deletion tombstones")
 
-branch = "fix/zenora-offline-history-cache-first-android-20261126"
-tag = "zenora-offline-history-cache-first-android-20261126"
+branch = "fix/zenora-message-edit-sync-reconciliation-android-20261127"
+tag = "zenora-message-edit-sync-reconciliation-android-20261127"
 expect(branch in WORKFLOW and tag in WORKFLOW,
        "new branch and release tag must be wired into the existing workflow")
 expect("ZENORA_ABIS" in WORKFLOW and "'arm64-v8a'" in WORKFLOW,
@@ -124,7 +124,7 @@ expect(":TMessagesProj_App:assembleAfatDebug" in WORKFLOW,
        "existing AFAT Debug build task must be retained")
 expect("scripts/validate-apk.sh" in WORKFLOW,
        "APK validation must remain enabled")
-expect("ZenoraChat Offline Local History (ARM64)" in WORKFLOW,
+expect("ZenoraChat Message Edit Sync Reconciliation (ARM64)" in WORKFLOW,
        "release display name must match this feature")
 expect("ZenoraHistoryMigrationTest.py" in WORKFLOW and
        "zenora_local_first_history_contract_test.py" in WORKFLOW,
