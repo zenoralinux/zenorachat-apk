@@ -59440,6 +59440,7 @@ public class TLRPC {
         public long errorAllowedPriceStars; //custom
         public long errorNewPriceStars; //custom
         public long zenoraEditVersion; //custom, stored in local message params
+        public String zenoraEditedAt; //custom, exact server timestamp stored in local message params
         public boolean summarizedOpen; //custom
         public TL_textWithEntities summaryText; //custom
         public String translatedSummaryLanguage; //custom
