@@ -1585,10 +1585,10 @@ public final class ZenoraHistoryController {
             applyOrdinaryReplyHeader(message, replyToId);
             MessageObject replyParent = getCachedReplyPreview(account, dialogId, replyToId);
             if (replyParent != null) message.replyMessage = replyParent.messageOwner;
+            message.params = new HashMap<>();
+            message.params.put("zenora_room_id", String.valueOf(roomId));
             if (reconciledClientMessage && !TextUtils.isEmpty(clientMessageId)) {
-                message.params = new HashMap<>();
                 message.params.put("zenora_client_message_id", clientMessageId);
-                message.params.put("zenora_room_id", String.valueOf(roomId));
             }
             ZenoraMessageMutationController.EditMetadata editMetadata =
                     ZenoraMessageMutationController.getMessageEditMetadata(account, roomId, messageId);
@@ -1713,7 +1713,11 @@ public final class ZenoraHistoryController {
                 account, roomId, messageId, editedAt, editVersion, body);
         MessageObject liveObject = getLiveMessageObject(account, dialogId, messageId);
         boolean appliedToLiveObject = false;
+        String liveObjectRoom = liveObject == null || liveObject.messageOwner == null
+                || liveObject.messageOwner.params == null ? null
+                : liveObject.messageOwner.params.get("zenora_room_id");
         if (liveObject != null && liveObject.messageOwner != null
+                && String.valueOf(roomId).equals(liveObjectRoom)
                 && liveObject.messageOwner.zenoraEditVersion <= editVersion) {
             ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
                     new CharSequence[]{body}, true);
@@ -1900,6 +1904,8 @@ public final class ZenoraHistoryController {
         ZenoraMessageMutationController.applyEditMetadata(message,
                 row.isNull("edited_at") ? null : row.optString("edited_at", ""),
                 row.optLong("edit_version", 1L));
+        if (message.params == null) message.params = new HashMap<>();
+        message.params.put("zenora_room_id", String.valueOf(roomId));
         MessageObject object = new MessageObject(account, message, true, true);
         rememberLiveMessageObject(account, dialogId, object);
         attachReplyPreview(account, dialogId, object, replyToId);
