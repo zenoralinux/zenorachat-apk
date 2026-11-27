@@ -89,7 +89,7 @@ def reconcile_api_response(db, key, message_id, version, body):
     db.execute("BEGIN IMMEDIATE")
     try:
         row = db.execute(
-            "SELECT version FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
+            "SELECT version,body FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
             (*key, message_id)
         ).fetchone()
         if row is None:
@@ -129,7 +129,9 @@ def persist_api_ack(db, key, message_id, version, body):
                     "version=excluded.version,event_id=0,body=excluded.body",
                     (*key, message_id, version, 0, body)
                 )
-        elif version > row["version"]:
+        elif version > row["version"] or (
+            version == row["version"] and body != row["body"]
+        ):
             db.execute(
                 "UPDATE messages SET version=?,body=? "
                 "WHERE account=? AND room=? AND dialog=? AND message=?",
@@ -238,6 +240,10 @@ try:
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
     check((row["version"], row["body"]) == (4, "reconciled equal-version payload"),
           "equal version with different content is reconciled")
+    persist_api_ack(db, key, 42, 4, "canonical v4 same-version correction")
+    row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
+    check((row["version"], row["body"]) == (4, "canonical v4 same-version correction"),
+          "same edit version with a different canonical body is reconciled consistently by direct API persistence")
     reconcile_api_response(db, key, 42, 2, "stale API response v2")
     apply_event(db, key, 5, 42, 2, "stale Event v2")
     row = db.execute("SELECT version,body FROM messages WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()
@@ -348,6 +354,8 @@ check(
 )
 check(
     "persistZenoraMessageEditPayload" in storage_source
+    and "sameCanonicalPayload" in storage_source
+    and "TextUtils.equals(storedMessage.message,body)" in storage_source
     and "zenora_message_mutation_pending_edit" in storage_source
     and "bindLong(6,0L)" in storage_source
     and "putMessagesInternal(updated,false,true,0,false,ChatActivity.MODE_DEFAULT,0L)" in storage_source,
