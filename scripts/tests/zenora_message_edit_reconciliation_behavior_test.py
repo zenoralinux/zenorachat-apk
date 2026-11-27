@@ -107,6 +107,39 @@ def reconcile_api_response(db, key, message_id, version, body):
         db.rollback()
         raise
 
+def persist_api_ack(db, key, message_id, version, body):
+    """Model the API-ack path: update an existing row or persist a pending edit."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        row = db.execute(
+            "SELECT version FROM messages WHERE account=? AND room=? AND dialog=? AND message=?",
+            (*key, message_id)
+        ).fetchone()
+        if row is None:
+            old = db.execute(
+                "SELECT version,event_id FROM pending_edit WHERE account=? AND room=? AND dialog=? AND message=?",
+                (*key, message_id)
+            ).fetchone()
+            if old is None or version > old["version"] or (
+                version == old["version"] and old["event_id"] == 0
+            ):
+                db.execute(
+                    "INSERT INTO pending_edit VALUES(?,?,?,?,?,?,?) "
+                    "ON CONFLICT(account,room,dialog,message) DO UPDATE SET "
+                    "version=excluded.version,event_id=0,body=excluded.body",
+                    (*key, message_id, version, 0, body)
+                )
+        elif version > row["version"]:
+            db.execute(
+                "UPDATE messages SET version=?,body=? "
+                "WHERE account=? AND room=? AND dialog=? AND message=?",
+                (version, body, *key, message_id)
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
 def insert_history_message(db, key, message_id, version, body):
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -154,6 +187,24 @@ try:
     check(cursor(db, key) == 1, "missing-row event advances cursor only after pending payload commit")
     check(db.execute("SELECT body FROM pending_edit WHERE account=1 AND room=7 AND dialog=101 AND message=42").fetchone()[0]
           == "edited while unloaded", "missing-row edit is durable before history loads the message")
+
+    # A direct API acknowledgement must also survive when no SQLite message
+    # row and no bounded live object exists yet.
+    api_key = (1, 9, 101)
+    persist_api_ack(db, api_key, 77, 2, "API canonical edit before history")
+    check(
+        db.execute("SELECT version,body,event_id FROM pending_edit WHERE account=1 AND room=9 AND dialog=101 AND message=77").fetchone()
+        == (2, "API canonical edit before history", 0),
+        "API acknowledgement is stored durably as a pending edit when the message row is absent",
+    )
+    insert_history_message(db, api_key, 77, 1, "stale history body")
+    api_row = db.execute(
+        "SELECT version,body FROM messages WHERE account=1 AND room=9 AND dialog=101 AND message=77"
+    ).fetchone()
+    check(
+        (api_row["version"], api_row["body"]) == (2, "API canonical edit before history"),
+        "a later SQLite/history insert consumes the API pending edit without creating a duplicate message",
+    )
 
     # Process death/re-entry: close and reopen the actual SQLite database.
     db.close()
@@ -253,6 +304,7 @@ mutation_source = read_source(
 live_source = read_source(
     "TMessagesProj/src/main/java/org/telegram/messenger/ZenoraLiveMessageSyncController.java"
 )
+storage_source = read_source("TMessagesProj/src/main/java/org/telegram/messenger/MessagesStorage.java")
 
 listener_start = chat_source.find("didReceivedNotification_zenoraMessageEdited")
 listener_end = chat_source.find("@Override", listener_start)
@@ -285,6 +337,13 @@ check(
     '"EDIT_VERSION_CONFLICT".equals' in mutation_source
     and "refreshEditedMessage(account,dialogId,roomId" in mutation_source,
     "EDIT_VERSION_CONFLICT fetches and applies the authoritative server version",
+)
+check(
+    "persistZenoraMessageEditPayload" in storage_source
+    and "zenora_message_mutation_pending_edit" in storage_source
+    and "bindLong(6,0L)" in storage_source
+    and "putMessagesInternal(updated,false,true,0,false,ChatActivity.MODE_DEFAULT,0L)" in storage_source,
+    "API acknowledgement persists either the existing message row or an account/room-scoped pending edit in SQLite",
 )
 
 print("OK: SQLite and live-UI reconciliation scenarios passed.")
