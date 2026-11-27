@@ -50,7 +50,8 @@ assert "NotificationCenter.replaceMessagesObjects" in failure
 assert "reconcilePendingTextMessage(account, dialogId, roomId," in live
 assert "reconciledClientMessage |= isCompletedTextMessage(" in live
 assert live.index("reconcilePendingTextMessage(") < live.index("new TLRPC.TL_message()")
-assert "pending.resolved.compareAndSet(false, true)" in reconcile
+assert "pending.resolved.compareAndSet(false, true)" in ack
+assert "if (pending.resolved.get()) return true;" in reconcile
 assert "if (pending.resolved.get()) return true;" in reconcile
 
 # The native duplicate path preserves the already indexed canonical server row
