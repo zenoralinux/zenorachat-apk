@@ -8,6 +8,7 @@ import android.text.TextUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayDeque;
@@ -1779,6 +1780,43 @@ public final class ZenoraHistoryController {
         object.updateMessageText();
     }
 
+    /**
+     * Create a storage-owned snapshot before dispatching a live MessageObject to
+     * storageQueue. MessagesStorage may reconcile versioned edits while serializing;
+     * it must never mutate the MessageObject currently owned by ChatActivity.
+     */
+    private static TLRPC.Message cloneMessageForStorage(int account, TLRPC.Message source) {
+        if (source == null) return null;
+        NativeByteBuffer serialized = null;
+        NativeByteBuffer localParams = null;
+        try {
+            serialized = new NativeByteBuffer(source.getObjectSize());
+            source.serializeToStream(serialized);
+            serialized.position(0);
+            TLRPC.Message copy = TLRPC.Message.TLdeserialize(
+                    serialized, serialized.readInt32(false), false);
+            if (copy == null) {
+                throw new IllegalStateException("Could not clone Zenora message for storage");
+            }
+            copy.readAttachPath(serialized, UserConfig.getInstance(account).getClientUserId());
+            localParams = MessageCustomParamsHelper.writeLocalParams(source);
+            if (localParams != null) {
+                localParams.position(0);
+                MessageCustomParamsHelper.readLocalParams(copy, localParams);
+            }
+            copy.dialog_id = source.dialog_id;
+            copy.local_id = source.local_id;
+            copy.params = source.params == null ? null : new HashMap<>(source.params);
+            return copy;
+        } catch (Exception error) {
+            FileLog.e(error);
+            return null;
+        } finally {
+            if (serialized != null) serialized.reuse();
+            if (localParams != null) localParams.reuse();
+        }
+    }
+
     public static boolean applyEditedMessage(int account,long dialogId,long roomId,MessageObject target,
             String body,ArrayList<TLRPC.MessageEntity> entities,String editedAt,long editVersion) {
         if(Looper.myLooper()!=Looper.getMainLooper()){
@@ -1799,8 +1837,11 @@ public final class ZenoraHistoryController {
             updateEditedTextObject(cached,body,entities,editedAt,editVersion);
         }
         try{
-            ArrayList<TLRPC.Message> stored=new ArrayList<>();stored.add(target.messageOwner);
-            MessagesStorage.getInstance(account).putMessages(stored,false,true,false,0,0,0);
+            TLRPC.Message storageSnapshot = cloneMessageForStorage(account, target.messageOwner);
+            if (storageSnapshot == null) return false;
+            ArrayList<TLRPC.Message> stored = new ArrayList<>();
+            stored.add(storageSnapshot);
+            MessagesStorage.getInstance(account).putMessages(stored, false, true, false, 0, 0, 0);
             MessagesController.getInstance(account).updateZenoraDialogPreview(dialogId,target);
             postCanonicalEditToOpenChat(account,dialogId,roomId,target.getId(),body,entities,editedAt,editVersion);
         }catch(Exception error){FileLog.e(error);return false;}
