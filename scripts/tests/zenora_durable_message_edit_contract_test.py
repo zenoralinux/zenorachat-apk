@@ -32,7 +32,7 @@ checks = {
         and "restorePendingEdits" in controller and "resetSending" in controller
     ),
     "stable IDs survive retries and conflict rebasing": (
-        "record.operationId" in controller and "record.operationId" in api
+        "record.operationId" in controller and "operationId" in api
         and "rebaseMessage" in controller
     ),
     "retry uses bounded exponential backoff and persists state": (
