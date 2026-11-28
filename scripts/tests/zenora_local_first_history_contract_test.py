@@ -99,15 +99,17 @@ expect(OUTBOX_REGRESSION.exists(),
 expect("zenora_outbox" in STORAGE and "loadZenoraOutbox(" in STORAGE,
        "persistent Outbox storage and restore must remain intact")
 tables = STORAGE.split("DATABASE_TABLES", 1)[1].split("};", 1)[0]
-expect(tables.count('"zenora_outbox"') == 1 and tables.count('"zenora_history_state"') == 1,
+expect(tables.count('"zenora_outbox"') == 1 and tables.count('"zenora_history_state"') == 1
+       and tables.count('"zenora_edit_outbox"') == 1,
        "recovery table list must include each Zenora table exactly once")
-expect('version != MessagesStorage.LAST_DB_VERSION && version != 186' in MIGRATION
+expect('version != MessagesStorage.LAST_DB_VERSION && version != 187 && version != 186' in MIGRATION
        and 'version != 185 && version != 184 && version != 183 && version != 182' in MIGRATION,
-       "database recovery must accept all previous history and mutation schema versions through 186")
+       "database recovery must accept all previous history and mutation schema versions through 187")
 expect('if (version < 183) excludeTables.add("zenora_history_state")' in MIGRATION
        and 'if (version < 185) excludeTables.add("zenora_message_mutation_cursor")' in MIGRATION
        and 'if (version < 186) excludeTables.add("zenora_message_mutation_deleted")' in MIGRATION
-        and 'if (version < 187) excludeTables.add("zenora_message_mutation_pending_edit")' in MIGRATION,
+        and 'if (version < 187) excludeTables.add("zenora_message_mutation_pending_edit")' in MIGRATION
+        and 'if (version < 188) excludeTables.add("zenora_edit_outbox")' in MIGRATION,
        "recovery must skip only additive state tables absent from the older backup")
 expect('"zenora_message_mutation_cursor"' in tables
        and '"zenora_message_mutation_deleted"' in tables
