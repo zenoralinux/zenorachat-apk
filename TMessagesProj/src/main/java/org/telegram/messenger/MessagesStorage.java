@@ -13341,7 +13341,8 @@ database.executeFast("CREATE UNIQUE INDEX zenora_edit_outbox_message_idx ON zeno
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
                     // Reconcile pending edits in the serialization pass so the result flag
                     // remains in scope until the canonical SQLite row is committed.
-                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message) || applyPendingZenoraOutgoingEdit(message);
+                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message);
+                    pendingEditResolved |= applyPendingZenoraOutgoingEdit(message);
 
                     state_messages.requery();
                     int messageId = message.id;
