@@ -36,7 +36,7 @@ assert "LAST_DB_VERSION = 188" in storage
 assert "CREATE TABLE zenora_message_mutation_cursor" in storage
 assert "CREATE TABLE zenora_message_mutation_deleted" in storage
 assert "CREATE TABLE zenora_message_mutation_pending_edit" in storage
-assert "CREATE TABLE zenora_edit_outbox" in storage
+assert "CREATE TABLE IF NOT EXISTS zenora_edit_outbox" in storage
 edit_store = storage.split("public void storeZenoraMessageEdit(",1)[1].split("public void loadZenoraEditOutbox(",1)[0]
 assert "database.beginTransaction()" in edit_store and "putMessagesInternal(messages" in edit_store
 assert "INSERT OR REPLACE INTO zenora_edit_outbox" in edit_store and "database.commitTransaction()" in edit_store

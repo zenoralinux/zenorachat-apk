@@ -38,7 +38,7 @@ assert "PRAGMA user_version = 186" in migration_source
 assert "PRAGMA user_version = 187" in migration_source
 assert "PRAGMA user_version = 188" in migration_source
 assert "CREATE TABLE IF NOT EXISTS zenora_edit_outbox" in migration_source
-assert "CREATE TABLE zenora_edit_outbox" in storage_source
+assert "CREATE TABLE IF NOT EXISTS zenora_edit_outbox" in storage_source
 assert "if (version == 187)" in migration_source
 assert "CREATE TABLE IF NOT EXISTS zenora_message_mutation_pending_edit" in migration_source
 assert "CREATE TABLE zenora_message_mutation_cursor" in storage_source
