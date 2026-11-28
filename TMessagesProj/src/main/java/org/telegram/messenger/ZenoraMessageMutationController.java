@@ -109,7 +109,12 @@ public final class ZenoraMessageMutationController {
                     ApplicationLoader.applicationContext).latestForMessage(
                     account, userId, roomId, dialogId, messageId);
             if (pending != null && pending.expectedEditVersion < Integer.MAX_VALUE) {
+                EditMetadata current = getMessageEditMetadata(account, roomId, messageId);
+                // A newer remote edit may advance the server version while this
+                // local operation is still unresolved. Keep the pending body as
+                // the visible source of truth, without ever decreasing the version.
                 long version = pending.expectedEditVersion + 1L;
+                if (current != null) version = Math.max(version, current.editVersion);
                 rememberMessageEditMetadata(account, roomId, messageId, null, version, pending.body);
             }
         } catch (Exception error) {
@@ -133,8 +138,10 @@ public final class ZenoraMessageMutationController {
                 || UserConfig.getInstance(account).getClientUserId() != userId) return;
         EditMetadata pending = getLatestPendingEditMetadata(
                 account, message.dialog_id, roomId, message.id);
-        if (pending == null || pending.body == null
-                || pending.editVersion < Math.max(1L, message.zenoraEditVersion)) return;
+        if (pending == null || pending.body == null) return;
+        long optimisticVersion = Math.max(pending.editVersion, message.zenoraEditVersion);
+        rememberMessageEditMetadata(account, roomId, message.id, pending.editedAt,
+                optimisticVersion, pending.body);
         message.message = pending.body;
         message.entities = MediaDataController.getInstance(account).getEntities(
                 new CharSequence[]{pending.body}, true);
@@ -145,7 +152,7 @@ public final class ZenoraMessageMutationController {
             message.flags |= 1 << 7;
         }
         message.flags |= 1 << 8;
-        applyEditMetadata(message, pending.editedAt, pending.editVersion);
+        applyEditMetadata(message, pending.editedAt, optimisticVersion);
     }
 
     public static boolean canEditPlainTextMessage(int account, long dialogId, MessageObject object) {

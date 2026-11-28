@@ -110,8 +110,11 @@ def project_body(db, account, user, room, dialog, message, server_body, server_v
         "AND dialog_id=? AND message_id=? ORDER BY sequence DESC LIMIT 1",
         (account,user,room,dialog,message)
     ).fetchone()
-    if latest is not None and latest["expected_version"] + 1 >= server_version:
-        return latest["body"], latest["expected_version"] + 1
+    if latest is not None:
+        # Keep the user's unresolved local body even if another device has
+        # advanced the canonical server version; the queued edit will rebase
+        # after the server returns EDIT_VERSION_CONFLICT.
+        return latest["body"], max(latest["expected_version"] + 1, server_version)
     return server_body, server_version
 
 def backoff(attempt):
@@ -181,8 +184,11 @@ try:
 
     # A late ACK/history page may not overwrite a newer optimistic local edit.
     s4,v4=enqueue(db,"edit-operation-0004",*key,5,"fourth latest edit",103)
-    projected=project_body(db,1,101,7,7001,42,"stale history",5)
-    check(projected==("fourth latest edit",6),"stale History or HTTP response cannot replace the latest pending body")
+    projected=project_body(db,1,101,7,7001,42,"newer remote body",9)
+    check(projected==("fourth latest edit",9),
+          "newer remote History or Live Sync cannot replace a pending optimistic body")
+    repeated=project_body(db,1,101,7,7001,42,"same newer remote body",9)
+    check(repeated==projected,"repeated remote projections do not advance the optimistic display version")
 
     # Account isolation: another user cannot project or drain the first user's work.
     other=first_pending(db,2,202)

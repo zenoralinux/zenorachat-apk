@@ -70,6 +70,13 @@ checks = {
     "double tap is blocked only during local durable enqueue": (
         "Saving the previous edit locally" in ui and "zenoraEditInFlight = false" in ui
     ),
+    "unresolved pending edit body wins even when remote version is newer": (
+        "long version = pending.expectedEditVersion + 1L;" in controller
+        and "if (current != null) version = Math.max(version, current.editVersion);" in controller
+        and "pending.editVersion < Math.max(1L, message.zenoraEditVersion)" not in controller
+        and "pendingEdit.editVersion >= editVersion" not in history
+        and "pendingEdit.editVersion >= canonicalEditVersion" not in history
+    ),
     "history and live sync prefer the newest pending local body": (
         "getLatestPendingEditMetadata" in history
         and "pendingEdit.body" in history
