@@ -261,12 +261,13 @@ public class MessagesStorage extends BaseController {
     }
     public interface ZenoraEditOutboxReadCallback { void onComplete(ArrayList<ZenoraEditOutboxRecord> records,Exception error); }
     private static NativeByteBuffer serializeZenoraEditEntities(ArrayList<TLRPC.MessageEntity> entities) throws Exception {
-        NativeByteBuffer b=new NativeByteBuffer(Math.max(4,(entities==null?0:entities.size())*32+4));b.writeInt32(entities==null?0:entities.size());if(entities!=null)for(TLRPC.MessageEntity e:entities)e.serializeToStream(b);b.position(b.limit());return b;
+        int size=4;if(entities!=null)for(TLRPC.MessageEntity e:entities)size+=e.getObjectSize();NativeByteBuffer b=new NativeByteBuffer(size);b.writeInt32(entities==null?0:entities.size());if(entities!=null)for(TLRPC.MessageEntity e:entities)e.serializeToStream(b);b.position(b.limit());return b;
     }
     private static ArrayList<TLRPC.MessageEntity> deserializeZenoraEditEntities(NativeByteBuffer b)throws Exception {
         ArrayList<TLRPC.MessageEntity> out=new ArrayList<>();if(b==null)return out;b.position(0);int n=b.readInt32(false);if(n<0||n>4096){b.reuse();throw new IllegalStateException("Invalid entities");}for(int i=0;i<n;i++){TLRPC.MessageEntity e=TLRPC.MessageEntity.TLdeserialize(b,b.readInt32(false),false);if(e==null){b.reuse();throw new IllegalStateException("Malformed entity");}out.add(e);}b.reuse();return out;
     }
 
+    public static final class ZenoraOutboxRecord {
         public final String clientMessageId;
         public final long roomId;
         public final long replyToId;
