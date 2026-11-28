@@ -33,6 +33,10 @@ checks = {
             < chat_controller.index("restorePendingEdits(accountInstance.getCurrentAccount())")
             < chat_controller.index("requestRooms(accountInstance, true)")
     ),
+    "restore guard is released after every completion for subsequent login cycles": (
+        "restoringEditUsers.remove(restoreKey)" in controller
+        and "finally {" in controller[controller.index("public static void restorePendingEdits"):controller.index("private static void requestEditDrain")]
+    ),
     "per-account FIFO is persisted and restored": (
         "loadPendingForUser" in outbox and "ORDER BY created_at ASC, rowid ASC" in outbox
         and "restorePendingEdits" in controller and "resetSending" in controller

@@ -267,15 +267,22 @@ public final class ZenoraMessageMutationController {
                 if (previous == null || previous.sequence < record.sequence) latest.put(key, record);
             }
             mainHandler.post(() -> {
-                if (isEditIdentityActive(account, userId)) {
-                    for (ZenoraEditOutbox.Record record : latest.values()) {
-                        long optimisticVersion = record.expectedEditVersion + 1L;
-                        rememberMessageEditMetadata(account, record.roomId, record.messageId,
-                                null, optimisticVersion, record.body);
-                        ZenoraHistoryController.applyPendingEditOverlay(account, record.dialogId,
-                                record.roomId, (int) record.messageId, record.body, optimisticVersion);
+                try {
+                    if (isEditIdentityActive(account, userId)) {
+                        for (ZenoraEditOutbox.Record record : latest.values()) {
+                            long optimisticVersion = record.expectedEditVersion + 1L;
+                            rememberMessageEditMetadata(account, record.roomId, record.messageId,
+                                    null, optimisticVersion, record.body);
+                            ZenoraHistoryController.applyPendingEditOverlay(account, record.dialogId,
+                                    record.roomId, (int) record.messageId, record.body, optimisticVersion);
+                        }
+                        requestEditDrain(account);
                     }
-                    requestEditDrain(account);
+                } finally {
+                    // Allow the same account to restore again after a later logout/login cycle.
+                    synchronized (restoringEditUsers) {
+                        restoringEditUsers.remove(restoreKey);
+                    }
                 }
             });
         });
