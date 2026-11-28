@@ -518,6 +518,11 @@ public final class ZenoraLiveMessageSyncController {
             JSONObject event = events.optJSONObject(i);
             if (event == null || !"message.edited".equals(event.optString("event_type", ""))) continue;
             int messageId = (int) event.optLong("message_id", 0L);
+            JSONObject payload = event.optJSONObject("payload");
+            if (messageId > 0 && payload != null) ZenoraEditOutboxController.reconcileMutationEvent(
+                    session.account, session.dialogId, session.roomId, event.optLong("actor_user_id", 0L),
+                    messageId, payload.optString("text", ""), payload.optString("edited_at", ""),
+                    payload.optLong("edit_version", 0L), event.optString("operation_id", ""));
             if (messageId <= 0 || storedIds.contains(messageId)) continue;
             JSONObject payload = event.optJSONObject("payload");
             if (payload == null) continue;
