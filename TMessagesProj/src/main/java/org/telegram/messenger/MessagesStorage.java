@@ -121,7 +121,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 187;
+    public final static int LAST_DB_VERSION = 188;
     private boolean databaseMigrationInProgress;
     private boolean zenoraPendingEditTableReady;
     public boolean showClearDatabaseAlert;
@@ -287,6 +287,201 @@ public class MessagesStorage extends BaseController {
     public interface ZenoraOutboxReadCallback {
         void onComplete(ArrayList<ZenoraOutboxRecord> records, Exception error);
     }
+
+    public static final class ZenoraEditOutboxRecord {
+        public final String operationId;
+        public final long roomId;
+        public final long dialogId;
+        public final long zenoraUserId;
+        public final int messageId;
+        public final long expectedEditVersion;
+        public final String originalBody;
+        public final String newBody;
+        public final String status;
+        public final long createdAt;
+        public final long nextAttemptAt;
+        public final int attemptCount;
+
+        ZenoraEditOutboxRecord(String operationId, long roomId, long dialogId, long zenoraUserId,
+                               int messageId, long expectedEditVersion, String originalBody,
+                               String newBody, String status, long createdAt,
+                               long nextAttemptAt, int attemptCount) {
+            this.operationId = operationId;
+            this.roomId = roomId;
+            this.dialogId = dialogId;
+            this.zenoraUserId = zenoraUserId;
+            this.messageId = messageId;
+            this.expectedEditVersion = expectedEditVersion;
+            this.originalBody = originalBody;
+            this.newBody = newBody;
+            this.status = status;
+            this.createdAt = createdAt;
+            this.nextAttemptAt = nextAttemptAt;
+            this.attemptCount = attemptCount;
+        }
+    }
+
+    public interface ZenoraEditOutboxReadCallback {
+        void onComplete(ArrayList<ZenoraEditOutboxRecord> records, Exception error);
+    }
+
+    /**
+     * Persist the optimistic message row and its edit operation atomically.
+     * A still-active edit for the same message is never silently replaced;
+     * only terminal CONFLICT/FAILED rows may be superseded by a user resubmission.
+     */
+    public void storeZenoraMessageEdit(TLRPC.Message message, long roomId, long zenoraUserId,
+                                       String operationId, long expectedEditVersion,
+                                       String originalBody, String newBody,
+                                       Consumer<Exception> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean inTransaction = false;
+            Exception failure = null;
+            SQLiteCursor existing = null;
+            SQLitePreparedStatement state = null;
+            try {
+                if (message == null || message.id <= 0 || message.dialog_id == 0L
+                        || roomId <= 0L || zenoraUserId <= 0L || expectedEditVersion <= 0L
+                        || TextUtils.isEmpty(operationId) || TextUtils.isEmpty(newBody)
+                        || TextUtils.isEmpty(newBody.trim())) {
+                    throw new IllegalArgumentException("Invalid Zenora edit outbox payload");
+                }
+                database.beginTransaction();
+                inTransaction = true;
+                existing = database.queryFinalized(
+                        "SELECT status FROM zenora_edit_outbox WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=? LIMIT 1",
+                        roomId, message.dialog_id, zenoraUserId, message.id);
+                if (existing.next()) {
+                    String status = existing.stringValue(0);
+                    if (!"CONFLICT".equals(status) && !"FAILED".equals(status)) {
+                        throw new IllegalStateException("A durable Zenora edit is already pending for this message");
+                    }
+                }
+                existing.dispose();
+                existing = null;
+
+                ArrayList<TLRPC.Message> messages = new ArrayList<>();
+                messages.add(message);
+                putMessagesInternal(messages, false, false, 0, false, ChatActivity.MODE_DEFAULT, 0);
+
+                state = database.executeFast(
+                        "INSERT OR REPLACE INTO zenora_edit_outbox(operation_id,room_id,dialog_id,zenora_user_id,message_id,expected_edit_version,original_body,new_body,status,created_at,next_attempt_at,attempt_count) VALUES(?,?,?,?,?,?,?,?,'SENDING',?,0,0)");
+                state.bindString(1, operationId);
+                state.bindLong(2, roomId);
+                state.bindLong(3, message.dialog_id);
+                state.bindLong(4, zenoraUserId);
+                state.bindInteger(5, message.id);
+                state.bindLong(6, expectedEditVersion);
+                state.bindString(7, originalBody == null ? "" : originalBody);
+                state.bindString(8, newBody);
+                state.bindLong(9, System.currentTimeMillis());
+                state.step();
+                state.dispose();
+                state = null;
+
+                database.commitTransaction();
+                inTransaction = false;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (existing != null) existing.dispose();
+                if (state != null) state.dispose();
+            }
+            Exception result = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(result);
+            });
+        });
+    }
+
+    public void loadZenoraEditOutbox(ZenoraEditOutboxReadCallback callback) {
+        storageQueue.postRunnable(() -> {
+            ArrayList<ZenoraEditOutboxRecord> records = new ArrayList<>();
+            Exception failure = null;
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized(
+                        "SELECT operation_id,room_id,dialog_id,zenora_user_id,message_id,expected_edit_version,original_body,new_body,status,created_at,next_attempt_at,attempt_count FROM zenora_edit_outbox ORDER BY room_id ASC,created_at ASC,message_id ASC");
+                while (cursor.next()) {
+                    records.add(new ZenoraEditOutboxRecord(
+                            cursor.stringValue(0), cursor.longValue(1), cursor.longValue(2),
+                            cursor.longValue(3), cursor.intValue(4), cursor.longValue(5),
+                            cursor.stringValue(6), cursor.stringValue(7), cursor.stringValue(8),
+                            cursor.longValue(9), cursor.longValue(10), cursor.intValue(11)));
+                }
+            } catch (Exception error) {
+                failure = error;
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+            }
+            Exception result = failure;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.onComplete(records, result);
+            });
+        });
+    }
+
+    /** Persist each retry state before the retry timer is scheduled. */
+    public void updateZenoraEditOutboxState(String operationId, String status,
+                                            long nextAttemptAt, boolean incrementAttempt) {
+        storageQueue.postRunnable(() -> {
+            try {
+                SQLitePreparedStatement state = database.executeFast(
+                        "UPDATE zenora_edit_outbox SET status=?,next_attempt_at=?,attempt_count=attempt_count+? WHERE operation_id=?");
+                state.bindString(1, status);
+                state.bindLong(2, nextAttemptAt);
+                state.bindInteger(3, incrementAttempt ? 1 : 0);
+                state.bindString(4, operationId);
+                state.step();
+                state.dispose();
+            } catch (Exception error) {
+                FileLog.e(error);
+            }
+        });
+    }
+
+    /** Remove the durable edit only after the server has acknowledged it. */
+    public void completeZenoraMessageEdit(String operationId, Consumer<Boolean> callback) {
+        storageQueue.postRunnable(() -> {
+            boolean success = false;
+            boolean inTransaction = false;
+            SQLiteCursor cursor = null;
+            SQLitePreparedStatement delete = null;
+            try {
+                database.beginTransaction();
+                inTransaction = true;
+                cursor = database.queryFinalized(
+                        "SELECT operation_id FROM zenora_edit_outbox WHERE operation_id=? LIMIT 1",
+                        operationId);
+                boolean exists = cursor.next();
+                cursor.dispose();
+                cursor = null;
+                if (!exists) throw new IllegalStateException("Zenora edit outbox record disappeared before ACK");
+                delete = database.executeFast("DELETE FROM zenora_edit_outbox WHERE operation_id=?");
+                delete.bindString(1, operationId);
+                delete.step();
+                delete.dispose();
+                delete = null;
+                database.commitTransaction();
+                inTransaction = false;
+                success = true;
+            } catch (Exception error) {
+                if (inTransaction) database.rollbackTransaction();
+                FileLog.e(error);
+            } finally {
+                if (cursor != null) cursor.dispose();
+                if (delete != null) delete.dispose();
+            }
+            boolean result = success;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) callback.accept(result);
+            });
+        });
+    }
+
 
     /**
      * Atomically persist the optimistic Telegram message and its durable Zenora
@@ -1054,7 +1249,8 @@ public class MessagesStorage extends BaseController {
             "ephemeral_messages",
             "widget_state",
             "widget_heights",
-            "zenora_outbox"
+            "zenora_outbox",
+            "zenora_edit_outbox"
     };
 
     public static void createTables(SQLiteDatabase database) throws SQLiteException {
@@ -1301,6 +1497,8 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, reply_to_id INTEGER NOT NULL DEFAULT 0, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_edit_outbox(operation_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, expected_edit_version INTEGER NOT NULL, original_body TEXT NOT NULL, new_body TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, UNIQUE(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX zenora_edit_outbox_retry_idx ON zenora_edit_outbox(status, next_attempt_at);").stepThis().dispose();
         database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_history_dialog_idx ON zenora_history_state(dialog_id, zenora_user_id);").stepThis().dispose();
 

@@ -127,27 +127,28 @@ public final class ZenoraMessageMutationController {
         if (callback != null) mainHandler.post(() -> callback.onComplete(null, error));
     }
 
-    public static boolean editMessage(int account, long dialogId, long roomId, long messageId,
-                                      String text, long expectedEditVersion, long expectedUserId,
-                                      ZenoraApiClient.Callback callback) {
+    public static boolean editMessage(int account, long dialogId, long roomId,
+                                      MessageObject target, String text,
+                                      ArrayList<TLRPC.MessageEntity> entities,
+                                      long expectedEditVersion, long expectedUserId,
+                                      Runnable onPersisted, ZenoraApiClient.Callback callback) {
         if (!isCurrentZenoraRoom(account, dialogId, roomId, expectedUserId)
-                || messageId <= 0L || expectedEditVersion <= 0L) {
+                || target == null || target.messageOwner == null
+                || target.getDialogId() != dialogId || target.getId() <= 0
+                || expectedEditVersion <= 0L) {
             fail(callback, new IllegalStateException("Zenora account, room or edit version is invalid"));
             return false;
         }
-        String key = metadataKey(account, roomId, messageId);
+        String key = metadataKey(account, roomId, target.getId());
         synchronized (inFlightEdits) {
             if (!inFlightEdits.add(key)) {
-                fail(callback, new IllegalStateException("A Zenora edit is already in progress for this message"));
+                fail(callback, new IllegalStateException("A Zenora edit is already pending for this message"));
                 return false;
             }
         }
-        final String operationSeed = account + ":" + expectedUserId + ":" + roomId + ":"
-                + messageId + ":" + expectedEditVersion + ":" + (text == null ? "" : text);
-        final String operationId = UUID.nameUUIDFromBytes(
-                operationSeed.getBytes(java.nio.charset.Charset.forName("UTF-8"))).toString();
-        ZenoraApiClient.editMessage(roomId, messageId, text, expectedEditVersion, expectedUserId,
-                operationId, (response, error) -> {
+        boolean queued = ZenoraEditOutboxController.enqueue(
+                account, dialogId, roomId, target, text, entities, expectedEditVersion,
+                expectedUserId, onPersisted, (response, error) -> {
                     synchronized (inFlightEdits) {
                         inFlightEdits.remove(key);
                     }
@@ -155,19 +156,20 @@ public final class ZenoraMessageMutationController {
                             && isCurrentZenoraRoom(account, dialogId, roomId, expectedUserId)) {
                         JSONObject message = response.optJSONObject("message");
                         if (message != null) {
-                            String canonicalBody = message.optString("text", "");
-                            String canonicalEditedAt = message.optString("edited_at", "");
-                            long canonicalVersion = message.optLong("edit_version", 0L);
-                            rememberMessageEditMetadata(account, roomId, messageId,
-                                    canonicalEditedAt, canonicalVersion, canonicalBody);
-                            ZenoraHistoryController.reconcileCanonicalEditPayload(
-                                    account, dialogId, roomId, (int) messageId,
-                                    canonicalBody, canonicalEditedAt, canonicalVersion);
+                            rememberMessageEditMetadata(account, roomId, target.getId(),
+                                    message.optString("edited_at", ""),
+                                    message.optLong("edit_version", 0L),
+                                    message.optString("text", ""));
                         }
                     }
                     if (callback != null) callback.onComplete(response, error);
                 });
-        return true;
+        if (!queued) {
+            synchronized (inFlightEdits) {
+                inFlightEdits.remove(key);
+            }
+        }
+        return queued;
     }
 
 

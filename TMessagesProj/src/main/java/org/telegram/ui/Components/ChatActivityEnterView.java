@@ -7944,7 +7944,7 @@ public class ChatActivityEnterView extends FrameLayout implements
         }
         if (zenoraEditInFlight) {
             android.widget.Toast.makeText(getContext(),
-                    "This Zenora message is already being edited. Please wait for the current request.",
+                    "This Zenora message already has an edit being saved.",
                     android.widget.Toast.LENGTH_SHORT).show();
             return false;
         }
@@ -7965,63 +7965,61 @@ public class ChatActivityEnterView extends FrameLayout implements
 
         zenoraEditInFlight = true;
         showEditDoneProgress(true, true);
-        ZenoraMessageMutationController.editMessage(
-                currentAccount, dialog_id, roomId, target.getId(), body,
-                expectedVersion, userId, (response, error) -> {
+        boolean queued = ZenoraMessageMutationController.editMessage(
+                currentAccount, dialog_id, roomId, target, body, entities,
+                expectedVersion, userId,
+                () -> {
+                    // The local message and edit Outbox are already committed together.
+                    // Keep edit mode/draft until the server ACK or a version conflict.
+                    zenoraEditInFlight = false;
+                    showEditDoneProgress(false, true);
+                    android.widget.Toast.makeText(getContext(),
+                            "Edit saved on this device. It will sync automatically when connected.",
+                            android.widget.Toast.LENGTH_SHORT).show();
+                    checkSendButton(true);
+                },
+                (response, error) -> {
                     zenoraEditInFlight = false;
                     showEditDoneProgress(false, true);
                     if (error != null) {
                         boolean conflict = error instanceof ZenoraApiClient.ApiException
-                                && "EDIT_VERSION_CONFLICT".equals(
-                                        ((ZenoraApiClient.ApiException) error).errorCode);
+                                && ("EDIT_VERSION_CONFLICT".equals(
+                                        ((ZenoraApiClient.ApiException) error).errorCode)
+                                    || ((ZenoraApiClient.ApiException) error).statusCode == 409);
+                        // Refresh the authoritative server copy, but keep the Composer
+                        // text untouched so the user can submit it against the new version.
+                        ZenoraHistoryController.refreshEditedMessage(
+                                currentAccount, dialog_id, roomId, target,
+                                (updated, refreshError) -> {
+                                    if (!updated) {
+                                        FileLog.w("[ZenoraChat] Terminal edit refresh failed for "
+                                                + target.getId() + ": "
+                                                + (refreshError == null ? "not found" : refreshError.getMessage()));
+                                    }
+                                });
                         if (conflict) {
-                            ZenoraHistoryController.refreshEditedMessage(
-                                    currentAccount, dialog_id, roomId, target,
-                                    (updated, refreshError) -> {
-                                        if (!updated) {
-                                            FileLog.w("[ZenoraChat] Conflict refresh did not update message "
-                                                    + target.getId() + ": "
-                                                    + (refreshError == null ? "not found" : refreshError.getMessage()));
-                                        }
-                                    });
                             android.widget.Toast.makeText(getContext(),
-                                    "This message changed elsewhere. The latest server version was refreshed; your draft is still in the Composer.",
+                                    "This message changed elsewhere. The latest server version was refreshed; your edit draft is still available.",
                                     android.widget.Toast.LENGTH_LONG).show();
                         } else {
-                            FileLog.w("[ZenoraChat] Text edit failed: " + error.getMessage());
+                            FileLog.w("[ZenoraChat] Durable text edit failed: " + error.getMessage());
                             android.widget.Toast.makeText(getContext(),
-                                    "Message edit failed. Your text and edit mode were kept.",
+                                    "The edit could not be accepted. The server version was refreshed and your draft was kept.",
                                     android.widget.Toast.LENGTH_LONG).show();
                         }
                         checkSendButton(true);
                         return;
                     }
 
-                    JSONObject edited = response == null ? null : response.optJSONObject("message");
-                    String editedAt = edited == null || edited.isNull("edited_at")
-                            ? null : edited.optString("edited_at", "");
-                    long newVersion = edited == null ? 0L : edited.optLong("edit_version", 0L);
-                    String savedText = edited == null ? "" : edited.optString("text", "");
-                    if (edited == null || newVersion != expectedVersion + 1L
-                            || !body.equals(savedText)
-                            || !ZenoraHistoryController.applyEditedMessage(
-                                    currentAccount, dialog_id, roomId, target,
-                                    savedText, entities, editedAt, newVersion)) {
-                        ZenoraHistoryController.refreshEditedMessage(
-                                currentAccount, dialog_id, roomId, target, (updated, refreshError) -> {
-                                    if (!updated) FileLog.w("[ZenoraChat] Could not reconcile successful edit locally");
-                                });
-                        android.widget.Toast.makeText(getContext(),
-                                "Zenora saved the edit, but the local message is being refreshed. Your Composer text was kept.",
-                                android.widget.Toast.LENGTH_LONG).show();
-                        checkSendButton(true);
-                        return;
-                    }
                     if (parentFragment != null && parentFragment.editingMessageObject == target) {
                         setEditingMessageObject(null, null, false);
                     }
                     checkSendButton(true);
                 });
+        if (!queued) {
+            zenoraEditInFlight = false;
+            showEditDoneProgress(false, true);
+        }
         return false;
     }
 

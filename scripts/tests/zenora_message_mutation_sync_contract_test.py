@@ -27,8 +27,8 @@ poll_end = live.index("private static void handleResponse(", poll_start)
 poll = live[poll_start:poll_end]
 
 checks = {
-    "durable cursor, tombstones and pending edits migrate through SQLite v187": "user_version = 185" in migration and "user_version = 186" in migration and "user_version = 187" in migration and "zenora_message_mutation_cursor" in migration and "zenora_message_mutation_deleted" in migration and "zenora_message_mutation_pending_edit" in migration,
-    "fresh database creation installs all event state tables before schema version 187": "LAST_DB_VERSION = 187" in storage and "CREATE TABLE zenora_message_mutation_cursor" in create_tables and "CREATE TABLE zenora_message_mutation_deleted" in create_tables and "CREATE TABLE zenora_message_mutation_pending_edit" in create_tables,
+    "durable cursor, tombstones and pending edits migrate through SQLite v188": "user_version = 185" in migration and "user_version = 186" in migration and "user_version = 187" in migration and "user_version = 188" in migration and "zenora_message_mutation_cursor" in migration and "zenora_message_mutation_deleted" in migration and "zenora_message_mutation_pending_edit" in migration,
+    "fresh database creation installs all event state tables before schema version 188": "LAST_DB_VERSION = 188" in storage and "CREATE TABLE zenora_message_mutation_cursor" in create_tables and "CREATE TABLE zenora_message_mutation_deleted" in create_tables and "CREATE TABLE zenora_message_mutation_pending_edit" in create_tables and "CREATE TABLE zenora_edit_outbox" in create_tables,
     "cursor is isolated by room, dialog and Zenora account": "PRIMARY KEY(room_id, dialog_id, zenora_user_id)" in migration,
     "cursor load is persisted and not memory-only": "loadZenoraMessageMutationCursor" in storage and "SELECT last_event_id FROM zenora_message_mutation_cursor" in storage,
     "event apply validates expected durable cursor": "storedCursor != expectedAfterEventId" in apply,

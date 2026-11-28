@@ -27,15 +27,19 @@ ack = storage.split("public void acknowledgeZenoraTextMessage(",1)[1].split("pub
 assert "storedReplyToId != replyToId" in ack and "AND reply_to_id = ?" in ack
 
 # The reply column remains an additive 183->184 migration, followed by
-# mutation-event cursor/tombstone migrations through the current v187 schema.
+# mutation-event cursor/tombstone migrations through the current v188 schema.
 assert "if (version == 181)" in migration and "if (version == 182)" in migration
 assert "if (version == 183)" in migration and "PRAGMA user_version = 184" in migration
 assert "ALTER TABLE zenora_outbox ADD COLUMN reply_to_id" in migration
 assert "PRAGMA user_version = 185" in migration and "PRAGMA user_version = 186" in migration and "PRAGMA user_version = 187" in migration
-assert "LAST_DB_VERSION = 187" in storage
+assert "LAST_DB_VERSION = 188" in storage
 assert "CREATE TABLE zenora_message_mutation_cursor" in storage
 assert "CREATE TABLE zenora_message_mutation_deleted" in storage
 assert "CREATE TABLE zenora_message_mutation_pending_edit" in storage
+assert "CREATE TABLE zenora_edit_outbox" in storage
+edit_store = storage.split("public void storeZenoraMessageEdit(",1)[1].split("public void loadZenoraEditOutbox(",1)[0]
+assert "database.beginTransaction()" in edit_store and "putMessagesInternal(messages" in edit_store
+assert "INSERT OR REPLACE INTO zenora_edit_outbox" in edit_store and "database.commitTransaction()" in edit_store
 
 # Stable key + stable parent survive retry, network retry and process restore.
 assert "final long replyToId;" in history and "record.replyToId" in history

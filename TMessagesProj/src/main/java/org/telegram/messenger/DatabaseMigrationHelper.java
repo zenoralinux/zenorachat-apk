@@ -1771,6 +1771,14 @@ public class DatabaseMigrationHelper {
             version = 187;
         }
 
+        if (version == 187) {
+            // Durable optimistic edits are independent from received mutation events.
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_edit_outbox(operation_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, message_id INTEGER NOT NULL, expected_edit_version INTEGER NOT NULL, original_body TEXT NOT NULL, new_body TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, UNIQUE(room_id, dialog_id, zenora_user_id, message_id));").stepThis().dispose();
+            database.executeFast("CREATE INDEX IF NOT EXISTS zenora_edit_outbox_retry_idx ON zenora_edit_outbox(status, next_attempt_at);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 188").stepThis().dispose();
+            version = 188;
+        }
+
         return version;
     }
 
@@ -1833,7 +1841,7 @@ public class DatabaseMigrationHelper {
             newDatabase.executeFast("ATTACH DATABASE \"" + oldDatabaseFile.getAbsolutePath() + "\" AS old;").stepThis().dispose();
 
             int version = newDatabase.executeInt("PRAGMA old.user_version");
-            if (version != MessagesStorage.LAST_DB_VERSION && version != 186
+            if (version != MessagesStorage.LAST_DB_VERSION && version != 187 && version != 186
                     && version != 185 && version != 184 && version != 183 && version != 182) {
                 FileLog.e("can't restore database from version " + version);
                 return false;
@@ -1844,6 +1852,7 @@ public class DatabaseMigrationHelper {
             if (version < 185) excludeTables.add("zenora_message_mutation_cursor");
             if (version < 186) excludeTables.add("zenora_message_mutation_deleted");
             if (version < 187) excludeTables.add("zenora_message_mutation_pending_edit");
+            if (version < 188) excludeTables.add("zenora_edit_outbox");
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
             excludeTables.add("scheduled_messages_v2");
