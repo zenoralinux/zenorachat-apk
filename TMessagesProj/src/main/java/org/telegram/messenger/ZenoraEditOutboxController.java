@@ -5,6 +5,7 @@ import android.os.Looper;
 import android.text.TextUtils;
 
 import org.json.JSONObject;
+import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 
 import java.io.IOException;
@@ -118,8 +119,7 @@ public final class ZenoraEditOutboxController {
         message.edit_hide = false;
         if (message.params == null) message.params = new HashMap<>();
         message.params.put("zenora_room_id", String.valueOf(roomId));
-        target.updateMessageText();
-        target.forceUpdate = true;
+        // Keep the cached text projection unchanged until the SQLite transaction commits.
 
         MessagesStorage.getInstance(account).storeZenoraMessageEdit(
                 message, roomId, expectedUserId, operationId, expectedVersion,

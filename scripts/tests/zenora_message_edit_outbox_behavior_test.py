@@ -27,11 +27,11 @@ def persist_edit(op, mid, expected, body):
     db.commit()
 
 def retry(op):
-    row = db.execute("SELECT message_id,new_body,expected_version FROM edit_outbox WHERE operation_id=?", (op,)).fetchone()
-    assert row
     accepted = db.execute("SELECT resulting_version FROM accepted_operations WHERE operation_id=?", (op,)).fetchone()
     if accepted:
         return accepted[0]
+    row = db.execute("SELECT message_id,new_body,expected_version FROM edit_outbox WHERE operation_id=?", (op,)).fetchone()
+    assert row
     mid,body,expected = row
     current = db.execute("SELECT version FROM messages WHERE mid=?", (mid,)).fetchone()[0]
     if current != expected+1:

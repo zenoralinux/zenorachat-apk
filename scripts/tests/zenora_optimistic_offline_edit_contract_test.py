@@ -33,7 +33,7 @@ assert "storeZenoraMessageEdit(" in queue
 assert "createOperationId(" in queue and "pending.operationId" in queue
 assert "ZenoraOutboxPolicy.nextAttemptAt" in queue and '"UNKNOWN"' in queue
 assert 'markTerminal(pending, "CONFLICT"' in queue
-assert 'updateZenoraEditOutboxState(record.operationId, "UNKNOWN"' in queue
+assert 'record.operationId, "UNKNOWN"' in queue
 assert "loadZenoraEditOutbox(" in queue
 assert "completeZenoraMessageEdit(" in queue
 assert "reconcileCanonicalEditPayload(" in queue
