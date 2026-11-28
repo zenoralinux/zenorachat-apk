@@ -1462,6 +1462,7 @@ public final class ZenoraHistoryController {
             long senderId = row.optLong("sender_id", 0L);
             String body = row.optString("text", "");
             int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
+            ZenoraEditOutboxController.reconcileHistoryMessage(account,dialogId,roomId,senderId,(int)rawId,body,row.optString("edited_at",""),row.optLong("edit_version",1L));
             long replyToId = row.isNull("reply_to_id") ? 0L : row.optLong("reply_to_id", -1L);
             if (rawId <= previousId || rawId > Integer.MAX_VALUE
                     || senderId <= 0L || senderId > Integer.MAX_VALUE
