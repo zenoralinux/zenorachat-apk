@@ -7931,98 +7931,21 @@ public class ChatActivityEnterView extends FrameLayout implements
     }
 
 
-    private boolean submitZenoraTextEdit(MessageObject target, String body,
-                                         ArrayList<TLRPC.MessageEntity> entities) {
-        final long roomId = ZenoraChatController.getRoomIdForDialog(currentAccount, dialog_id);
-        final long userId = ZenoraApiClient.getCurrentUserId();
-        if (roomId <= 0L || userId <= 0L || target == null
-                || !ZenoraMessageMutationController.canEditPlainTextMessage(currentAccount, dialog_id, target)) {
-            android.widget.Toast.makeText(getContext(),
-                    "You do not have permission to edit this Zenora message.",
-                    android.widget.Toast.LENGTH_LONG).show();
-            return false;
-        }
-        if (zenoraEditInFlight) {
-            android.widget.Toast.makeText(getContext(),
-                    "This Zenora message is already being edited. Please wait for the current request.",
-                    android.widget.Toast.LENGTH_SHORT).show();
-            return false;
-        }
-        if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) {
-            android.widget.Toast.makeText(getContext(),
-                    "A Zenora text message cannot be empty.",
-                    android.widget.Toast.LENGTH_SHORT).show();
-            return false;
-        }
-        final long expectedVersion = ZenoraMessageMutationController.getExpectedEditVersion(
-                currentAccount, roomId, target);
-        if (expectedVersion <= 0L || expectedVersion >= Integer.MAX_VALUE) {
-            android.widget.Toast.makeText(getContext(),
-                    "The edit version is invalid. Refresh the conversation and try again.",
-                    android.widget.Toast.LENGTH_LONG).show();
-            return false;
-        }
-
-        zenoraEditInFlight = true;
-        showEditDoneProgress(true, true);
-        ZenoraMessageMutationController.editMessage(
-                currentAccount, dialog_id, roomId, target.getId(), body,
-                expectedVersion, userId, (response, error) -> {
-                    zenoraEditInFlight = false;
-                    showEditDoneProgress(false, true);
-                    if (error != null) {
-                        boolean conflict = error instanceof ZenoraApiClient.ApiException
-                                && "EDIT_VERSION_CONFLICT".equals(
-                                        ((ZenoraApiClient.ApiException) error).errorCode);
-                        if (conflict) {
-                            ZenoraHistoryController.refreshEditedMessage(
-                                    currentAccount, dialog_id, roomId, target,
-                                    (updated, refreshError) -> {
-                                        if (!updated) {
-                                            FileLog.w("[ZenoraChat] Conflict refresh did not update message "
-                                                    + target.getId() + ": "
-                                                    + (refreshError == null ? "not found" : refreshError.getMessage()));
-                                        }
-                                    });
-                            android.widget.Toast.makeText(getContext(),
-                                    "This message changed elsewhere. The latest server version was refreshed; your draft is still in the Composer.",
-                                    android.widget.Toast.LENGTH_LONG).show();
-                        } else {
-                            FileLog.w("[ZenoraChat] Text edit failed: " + error.getMessage());
-                            android.widget.Toast.makeText(getContext(),
-                                    "Message edit failed. Your text and edit mode were kept.",
-                                    android.widget.Toast.LENGTH_LONG).show();
-                        }
-                        checkSendButton(true);
-                        return;
-                    }
-
-                    JSONObject edited = response == null ? null : response.optJSONObject("message");
-                    String editedAt = edited == null || edited.isNull("edited_at")
-                            ? null : edited.optString("edited_at", "");
-                    long newVersion = edited == null ? 0L : edited.optLong("edit_version", 0L);
-                    String savedText = edited == null ? "" : edited.optString("text", "");
-                    if (edited == null || newVersion != expectedVersion + 1L
-                            || !body.equals(savedText)
-                            || !ZenoraHistoryController.applyEditedMessage(
-                                    currentAccount, dialog_id, roomId, target,
-                                    savedText, entities, editedAt, newVersion)) {
-                        ZenoraHistoryController.refreshEditedMessage(
-                                currentAccount, dialog_id, roomId, target, (updated, refreshError) -> {
-                                    if (!updated) FileLog.w("[ZenoraChat] Could not reconcile successful edit locally");
-                                });
-                        android.widget.Toast.makeText(getContext(),
-                                "Zenora saved the edit, but the local message is being refreshed. Your Composer text was kept.",
-                                android.widget.Toast.LENGTH_LONG).show();
-                        checkSendButton(true);
-                        return;
-                    }
-                    if (parentFragment != null && parentFragment.editingMessageObject == target) {
-                        setEditingMessageObject(null, null, false);
-                    }
-                    checkSendButton(true);
-                });
-        return false;
+    private boolean submitZenoraTextEdit(MessageObject target,String body,ArrayList<TLRPC.MessageEntity> entities){
+        final long roomId=ZenoraChatController.getRoomIdForDialog(currentAccount,dialog_id),userId=ZenoraApiClient.getCurrentUserId();
+        if(roomId<=0||userId<=0||target==null||!ZenoraMessageMutationController.canEditPlainTextMessage(currentAccount,dialog_id,target)){
+            android.widget.Toast.makeText(getContext(),"You do not have permission to edit this Zenora message.",android.widget.Toast.LENGTH_LONG).show();return false;}
+        if(zenoraEditInFlight){android.widget.Toast.makeText(getContext(),"This edit is already being saved.",android.widget.Toast.LENGTH_SHORT).show();return false;}
+        if(TextUtils.isEmpty(body)||TextUtils.isEmpty(body.trim())){android.widget.Toast.makeText(getContext(),"A Zenora text message cannot be empty.",android.widget.Toast.LENGTH_SHORT).show();return false;}
+        final long version=ZenoraMessageMutationController.getExpectedEditVersion(currentAccount,roomId,target);
+        if(version<=0||version>=Integer.MAX_VALUE){android.widget.Toast.makeText(getContext(),"The edit version is invalid. Refresh the conversation.",android.widget.Toast.LENGTH_LONG).show();return false;}
+        zenoraEditInFlight=true;showEditDoneProgress(true,true);
+        ZenoraEditOutboxController.submit(currentAccount,dialog_id,roomId,target,body,entities,version,userId,(persisted,error)->{
+            zenoraEditInFlight=false;showEditDoneProgress(false,true);
+            if(!persisted){FileLog.w("[ZenoraChat] Edit local persistence failed: "+error);android.widget.Toast.makeText(getContext(),"Edit could not be saved locally. Your draft was kept.",android.widget.Toast.LENGTH_LONG).show();checkSendButton(true);return;}
+            if(parentFragment!=null&&parentFragment.editingMessageObject==target)setEditingMessageObject(null,null,false);
+            checkSendButton(true);
+        });return false;
     }
 
     private boolean processZenoraTextMessage(CharSequence text, boolean notify,

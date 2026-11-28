@@ -759,27 +759,22 @@ public final class ZenoraApiClient {
         }
     }
 
-    private static void executeMessageMutation(String path, String form, long expectedUserId,
-                                               Callback callback, MessageMutationValidator validator) {
-        if (expectedUserId <= 0L || getCurrentUserId() != expectedUserId || !isZenoraSessionEnabled()) {
-            dispatch(callback, null, new IllegalArgumentException("Invalid or stale Zenora mutation account"));
-            return;
+    private static JSONObject postMessageEditWithRetry(String path,String form,long user)throws Exception{
+        int attempts=0;while(true){if(getCurrentUserId()!=user||!isZenoraSessionEnabled())throw new IllegalStateException("Zenora account changed");
+            try{return postMessageMutationWithCsrfRetry(path,form,user);}catch(ApiException e){if(!ZenoraOutboxPolicy.isTransientHttpStatus(e.statusCode)||attempts>=2)throw e;attempts++;}
+            catch(java.io.IOException e){if(attempts>=2)throw e;attempts++;}
+            try{Thread.sleep(300L*attempts);}catch(InterruptedException e){Thread.currentThread().interrupt();throw e;}
         }
-        try {
-            mutationExecutor.execute(() -> {
-                try {
-                    if (getCurrentUserId() != expectedUserId) throw new IllegalStateException("Zenora account changed before mutation");
-                    JSONObject response = postMessageMutationWithCsrfRetry(path, form, expectedUserId);
-                    if (response == null || !response.optBoolean("ok", false)) throw new IllegalStateException("Invalid Zenora mutation response");
-                    validator.validate(response);
-                    dispatch(callback, response, null);
-                } catch (Exception error) {
-                    dispatch(callback, null, error);
-                }
-            });
-        } catch (java.util.concurrent.RejectedExecutionException rejected) {
-            dispatch(callback, null, new IllegalStateException("Zenora mutation queue is full", rejected));
-        }
+    }
+    private static void executeMessageMutation(String path,String form,long expectedUserId,Callback callback,MessageMutationValidator validator){
+        executeMessageMutation(path,form,expectedUserId,callback,validator,false);
+    }
+    private static void executeMessageMutation(String path,String form,long expectedUserId,Callback callback,MessageMutationValidator validator,boolean editRetry){
+        if(expectedUserId<=0||getCurrentUserId()!=expectedUserId||!isZenoraSessionEnabled()){dispatch(callback,null,new IllegalArgumentException("Invalid Zenora mutation account"));return;}
+        try{mutationExecutor.execute(()->{try{if(getCurrentUserId()!=expectedUserId)throw new IllegalStateException("Zenora account changed");
+            JSONObject response=editRetry?postMessageEditWithRetry(path,form,expectedUserId):postMessageMutationWithCsrfRetry(path,form,expectedUserId);
+            if(response==null||!response.optBoolean("ok",false))throw new IllegalStateException("Invalid mutation response");validator.validate(response);dispatch(callback,response,null);
+        }catch(Exception e){dispatch(callback,null,e);}});}catch(java.util.concurrent.RejectedExecutionException e){dispatch(callback,null,new IllegalStateException("Mutation queue full",e));}
     }
 
     private static void validateMutationMessageIds(JSONArray returned, List<Long> requested) throws Exception {
@@ -793,43 +788,22 @@ public final class ZenoraApiClient {
         }
     }
 
-    public static void editMessage(long roomId, long messageId, String body,
-                                   long expectedEditVersion, long expectedUserId, Callback callback) {
-        final String operationId = UUID.randomUUID().toString();
-        editMessage(roomId, messageId, body, expectedEditVersion, expectedUserId, operationId, callback);
+    public static void editMessage(long roomId,long messageId,String body,long expectedVersion,long expectedUserId,Callback callback){
+        editMessage(roomId,messageId,body,expectedVersion,expectedUserId,UUID.randomUUID().toString(),callback);
     }
-
-    public static void editMessage(long roomId, long messageId, String body,
-                                   long expectedEditVersion, long expectedUserId,
-                                   String operationId, Callback callback) {
-        final String safeBody = body == null ? "" : body;
-        if (roomId <= 0L || roomId > Integer.MAX_VALUE || messageId <= 0L || messageId > Integer.MAX_VALUE
-                || safeBody.trim().isEmpty() || expectedEditVersion <= 0L
-                || expectedEditVersion >= Integer.MAX_VALUE || expectedUserId <= 0L
-                || operationId == null || !operationId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")
-                || getCurrentUserId() != expectedUserId) {
-            dispatch(callback, null, new IllegalArgumentException("Invalid Zenora edit request"));
-            return;
+    public static void editMessage(long roomId,long messageId,String body,long expectedVersion,long expectedUserId,String operationId,Callback callback){
+        String text=body==null?"":body;
+        if(roomId<=0||messageId<=0||text.trim().isEmpty()||expectedVersion<=0||expectedVersion>=Integer.MAX_VALUE||expectedUserId<=0
+                ||operationId==null||!operationId.matches("[A-Za-z0-9][A-Za-z0-9._:-]{7,127}")||getCurrentUserId()!=expectedUserId||!isZenoraSessionEnabled()){
+            dispatch(callback,null,new IllegalArgumentException("Invalid Zenora edit"));return;
         }
-        try {
-            String form = "id=" + encode(String.valueOf(messageId))
-                    + "&room_id=" + encode(String.valueOf(roomId))
-                    + "&body=" + encode(safeBody)
-                    + "&expected_edit_version=" + encode(String.valueOf(expectedEditVersion))
-                    + "&operation_id=" + encode(operationId);
-            executeMessageMutation("message_edit.php", form, expectedUserId, callback, response -> {
-                JSONObject message = response.optJSONObject("message");
-                if (message == null || message.optLong("message_id", 0L) != messageId
-                        || message.optLong("room_id", 0L) != roomId || message.optLong("sender_id", 0L) <= 0L
-                        || !safeBody.equals(message.optString("text", ""))
-                        || message.optString("edited_at", "").isEmpty()
-                        || message.optLong("edit_version", 0L) != expectedEditVersion + 1L) {
-                    throw new IllegalStateException("Zenora returned a mismatched edited-message record");
-                }
-            });
-        } catch (Exception error) {
-            dispatch(callback, null, error);
-        }
+        try{String form="id="+encode(String.valueOf(messageId))+"&room_id="+encode(String.valueOf(roomId))+"&body="+encode(text)
+            +"&expected_edit_version="+encode(String.valueOf(expectedVersion))+"&operation_id="+encode(operationId);
+            executeMessageMutation("message_edit.php",form,expectedUserId,callback,response->{JSONObject m=response.optJSONObject("message");
+                if(m==null||m.optLong("message_id",0)!=messageId||m.optLong("room_id",0)!=roomId||m.optLong("sender_id",0)!=expectedUserId
+                    ||!text.equals(m.optString("text",""))||m.optString("edited_at","").isEmpty()||m.optLong("edit_version",0)!=expectedVersion+1)
+                    throw new IllegalStateException("Mismatched edit ACK");},true);
+        }catch(Exception e){dispatch(callback,null,e);}
     }
 
     public static void deleteMessage(long roomId, long messageId, String deleteScope,

@@ -1770,6 +1770,12 @@ public class DatabaseMigrationHelper {
             database.executeFast("PRAGMA user_version = 187").stepThis().dispose();
             version = 187;
         }
+        if (version == 187) {
+            database.executeFast("CREATE TABLE IF NOT EXISTS zenora_edit_outbox(operation_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, expected_edit_version INTEGER NOT NULL, original_body TEXT NOT NULL, original_entities BLOB NOT NULL, new_body TEXT NOT NULL, new_entities BLOB NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+            database.executeFast("CREATE UNIQUE INDEX IF NOT EXISTS zenora_edit_outbox_message_idx ON zenora_edit_outbox(room_id,dialog_id,zenora_user_id,message_id);").stepThis().dispose();
+            database.executeFast("PRAGMA user_version = 188").stepThis().dispose();
+            version = 188;
+        }
 
         return version;
     }
@@ -1844,6 +1850,7 @@ public class DatabaseMigrationHelper {
             if (version < 185) excludeTables.add("zenora_message_mutation_cursor");
             if (version < 186) excludeTables.add("zenora_message_mutation_deleted");
             if (version < 187) excludeTables.add("zenora_message_mutation_pending_edit");
+            if (version < 188) excludeTables.add("zenora_edit_outbox");
             excludeTables.add("messages_v2");
             excludeTables.add("messages_holes");
             excludeTables.add("scheduled_messages_v2");
