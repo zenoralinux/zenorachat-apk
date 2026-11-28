@@ -150,6 +150,10 @@ jobs:
 
       - name: Test Zenora message mutation event synchronization contract
         run: python3 scripts/tests/zenora_message_mutation_sync_contract_test.py
+      - name: Test durable optimistic edit outbox source contract
+        run: python3 scripts/tests/zenora_edit_outbox_contract_test.py
+      - name: Test SQLite edit outbox schema migration and durability
+        run: python3 scripts/tests/ZenoraEditOutboxMigrationTest.py
       - name: Test Zenora message edit reconciliation behavior in SQLite
         run: python3 scripts/tests/zenora_message_edit_reconciliation_behavior_test.py
 
