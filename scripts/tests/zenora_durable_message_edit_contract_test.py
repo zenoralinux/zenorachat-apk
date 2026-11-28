@@ -85,7 +85,18 @@ checks = {
         and "replyPreviewOwners" in history
         and "updateZenoraDialogPreview(dialogId, target)" in history
     ),
-    "account switch does not delete or send another account's edits": (
+    "account switch isolates drain locks by account and authenticated user": (
+        'return account + ":" + userId;' in controller
+        and "drainNextEdit(account, userId)" in controller
+        and "finishEditDrain(account, record.zenoraUserId" in controller
+    ),
+    "logout clears ephemeral metadata but preserves the durable outbox": (
+        "ZenoraMessageMutationController.clearAccount(account)" in chat_controller
+        and "public static void clearAccount(int account)" in controller
+        and "getWritableDatabase().delete" not in controller
+        and "loadPendingForUser(account, userId)" in controller
+    ),
+    "account switch does not send an inactive user's operations": (
         "isEditIdentityActive(account, expectedUserId)" in controller
         and "loadPendingForUser(account, userId)" in controller
     ),

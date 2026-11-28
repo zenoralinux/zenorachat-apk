@@ -28,7 +28,7 @@ public final class ZenoraMessageMutationController {
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final LinkedHashMap<String, EditMetadata> editMetadata = new LinkedHashMap<>();
     private static final ExecutorService editOutboxExecutor = Executors.newSingleThreadExecutor();
-    private static final HashSet<Integer> drainingEditAccounts = new HashSet<>();
+    private static final HashSet<String> drainingEditAccounts = new HashSet<>();
     private static final HashSet<String> restoringEditUsers = new HashSet<>();
     private static final HashSet<String> inFlightDeletes = new HashSet<>();
 
@@ -79,6 +79,23 @@ public final class ZenoraMessageMutationController {
     public static EditMetadata getMessageEditMetadata(int account, long roomId, long messageId) {
         synchronized (editMetadata) {
             return editMetadata.get(metadataKey(account, roomId, messageId));
+        }
+    }
+
+    /** Clear only in-memory projections on logout; durable per-user rows stay intact. */
+    public static void clearAccount(int account) {
+        String prefix = account + ":";
+        synchronized (editMetadata) {
+            Iterator<Map.Entry<String, EditMetadata>> iterator = editMetadata.entrySet().iterator();
+            while (iterator.hasNext()) {
+                if (iterator.next().getKey().startsWith(prefix)) iterator.remove();
+            }
+        }
+        synchronized (restoringEditUsers) {
+            Iterator<String> iterator = restoringEditUsers.iterator();
+            while (iterator.hasNext()) {
+                if (iterator.next().startsWith(prefix)) iterator.remove();
+            }
         }
     }
 
@@ -288,46 +305,59 @@ public final class ZenoraMessageMutationController {
         });
     }
 
+    private static String editDrainKey(int account, long userId) {
+        return account + ":" + userId;
+    }
+
     private static void requestEditDrain(int account) {
+        requestEditDrain(account, ZenoraApiClient.getCurrentUserId());
+    }
+
+    private static void requestEditDrain(int account, long userId) {
+        if (!isEditIdentityActive(account, userId)) return;
+        final String drainKey = editDrainKey(account, userId);
         synchronized (drainingEditAccounts) {
-            if (!drainingEditAccounts.add(account)) return;
+            if (!drainingEditAccounts.add(drainKey)) return;
         }
         try {
-            editOutboxExecutor.execute(() -> drainNextEdit(account));
+            editOutboxExecutor.execute(() -> drainNextEdit(account, userId));
         } catch (RuntimeException rejected) {
-            synchronized (drainingEditAccounts) { drainingEditAccounts.remove(account); }
+            synchronized (drainingEditAccounts) { drainingEditAccounts.remove(drainKey); }
             FileLog.e(rejected);
         }
     }
 
-    private static void finishEditDrain(int account, long delayMs) {
-        synchronized (drainingEditAccounts) { drainingEditAccounts.remove(account); }
-        if (delayMs >= 0L) mainHandler.postDelayed(() -> requestEditDrain(account), delayMs);
+    private static void finishEditDrain(int account, long userId, long delayMs) {
+        synchronized (drainingEditAccounts) {
+            drainingEditAccounts.remove(editDrainKey(account, userId));
+        }
+        if (delayMs >= 0L) {
+            mainHandler.postDelayed(() -> requestEditDrain(account, userId), delayMs);
+        }
     }
 
-    private static void drainNextEdit(int account) {
-        long activeUserId = ZenoraApiClient.getCurrentUserId();
-        if (activeUserId <= 0L || !isEditIdentityActive(account, activeUserId)) {
-            finishEditDrain(account, -1L);
+    private static void drainNextEdit(int account, long userId) {
+        if (!isEditIdentityActive(account, userId)) {
+            finishEditDrain(account, userId, -1L);
             return;
         }
         final ZenoraEditOutbox outbox;
         final ZenoraEditOutbox.Record record;
         try {
             outbox = ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext);
-            record = outbox.firstPendingForUser(account, activeUserId);
+            record = outbox.firstPendingForUser(account, userId);
         } catch (Exception error) {
             FileLog.e(error);
-            finishEditDrain(account, 10_000L);
+            finishEditDrain(account, userId, 10_000L);
             return;
         }
         if (record == null) {
-            finishEditDrain(account, -1L);
+            finishEditDrain(account, userId, -1L);
             return;
         }
         long waitMs = record.nextAttemptAt - System.currentTimeMillis();
         if (waitMs > 0L) {
-            finishEditDrain(account, waitMs);
+            finishEditDrain(account, userId, waitMs);
             return;
         }
         try {
@@ -339,7 +369,7 @@ public final class ZenoraMessageMutationController {
                             editOutboxExecutor.execute(() -> handleEditResponse(account, record, response, error));
                         } catch (RuntimeException rejected) {
                             FileLog.e(rejected);
-                            finishEditDrain(account, 5_000L);
+                            finishEditDrain(account, record.zenoraUserId, 5_000L);
                         }
                     });
         } catch (Exception error) {
@@ -349,8 +379,9 @@ public final class ZenoraMessageMutationController {
 
     private static void handleEditResponse(int account, ZenoraEditOutbox.Record record,
                                            JSONObject response, Exception error) {
-        if (!isEditIdentityActive(account, record.zenoraUserId)) {
-            finishEditDrain(account, -1L);
+        final long userId = record.zenoraUserId;
+        if (!isEditIdentityActive(account, userId)) {
+            finishEditDrain(account, userId, -1L);
             return;
         }
         if (error instanceof ZenoraApiClient.ApiException
@@ -373,10 +404,10 @@ public final class ZenoraMessageMutationController {
             }
             ZenoraEditOutbox outbox = ZenoraEditOutbox.getInstance(
                     ApplicationLoader.applicationContext);
-            outbox.rebaseMessage(account, record.zenoraUserId, record.roomId,
+            outbox.rebaseMessage(account, userId, record.roomId,
                     record.dialogId, record.messageId, serverVersion);
             ZenoraEditOutbox.Record latest = outbox.latestForMessage(account,
-                    record.zenoraUserId, record.roomId, record.dialogId, record.messageId);
+                    userId, record.roomId, record.dialogId, record.messageId);
             if (latest != null) {
                 long optimisticVersion = latest.expectedEditVersion + 1L;
                 rememberMessageEditMetadata(account, record.roomId, record.messageId,
@@ -384,7 +415,7 @@ public final class ZenoraMessageMutationController {
                 ZenoraHistoryController.applyPendingEditOverlay(account, record.dialogId,
                         record.roomId, (int) record.messageId, latest.body, optimisticVersion);
             }
-            finishEditDrain(account, 0L);
+            finishEditDrain(account, userId, 0L);
             return;
         }
         if (error != null || response == null) {
@@ -411,7 +442,7 @@ public final class ZenoraMessageMutationController {
         ZenoraHistoryController.reconcileCanonicalEditPayload(account, record.dialogId,
                 record.roomId, (int) record.messageId, body, editedAt, version);
         ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext).delete(record.operationId);
-        finishEditDrain(account, 0L);
+        finishEditDrain(account, userId, 0L);
     }
 
     private static void retryEditRecord(int account, ZenoraEditOutbox outbox,
@@ -421,7 +452,7 @@ public final class ZenoraMessageMutationController {
         outbox.markRetry(record.operationId, attempts,
                 System.currentTimeMillis() + delay,
                 error == null ? "request failed" : error.getMessage());
-        finishEditDrain(account, delay);
+        finishEditDrain(account, record.zenoraUserId, delay);
     }
 
 

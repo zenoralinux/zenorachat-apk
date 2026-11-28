@@ -194,6 +194,7 @@ public final class ZenoraChatController {
             if (accountValue == null || accountValue < 0) continue;
             int account = accountValue;
             clearEphemeralState(account);
+            ZenoraMessageMutationController.clearAccount(account);
             ZenoraMediaPreviewRegistry.clear(account);
             synchronized (loadLock) {
                 long generation = requestGenerations.containsKey(account)
