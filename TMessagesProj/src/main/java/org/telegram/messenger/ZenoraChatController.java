@@ -74,6 +74,7 @@ public final class ZenoraChatController {
                     refreshDialogs(instance);
                     // Rebuild pending Zenora text sends only after this account's room map is refreshed.
                     ZenoraHistoryController.restorePendingTextSends(instance.getCurrentAccount());
+                    ZenoraEditOutboxController.restorePendingEdits(instance.getCurrentAccount());
                 }
             }
             lifecycleHandler.postDelayed(this, 2_000L);
