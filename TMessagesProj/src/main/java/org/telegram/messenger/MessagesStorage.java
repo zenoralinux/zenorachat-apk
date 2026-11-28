@@ -121,7 +121,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public final static int LAST_DB_VERSION = 187;
+    public final static int LAST_DB_VERSION = 188;
     private boolean databaseMigrationInProgress;
     private boolean zenoraPendingEditTableReady;
     public boolean showClearDatabaseAlert;
@@ -250,6 +250,23 @@ public class MessagesStorage extends BaseController {
 
 
     public static final class ZenoraOutboxRecord {
+    public static final class ZenoraEditOutboxRecord {
+        public final String operationId, originalBody, newBody, status;
+        public final long roomId, dialogId, zenoraUserId, expectedEditVersion, createdAt, nextAttemptAt;
+        public final int messageId, attemptCount;
+        public final ArrayList<TLRPC.MessageEntity> originalEntities, newEntities;
+        ZenoraEditOutboxRecord(String op,long room,long dialog,int msg,long user,long version,String original,ArrayList<TLRPC.MessageEntity> oldEnt,String body,ArrayList<TLRPC.MessageEntity> ent,String state,long created,long next,int attempts) {
+            operationId=op;roomId=room;dialogId=dialog;messageId=msg;zenoraUserId=user;expectedEditVersion=version;originalBody=original;originalEntities=oldEnt;newBody=body;newEntities=ent;status=state;createdAt=created;nextAttemptAt=next;attemptCount=attempts;
+        }
+    }
+    public interface ZenoraEditOutboxReadCallback { void onComplete(ArrayList<ZenoraEditOutboxRecord> records,Exception error); }
+    private static byte[] serializeZenoraEditEntities(ArrayList<TLRPC.MessageEntity> entities) {
+        NativeByteBuffer b=new NativeByteBuffer(Math.max(4,(entities==null?0:entities.size())*32+4));b.writeInt32(entities==null?0:entities.size());if(entities!=null)for(TLRPC.MessageEntity e:entities)e.serializeToStream(b);byte[] bytes=b.toByteArray();b.reuse();return bytes;
+    }
+    private static ArrayList<TLRPC.MessageEntity> deserializeZenoraEditEntities(byte[] bytes)throws Exception {
+        ArrayList<TLRPC.MessageEntity> out=new ArrayList<>();if(bytes==null||bytes.length==0)return out;NativeByteBuffer b=new NativeByteBuffer(bytes);int n=b.readInt32(false);if(n<0||n>4096)throw new IllegalStateException("Invalid entities");for(int i=0;i<n;i++){TLRPC.MessageEntity e=TLRPC.MessageEntity.TLdeserialize(b,b.readInt32(false),false);if(e==null)throw new IllegalStateException("Malformed entity");out.add(e);}b.reuse();return out;
+    }
+
         public final String clientMessageId;
         public final long roomId;
         public final long replyToId;
@@ -293,6 +310,28 @@ public class MessagesStorage extends BaseController {
      * operation. This method is the only entry point used by the Zenora sender:
      * both writes execute on this account's storageQueue and share one SQLite tx.
      */
+    public void storeZenoraMessageEdit(TLRPC.Message message,long room,long user,long version,String op,String oldBody,ArrayList<TLRPC.MessageEntity> oldEnt,String body,ArrayList<TLRPC.MessageEntity> ent,Consumer<Exception> callback){
+        storageQueue.postRunnable(()->{boolean tx=false;try{if(message==null||message.id<=0||room<=0||user<=0||version<=0||TextUtils.isEmpty(op))throw new IllegalArgumentException("Invalid edit");
+            database.beginTransaction();tx=true;ArrayList<TLRPC.Message> rows=new ArrayList<>();rows.add(message);putMessagesInternal(rows,false,false,0,false,ChatActivity.MODE_DEFAULT,0);
+            SQLitePreparedStatement q=database.executeFast("INSERT OR REPLACE INTO zenora_edit_outbox(operation_id,room_id,dialog_id,message_id,zenora_user_id,expected_edit_version,original_body,original_entities,new_body,new_entities,status,created_at,next_attempt_at,attempt_count) VALUES(?,?,?,?,?,?,?,?,?,?, 'SENDING', ?,0,0)");
+            try{q.bindString(1,op);q.bindLong(2,room);q.bindLong(3,message.dialog_id);q.bindInteger(4,message.id);q.bindLong(5,user);q.bindLong(6,version);q.bindString(7,oldBody==null?"":oldBody);q.bindByteBuffer(8,serializeZenoraEditEntities(oldEnt));q.bindString(9,body);q.bindByteBuffer(10,serializeZenoraEditEntities(ent));q.bindLong(11,System.currentTimeMillis());q.step();}finally{q.dispose();}
+            database.commitTransaction();tx=false;if(callback!=null)AndroidUtilities.runOnUIThread(()->callback.accept(null));
+        }catch(Exception e){if(tx)database.rollbackTransaction();FileLog.e(e);if(callback!=null)AndroidUtilities.runOnUIThread(()->callback.accept(e));}});
+    }
+    public void loadZenoraEditOutbox(ZenoraEditOutboxReadCallback callback){storageQueue.postRunnable(()->{ArrayList<ZenoraEditOutboxRecord> list=new ArrayList<>();Exception error=null;SQLiteCursor c=null;
+        try{c=database.queryFinalized("SELECT operation_id,room_id,dialog_id,message_id,zenora_user_id,expected_edit_version,original_body,original_entities,new_body,new_entities,status,created_at,next_attempt_at,attempt_count FROM zenora_edit_outbox ORDER BY room_id,created_at,message_id");
+            while(c.next())list.add(new ZenoraEditOutboxRecord(c.stringValue(0),c.longValue(1),c.longValue(2),c.intValue(3),c.longValue(4),c.longValue(5),c.stringValue(6),deserializeZenoraEditEntities(c.byteArrayValue(7)),c.stringValue(8),deserializeZenoraEditEntities(c.byteArrayValue(9)),c.stringValue(10),c.longValue(11),c.longValue(12),c.intValue(13)));
+        }catch(Exception e){error=e;FileLog.e(e);}finally{if(c!=null)c.dispose();}final Exception err=error;AndroidUtilities.runOnUIThread(()->{if(callback!=null)callback.onComplete(list,err);});});}
+    public void updateZenoraEditOutboxState(String op,String state,long next,boolean increment){storageQueue.postRunnable(()->{try{SQLitePreparedStatement q=database.executeFast("UPDATE zenora_edit_outbox SET status=?,next_attempt_at=?,attempt_count=attempt_count+? WHERE operation_id=?");q.bindString(1,state);q.bindLong(2,next);q.bindInteger(3,increment?1:0);q.bindString(4,op);q.step();q.dispose();}catch(Exception e){FileLog.e(e);}});}
+    public void acknowledgeZenoraMessageEdit(String op,long room,long dialog,int msg,long user,long version,Consumer<Boolean> callback){storageQueue.postRunnable(()->{boolean tx=false,ok=false;SQLiteCursor c=null;
+        try{database.beginTransaction();tx=true;c=database.queryFinalized("SELECT expected_edit_version FROM zenora_edit_outbox WHERE operation_id=? AND room_id=? AND dialog_id=? AND message_id=? AND zenora_user_id=?",op,room,dialog,msg,user);
+            if(!c.next()||c.longValue(0)!=version)throw new IllegalStateException("ACK mismatch");c.dispose();c=null;
+            SQLitePreparedStatement d=database.executeFast("DELETE FROM zenora_edit_outbox WHERE operation_id=? AND room_id=? AND dialog_id=? AND message_id=? AND zenora_user_id=?");d.bindString(1,op);d.bindLong(2,room);d.bindLong(3,dialog);d.bindInteger(4,msg);d.bindLong(5,user);d.step();d.dispose();database.commitTransaction();tx=false;ok=true;
+        }catch(Exception e){if(tx)database.rollbackTransaction();FileLog.e(e);}finally{if(c!=null)c.dispose();}final boolean result=ok;AndroidUtilities.runOnUIThread(()->{if(callback!=null)callback.accept(result);});});}
+    private boolean applyPendingZenoraOutgoingEdit(TLRPC.Message message)throws Exception{if(message==null||message.id<=0||message.dialog_id==0)return false;long room=ZenoraChatController.getRoomIdForDialog(currentAccount,message.dialog_id),user=UserConfig.getInstance(currentAccount).getClientUserId();if(room<=0||user<=0)return false;SQLiteCursor c=null;
+        try{c=database.queryFinalized("SELECT expected_edit_version,new_body,new_entities FROM zenora_edit_outbox WHERE room_id=? AND dialog_id=? AND zenora_user_id=? AND message_id=?",room,message.dialog_id,user,message.id);if(!c.next())return false;long v=c.longValue(0);String body=c.stringValue(1);ArrayList<TLRPC.MessageEntity> es=deserializeZenoraEditEntities(c.byteArrayValue(2));if(v<=0||TextUtils.isEmpty(body))return false;
+            if(message.zenoraEditVersion<=v){message.message=body;message.entities=es;if(es.isEmpty())message.flags&=~(1<<7);else message.flags|=1<<7;message.flags|=1<<8;message.zenoraEditVersion=v+1;message.edit_date=ConnectionsManager.getInstance(currentAccount).getCurrentTime();message.flags|=TLRPC.MESSAGE_FLAG_EDITED;message.edit_hide=false;if(message.params==null)message.params=new HashMap<>();message.params.put("zenora_room_id",String.valueOf(room));}return true;
+        }finally{if(c!=null)c.dispose();}}
     public void storeZenoraTextMessage(TLRPC.Message message, long roomId, long zenoraUserId,
                                        String clientMessageId, Consumer<Exception> callback) {
         storageQueue.postRunnable(() -> {
@@ -979,6 +1018,7 @@ public class MessagesStorage extends BaseController {
             "zenora_message_mutation_cursor",
             "zenora_message_mutation_deleted",
             "zenora_message_mutation_pending_edit",
+            "zenora_edit_outbox",
             "media_holes_v2",
             "scheduled_messages_v2",
             "quick_replies",
@@ -1300,7 +1340,8 @@ public class MessagesStorage extends BaseController {
 
         database.executeFast("CREATE TABLE zenora_outbox(client_message_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, reply_to_id INTEGER NOT NULL DEFAULT 0, dialog_id INTEGER NOT NULL, local_message_id INTEGER NOT NULL, random_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, body TEXT NOT NULL, message_date INTEGER NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, server_message_id INTEGER NOT NULL DEFAULT 0, server_date INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_room_order_idx ON zenora_outbox(room_id, created_at, local_message_id DESC);").stepThis().dispose();
-        database.executeFast("CREATE INDEX IF NOT EXISTS zenora_outbox_retry_idx ON zenora_outbox(status, next_attempt_at);").stepThis().dispose();
+        database.executeFast("CREATE TABLE zenora_edit_outbox(operation_id TEXT PRIMARY KEY, room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, message_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, expected_edit_version INTEGER NOT NULL, original_body TEXT NOT NULL, original_entities BLOB NOT NULL, new_body TEXT NOT NULL, new_entities BLOB NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0);").stepThis().dispose();
+database.executeFast("CREATE UNIQUE INDEX zenora_edit_outbox_message_idx ON zenora_edit_outbox(room_id,dialog_id,zenora_user_id,message_id);").stepThis().dispose();
         database.executeFast("CREATE TABLE zenora_history_state(room_id INTEGER NOT NULL, dialog_id INTEGER NOT NULL, zenora_user_id INTEGER NOT NULL, oldest_local_message_id INTEGER NOT NULL DEFAULT 0, newest_local_message_id INTEGER NOT NULL DEFAULT 0, older_cursor INTEGER NOT NULL DEFAULT 0, has_more_older INTEGER NOT NULL DEFAULT -1, coverage_valid INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room_id, dialog_id, zenora_user_id));").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS zenora_history_dialog_idx ON zenora_history_state(dialog_id, zenora_user_id);").stepThis().dispose();
 
@@ -13299,7 +13340,7 @@ public class MessagesStorage extends BaseController {
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
                     // Reconcile pending edits in the serialization pass so the result flag
                     // remains in scope until the canonical SQLite row is committed.
-                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message);
+                    boolean pendingEditResolved = applyPendingZenoraMessageEdit(message) || applyPendingZenoraOutgoingEdit(message);
 
                     state_messages.requery();
                     int messageId = message.id;
