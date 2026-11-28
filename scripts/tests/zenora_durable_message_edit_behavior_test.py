@@ -127,6 +127,7 @@ os.close(fd)
 try:
     db = connect(path)
     db.execute("INSERT INTO server_messages VALUES(7,42,'original',1)")
+    db.commit()
     key = (1,101,7,7001,42)
     s1,v1 = enqueue(db,"edit-operation-0001",*key,1,"first offline edit",100)
     s2,v2 = enqueue(db,"edit-operation-0002",*key,v1+1,"second offline edit",101)
@@ -137,6 +138,7 @@ try:
     # Process restart reopens the database, resets interrupted sends, and restores latest local text.
     db = connect(path)
     db.execute("UPDATE edit_operations SET state='PENDING',next_attempt_at=0 WHERE state='SENDING'")
+    db.commit()
     latest = db.execute("SELECT body FROM edit_operations WHERE account=1 AND user_id=101 "
                          "AND room_id=7 AND dialog_id=7001 AND message_id=42 ORDER BY sequence DESC LIMIT 1").fetchone()
     check(latest["body"]=="second offline edit","process restart restores latest optimistic text from SQLite")
@@ -149,16 +151,19 @@ try:
     check(ack1==retry1 and db.execute("SELECT edit_version FROM server_messages WHERE room_id=7 AND message_id=42").fetchone()[0]==2,
           "server idempotency prevents duplicate mutation after a lost HTTP response")
     db.execute("DELETE FROM edit_operations WHERE operation_id='edit-operation-0001'")
+    db.commit()
     check(first_pending(db,1,101)["operation_id"]=="edit-operation-0002",
           "successful acknowledgement removes only the completed head operation")
     ack2 = server_edit(db,101,"edit-operation-0002",7,42,2,"second offline edit")
     check(ack2["edit_version"]==3,"second queued edit executes only after the first acknowledgement")
     db.execute("DELETE FROM edit_operations WHERE operation_id='edit-operation-0002'")
+    db.commit()
 
     # External device edit creates a conflict. The same operation key can be rebased
     # because the server rolled its provisional idempotency row back with the conflict.
     s3,v3 = enqueue(db,"edit-operation-0003",*key,3,"third user edit",102)
     db.execute("UPDATE server_messages SET body='remote device edit',edit_version=4 WHERE room_id=7 AND message_id=42")
+    db.commit()
     try:
         server_edit(db,101,"edit-operation-0003",7,42,3,"third user edit")
         raise AssertionError("stale edit version accepted")
@@ -172,6 +177,7 @@ try:
     ack3=server_edit(db,101,"edit-operation-0003",7,42,4,"third user edit")
     check(ack3["edit_version"]==5,"rebased operation retries with the same stable key")
     db.execute("DELETE FROM edit_operations WHERE operation_id='edit-operation-0003'")
+    db.commit()
 
     # A late ACK/history page may not overwrite a newer optimistic local edit.
     s4,v4=enqueue(db,"edit-operation-0004",*key,5,"fourth latest edit",103)
