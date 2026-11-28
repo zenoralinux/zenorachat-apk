@@ -268,6 +268,9 @@ public final class ZenoraChatController {
             accountInstances.put(accountInstance.getCurrentAccount(), accountInstance);
         }
         restoreCachedSnapshot(accountInstance);
+        // Resume durable edits as part of dialog startup, not only when a chat
+        // is opened, so an app restart also drains queued work automatically.
+        ZenoraMessageMutationController.restorePendingEdits(accountInstance.getCurrentAccount());
         requestRooms(accountInstance, true);
     }
 

@@ -12,6 +12,7 @@ history = read("TMessagesProj/src/main/java/org/telegram/messenger/ZenoraHistory
 api = read("TMessagesProj/src/main/java/org/telegram/messenger/ZenoraApiClient.java")
 ui = read("TMessagesProj/src/main/java/org/telegram/ui/Components/ChatActivityEnterView.java")
 message_object = read("TMessagesProj/src/main/java/org/telegram/messenger/MessageObject.java")
+chat_controller = read("TMessagesProj/src/main/java/org/telegram/messenger/ZenoraChatController.java")
 
 checks = {
     "SQLite outbox stores immutable operation ID and full payload": (
@@ -26,6 +27,11 @@ checks = {
     "multiple edits receive increasing per-message versions and sequence numbers": (
         "sequence = latest.getLong(0) + 1L" in outbox
         and "latest.getLong(1) + 1L" in outbox
+    ),
+    "app startup restores and resumes edits before remote dialog refresh": (
+        chat_controller.index("restoreCachedSnapshot(accountInstance)")
+            < chat_controller.index("restorePendingEdits(accountInstance.getCurrentAccount())")
+            < chat_controller.index("requestRooms(accountInstance, true)")
     ),
     "per-account FIFO is persisted and restored": (
         "loadPendingForUser" in outbox and "ORDER BY created_at ASC, rowid ASC" in outbox
