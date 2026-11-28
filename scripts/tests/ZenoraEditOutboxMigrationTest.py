@@ -52,6 +52,7 @@ db.close()
 db = sqlite3.connect(":memory:")
 db.execute(fresh_sql)
 db.execute(fresh_index)
+db.execute("CREATE TABLE messages_v2(mid INTEGER, uid INTEGER, body TEXT, version INTEGER, PRIMARY KEY(mid,uid))")
 columns = {row[1] for row in db.execute("PRAGMA table_info(zenora_edit_outbox)")}
 required = {
     "operation_id", "room_id", "dialog_id", "zenora_user_id", "message_id",
