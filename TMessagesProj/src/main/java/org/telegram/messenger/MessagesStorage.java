@@ -249,7 +249,7 @@ public class MessagesStorage extends BaseController {
     }
 
 
-    public static final class ZenoraOutboxRecord {
+
     public static final class ZenoraEditOutboxRecord {
         public final String operationId, originalBody, newBody, status;
         public final long roomId, dialogId, zenoraUserId, expectedEditVersion, createdAt, nextAttemptAt;
