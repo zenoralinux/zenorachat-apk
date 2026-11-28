@@ -7942,9 +7942,11 @@ public class ChatActivityEnterView extends FrameLayout implements
                     android.widget.Toast.LENGTH_LONG).show();
             return false;
         }
+        // This guard covers only the local SQLite commit. Network delivery is
+        // asynchronous and must never block a subsequent edit of the same bubble.
         if (zenoraEditInFlight) {
             android.widget.Toast.makeText(getContext(),
-                    "This Zenora message is already being edited. Please wait for the current request.",
+                    "Saving the previous edit locally. Please wait.",
                     android.widget.Toast.LENGTH_SHORT).show();
             return false;
         }
@@ -7954,6 +7956,7 @@ public class ChatActivityEnterView extends FrameLayout implements
                     android.widget.Toast.LENGTH_SHORT).show();
             return false;
         }
+
         final long expectedVersion = ZenoraMessageMutationController.getExpectedEditVersion(
                 currentAccount, roomId, target);
         if (expectedVersion <= 0L || expectedVersion >= Integer.MAX_VALUE) {
@@ -7970,52 +7973,36 @@ public class ChatActivityEnterView extends FrameLayout implements
                 expectedVersion, userId, (response, error) -> {
                     zenoraEditInFlight = false;
                     showEditDoneProgress(false, true);
-                    if (error != null) {
-                        boolean conflict = error instanceof ZenoraApiClient.ApiException
-                                && "EDIT_VERSION_CONFLICT".equals(
-                                        ((ZenoraApiClient.ApiException) error).errorCode);
-                        if (conflict) {
-                            ZenoraHistoryController.refreshEditedMessage(
-                                    currentAccount, dialog_id, roomId, target,
-                                    (updated, refreshError) -> {
-                                        if (!updated) {
-                                            FileLog.w("[ZenoraChat] Conflict refresh did not update message "
-                                                    + target.getId() + ": "
-                                                    + (refreshError == null ? "not found" : refreshError.getMessage()));
-                                        }
-                                    });
-                            android.widget.Toast.makeText(getContext(),
-                                    "This message changed elsewhere. The latest server version was refreshed; your draft is still in the Composer.",
-                                    android.widget.Toast.LENGTH_LONG).show();
-                        } else {
-                            FileLog.w("[ZenoraChat] Text edit failed: " + error.getMessage());
-                            android.widget.Toast.makeText(getContext(),
-                                    "Message edit failed. Your text and edit mode were kept.",
-                                    android.widget.Toast.LENGTH_LONG).show();
-                        }
+                    if (error != null || response == null || !response.optBoolean("queued", false)) {
+                        FileLog.w("[ZenoraChat] Durable edit enqueue failed: "
+                                + (error == null ? "invalid queue acknowledgement" : error.getMessage()));
+                        android.widget.Toast.makeText(getContext(),
+                                "The edit could not be saved locally. Your text and edit mode were kept.",
+                                android.widget.Toast.LENGTH_LONG).show();
                         checkSendButton(true);
                         return;
                     }
 
-                    JSONObject edited = response == null ? null : response.optJSONObject("message");
-                    String editedAt = edited == null || edited.isNull("edited_at")
-                            ? null : edited.optString("edited_at", "");
-                    long newVersion = edited == null ? 0L : edited.optLong("edit_version", 0L);
-                    String savedText = edited == null ? "" : edited.optString("text", "");
-                    if (edited == null || newVersion != expectedVersion + 1L
-                            || !body.equals(savedText)
-                            || !ZenoraHistoryController.applyEditedMessage(
-                                    currentAccount, dialog_id, roomId, target,
-                                    savedText, entities, editedAt, newVersion)) {
-                        ZenoraHistoryController.refreshEditedMessage(
-                                currentAccount, dialog_id, roomId, target, (updated, refreshError) -> {
-                                    if (!updated) FileLog.w("[ZenoraChat] Could not reconcile successful edit locally");
-                                });
+                    long queuedVersion = response.optLong("edit_version", expectedVersion + 1L);
+                    if (queuedVersion <= expectedVersion || queuedVersion >= Integer.MAX_VALUE) {
+                        FileLog.e("[ZenoraChat] Durable edit returned an invalid local version");
                         android.widget.Toast.makeText(getContext(),
-                                "Zenora saved the edit, but the local message is being refreshed. Your Composer text was kept.",
+                                "The edit is queued, but the message view needs to be refreshed.",
                                 android.widget.Toast.LENGTH_LONG).show();
                         checkSendButton(true);
                         return;
+                    }
+
+                    // SQLite now owns the edit. Update the existing bubble, reply
+                    // preview owners and chat-list preview before network delivery.
+                    boolean applied = ZenoraHistoryController.applyEditedMessage(
+                            currentAccount, dialog_id, roomId, target,
+                            body, entities, null, queuedVersion);
+                    if (!applied) {
+                        ZenoraHistoryController.applyPendingEditOverlay(
+                                currentAccount, dialog_id, roomId, target.getId(),
+                                body, queuedVersion);
+                        FileLog.w("[ZenoraChat] Durable edit was queued; local message projection is recovering");
                     }
                     if (parentFragment != null && parentFragment.editingMessageObject == target) {
                         setEditingMessageObject(null, null, false);

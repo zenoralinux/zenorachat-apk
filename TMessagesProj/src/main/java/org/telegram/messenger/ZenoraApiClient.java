@@ -52,12 +52,19 @@ public final class ZenoraApiClient {
     public static final class ApiException extends Exception {
         public final int statusCode;
         public final String errorCode;
+        /** Structured server details are preserved for version-conflict reconciliation. */
+        public final JSONObject response;
 
         ApiException(int statusCode, String errorCode) {
+            this(statusCode, errorCode, null);
+        }
+
+        ApiException(int statusCode, String errorCode, JSONObject response) {
             super((errorCode == null || errorCode.isEmpty() ? "API_REQUEST_FAILED" : errorCode)
                     + " (HTTP " + statusCode + ")");
             this.statusCode = statusCode;
             this.errorCode = errorCode == null ? "" : errorCode;
+            this.response = response;
         }
     }
 
@@ -1113,7 +1120,7 @@ public final class ZenoraApiClient {
                 throw new IllegalStateException("ZenoraChat returned an invalid JSON response (HTTP " + status + ")", e);
             }
             if (status < 200 || status >= 300 || !json.optBoolean("ok", false)) {
-                throw new ApiException(status, json.optString("error", "REQUEST_FAILED"));
+                throw new ApiException(status, json.optString("error", "REQUEST_FAILED"), json);
             }
             return json;
         } finally {

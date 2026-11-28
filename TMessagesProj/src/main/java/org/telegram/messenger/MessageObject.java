@@ -2075,6 +2075,9 @@ public class MessageObject {
 
         currentAccount = accountNum;
         messageOwner = message;
+        // A pending Zenora edit is overlaid before text/layout construction so
+        // offline re-entry never flashes the stale pre-edit SQLite body.
+        ZenoraMessageMutationController.applyPendingEditToMessage(accountNum, messageOwner);
         replyMessageObject = replyToMessage;
         eventId = eid;
         wasUnread = !messageOwner.out && messageOwner.unread;

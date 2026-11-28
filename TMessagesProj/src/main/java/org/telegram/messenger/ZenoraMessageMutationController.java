@@ -9,11 +9,14 @@ import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Account- and room-scoped coordinator for Zenora message mutations.
@@ -24,7 +27,9 @@ public final class ZenoraMessageMutationController {
     private static final int MAX_EDIT_METADATA = 1024;
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final LinkedHashMap<String, EditMetadata> editMetadata = new LinkedHashMap<>();
-    private static final HashSet<String> inFlightEdits = new HashSet<>();
+    private static final ExecutorService editOutboxExecutor = Executors.newSingleThreadExecutor();
+    private static final HashSet<Integer> drainingEditAccounts = new HashSet<>();
+    private static final HashSet<String> restoringEditUsers = new HashSet<>();
     private static final HashSet<String> inFlightDeletes = new HashSet<>();
 
     public static final class EditMetadata {
@@ -75,6 +80,55 @@ public final class ZenoraMessageMutationController {
         synchronized (editMetadata) {
             return editMetadata.get(metadataKey(account, roomId, messageId));
         }
+    }
+
+    /** Includes the durable latest local edit, even before the process has rebuilt its memory cache. */
+    public static EditMetadata getLatestPendingEditMetadata(int account, long dialogId,
+                                                            long roomId, long messageId) {
+        long userId = ZenoraApiClient.getCurrentUserId();
+        if (userId <= 0L || roomId <= 0L || dialogId == 0L || messageId <= 0L) return null;
+        try {
+            ZenoraEditOutbox.Record pending = ZenoraEditOutbox.getInstance(
+                    ApplicationLoader.applicationContext).latestForMessage(
+                    account, userId, roomId, dialogId, messageId);
+            if (pending != null && pending.expectedEditVersion < Integer.MAX_VALUE) {
+                long version = pending.expectedEditVersion + 1L;
+                rememberMessageEditMetadata(account, roomId, messageId, null, version, pending.body);
+            }
+        } catch (Exception error) {
+            FileLog.e(error);
+        }
+        return getMessageEditMetadata(account, roomId, messageId);
+    }
+
+    /** Apply a durable queued body while a local SQLite message is being materialized. */
+    public static void applyPendingEditToMessage(int account, TLRPC.Message message) {
+        if (message == null || message.id <= 0 || message.dialog_id == 0L
+                || message.params == null || message.action != null) return;
+        long roomId;
+        try {
+            roomId = Long.parseLong(message.params.get("zenora_room_id"));
+        } catch (Exception ignored) {
+            return;
+        }
+        long userId = ZenoraApiClient.getCurrentUserId();
+        if (roomId <= 0L || userId <= 0L
+                || UserConfig.getInstance(account).getClientUserId() != userId) return;
+        EditMetadata pending = getLatestPendingEditMetadata(
+                account, message.dialog_id, roomId, message.id);
+        if (pending == null || pending.body == null
+                || pending.editVersion < Math.max(1L, message.zenoraEditVersion)) return;
+        message.message = pending.body;
+        message.entities = MediaDataController.getInstance(account).getEntities(
+                new CharSequence[]{pending.body}, true);
+        if (message.entities == null || message.entities.isEmpty()) {
+            message.entities = new ArrayList<>();
+            message.flags &= ~(1 << 7);
+        } else {
+            message.flags |= 1 << 7;
+        }
+        message.flags |= 1 << 8;
+        applyEditMetadata(message, pending.editedAt, pending.editVersion);
     }
 
     public static boolean canEditPlainTextMessage(int account, long dialogId, MessageObject object) {
@@ -131,43 +185,236 @@ public final class ZenoraMessageMutationController {
                                       String text, long expectedEditVersion, long expectedUserId,
                                       ZenoraApiClient.Callback callback) {
         if (!isCurrentZenoraRoom(account, dialogId, roomId, expectedUserId)
-                || messageId <= 0L || expectedEditVersion <= 0L) {
-            fail(callback, new IllegalStateException("Zenora account, room or edit version is invalid"));
+                || messageId <= 0L || messageId > Integer.MAX_VALUE
+                || expectedEditVersion <= 0L || expectedEditVersion >= Integer.MAX_VALUE
+                || TextUtils.isEmpty(text) || TextUtils.isEmpty(text.trim())) {
+            fail(callback, new IllegalStateException("Zenora account, room, message or edit version is invalid"));
             return false;
         }
-        String key = metadataKey(account, roomId, messageId);
-        synchronized (inFlightEdits) {
-            if (!inFlightEdits.add(key)) {
-                fail(callback, new IllegalStateException("A Zenora edit is already in progress for this message"));
-                return false;
+
+        // Allocate a fresh immutable key for this edit. SQLite commits the exact
+        // text and operation record together before the UI is told it is queued.
+        final String operationId = UUID.randomUUID().toString();
+        try {
+            editOutboxExecutor.execute(() -> {
+                try {
+                    if (!isEditIdentityActive(account, expectedUserId)) {
+                        throw new IllegalStateException("Zenora account changed before the edit could be saved");
+                    }
+                    ZenoraEditOutbox.Record record = ZenoraEditOutbox.getInstance(
+                            ApplicationLoader.applicationContext).enqueue(
+                            operationId, account, expectedUserId, roomId, dialogId,
+                            messageId, expectedEditVersion, text);
+                    JSONObject queued = new JSONObject();
+                    queued.put("queued", true);
+                    queued.put("operation_id", record.operationId);
+                    queued.put("expected_edit_version", record.expectedEditVersion);
+                    queued.put("edit_version", record.expectedEditVersion + 1L);
+                    queued.put("message_id", record.messageId);
+                    mainHandler.post(() -> {
+                        if (isEditIdentityActive(account, expectedUserId)) {
+                            if (callback != null) callback.onComplete(queued, null);
+                            requestEditDrain(account);
+                        } else {
+                            // Keep the committed row isolated for its original user.
+                            // It will be restored when that account signs in again.
+                            FileLog.d("[ZenoraChat] Durable edit retained for an inactive account");
+                        }
+                    });
+                } catch (Exception error) {
+                    fail(callback, error);
+                }
+            });
+        } catch (RuntimeException rejected) {
+            fail(callback, new IllegalStateException("Zenora edit queue is unavailable", rejected));
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean isEditIdentityActive(int account, long userId) {
+        return userId > 0L && ZenoraApiClient.getCurrentUserId() == userId
+                && UserConfig.getInstance(account).getClientUserId() == userId
+                && ZenoraApiClient.isZenoraSessionEnabled();
+    }
+
+    /** Rebuild optimistic edit projections and resume durable work after process restart. */
+    public static void restorePendingEdits(int account) {
+        final long userId = ZenoraApiClient.getCurrentUserId();
+        if (userId <= 0L || !isEditIdentityActive(account, userId)) return;
+        final String restoreKey = account + ":" + userId;
+        synchronized (restoringEditUsers) {
+            if (!restoringEditUsers.add(restoreKey)) {
+                requestEditDrain(account);
+                return;
             }
         }
-        final String operationSeed = account + ":" + expectedUserId + ":" + roomId + ":"
-                + messageId + ":" + expectedEditVersion + ":" + (text == null ? "" : text);
-        final String operationId = UUID.nameUUIDFromBytes(
-                operationSeed.getBytes(java.nio.charset.Charset.forName("UTF-8"))).toString();
-        ZenoraApiClient.editMessage(roomId, messageId, text, expectedEditVersion, expectedUserId,
-                operationId, (response, error) -> {
-                    synchronized (inFlightEdits) {
-                        inFlightEdits.remove(key);
+        editOutboxExecutor.execute(() -> {
+            List<ZenoraEditOutbox.Record> records;
+            try {
+                ZenoraEditOutbox outbox = ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext);
+                outbox.resetSending(account, userId);
+                records = outbox.loadPendingForUser(account, userId);
+            } catch (Exception error) {
+                FileLog.e(error);
+                synchronized (restoringEditUsers) { restoringEditUsers.remove(restoreKey); }
+                return;
+            }
+            HashMap<String, ZenoraEditOutbox.Record> latest = new HashMap<>();
+            for (ZenoraEditOutbox.Record record : records) {
+                String key = record.roomId + ":" + record.dialogId + ":" + record.messageId;
+                ZenoraEditOutbox.Record previous = latest.get(key);
+                if (previous == null || previous.sequence < record.sequence) latest.put(key, record);
+            }
+            mainHandler.post(() -> {
+                if (isEditIdentityActive(account, userId)) {
+                    for (ZenoraEditOutbox.Record record : latest.values()) {
+                        long optimisticVersion = record.expectedEditVersion + 1L;
+                        rememberMessageEditMetadata(account, record.roomId, record.messageId,
+                                null, optimisticVersion, record.body);
+                        ZenoraHistoryController.applyPendingEditOverlay(account, record.dialogId,
+                                record.roomId, (int) record.messageId, record.body, optimisticVersion);
                     }
-                    if (error == null && response != null
-                            && isCurrentZenoraRoom(account, dialogId, roomId, expectedUserId)) {
-                        JSONObject message = response.optJSONObject("message");
-                        if (message != null) {
-                            String canonicalBody = message.optString("text", "");
-                            String canonicalEditedAt = message.optString("edited_at", "");
-                            long canonicalVersion = message.optLong("edit_version", 0L);
-                            rememberMessageEditMetadata(account, roomId, messageId,
-                                    canonicalEditedAt, canonicalVersion, canonicalBody);
-                            ZenoraHistoryController.reconcileCanonicalEditPayload(
-                                    account, dialogId, roomId, (int) messageId,
-                                    canonicalBody, canonicalEditedAt, canonicalVersion);
+                    requestEditDrain(account);
+                }
+            });
+        });
+    }
+
+    private static void requestEditDrain(int account) {
+        synchronized (drainingEditAccounts) {
+            if (!drainingEditAccounts.add(account)) return;
+        }
+        try {
+            editOutboxExecutor.execute(() -> drainNextEdit(account));
+        } catch (RuntimeException rejected) {
+            synchronized (drainingEditAccounts) { drainingEditAccounts.remove(account); }
+            FileLog.e(rejected);
+        }
+    }
+
+    private static void finishEditDrain(int account, long delayMs) {
+        synchronized (drainingEditAccounts) { drainingEditAccounts.remove(account); }
+        if (delayMs >= 0L) mainHandler.postDelayed(() -> requestEditDrain(account), delayMs);
+    }
+
+    private static void drainNextEdit(int account) {
+        long activeUserId = ZenoraApiClient.getCurrentUserId();
+        if (activeUserId <= 0L || !isEditIdentityActive(account, activeUserId)) {
+            finishEditDrain(account, -1L);
+            return;
+        }
+        final ZenoraEditOutbox outbox;
+        final ZenoraEditOutbox.Record record;
+        try {
+            outbox = ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext);
+            record = outbox.firstPendingForUser(account, activeUserId);
+        } catch (Exception error) {
+            FileLog.e(error);
+            finishEditDrain(account, 10_000L);
+            return;
+        }
+        if (record == null) {
+            finishEditDrain(account, -1L);
+            return;
+        }
+        long waitMs = record.nextAttemptAt - System.currentTimeMillis();
+        if (waitMs > 0L) {
+            finishEditDrain(account, waitMs);
+            return;
+        }
+        try {
+            outbox.markSending(record.operationId);
+            ZenoraApiClient.editMessage(record.roomId, record.messageId, record.body,
+                    record.expectedEditVersion, record.zenoraUserId, record.operationId,
+                    (response, error) -> {
+                        try {
+                            editOutboxExecutor.execute(() -> handleEditResponse(account, record, response, error));
+                        } catch (RuntimeException rejected) {
+                            FileLog.e(rejected);
+                            finishEditDrain(account, 5_000L);
                         }
-                    }
-                    if (callback != null) callback.onComplete(response, error);
-                });
-        return true;
+                    });
+        } catch (Exception error) {
+            retryEditRecord(account, outbox, record, error);
+        }
+    }
+
+    private static void handleEditResponse(int account, ZenoraEditOutbox.Record record,
+                                           JSONObject response, Exception error) {
+        if (!isEditIdentityActive(account, record.zenoraUserId)) {
+            finishEditDrain(account, -1L);
+            return;
+        }
+        if (error instanceof ZenoraApiClient.ApiException
+                && "EDIT_VERSION_CONFLICT".equals(((ZenoraApiClient.ApiException) error).errorCode)) {
+            // The conflict response carries the exact row locked by PHP while it
+            // compared edit_version, so even old messages can be rebased safely.
+            ZenoraApiClient.ApiException conflict = (ZenoraApiClient.ApiException) error;
+            JSONObject serverRow = conflict.response == null
+                    ? null : conflict.response.optJSONObject("message");
+            long serverVersion = serverRow == null ? 0L
+                    : serverRow.optLong("edit_version", 0L);
+            if (serverRow == null
+                    || serverRow.optLong("message_id", 0L) != record.messageId
+                    || serverRow.optLong("room_id", 0L) != record.roomId
+                    || serverVersion <= 0L || serverVersion >= Integer.MAX_VALUE) {
+                retryEditRecord(account, ZenoraEditOutbox.getInstance(
+                        ApplicationLoader.applicationContext), record,
+                        new IllegalStateException("Canonical conflict row was missing or mismatched"));
+                return;
+            }
+            ZenoraEditOutbox outbox = ZenoraEditOutbox.getInstance(
+                    ApplicationLoader.applicationContext);
+            outbox.rebaseMessage(account, record.zenoraUserId, record.roomId,
+                    record.dialogId, record.messageId, serverVersion);
+            ZenoraEditOutbox.Record latest = outbox.latestForMessage(account,
+                    record.zenoraUserId, record.roomId, record.dialogId, record.messageId);
+            if (latest != null) {
+                long optimisticVersion = latest.expectedEditVersion + 1L;
+                rememberMessageEditMetadata(account, record.roomId, record.messageId,
+                        null, optimisticVersion, latest.body);
+                ZenoraHistoryController.applyPendingEditOverlay(account, record.dialogId,
+                        record.roomId, (int) record.messageId, latest.body, optimisticVersion);
+            }
+            finishEditDrain(account, 0L);
+            return;
+        }
+        if (error != null || response == null) {
+            retryEditRecord(account, ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext),
+                    record, error != null ? error : new IllegalStateException("Empty edit response"));
+            return;
+        }
+
+        JSONObject canonical = response.optJSONObject("message");
+        String body = canonical == null ? "" : canonical.optString("text", "");
+        String editedAt = canonical == null || canonical.isNull("edited_at")
+                ? null : canonical.optString("edited_at", "");
+        long version = canonical == null ? 0L : canonical.optLong("edit_version", 0L);
+        if (canonical == null || canonical.optLong("message_id", 0L) != record.messageId
+                || canonical.optLong("room_id", 0L) != record.roomId
+                || version != record.expectedEditVersion + 1L || !record.body.equals(body)) {
+            retryEditRecord(account, ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext),
+                    record, new IllegalStateException("Canonical edit acknowledgement did not match its durable operation"));
+            return;
+        }
+
+        // The next queued edit may already be visible at a higher local version.
+        // Shared reconciliation rejects this older acknowledgement in that case.
+        ZenoraHistoryController.reconcileCanonicalEditPayload(account, record.dialogId,
+                record.roomId, (int) record.messageId, body, editedAt, version);
+        ZenoraEditOutbox.getInstance(ApplicationLoader.applicationContext).delete(record.operationId);
+        finishEditDrain(account, 0L);
+    }
+
+    private static void retryEditRecord(int account, ZenoraEditOutbox outbox,
+                                        ZenoraEditOutbox.Record record, Exception error) {
+        int attempts = record.attemptCount + 1;
+        long delay = ZenoraEditOutbox.backoffDelayMs(attempts);
+        outbox.markRetry(record.operationId, attempts,
+                System.currentTimeMillis() + delay,
+                error == null ? "request failed" : error.getMessage());
+        finishEditDrain(account, delay);
     }
 
 

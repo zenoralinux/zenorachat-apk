@@ -240,6 +240,7 @@ public final class ZenoraHistoryController {
 
     public static void loadInitialHistory(int account, long dialogId, int classGuid,
                                           int loadIndex, int requestedLimit) {
+        ZenoraMessageMutationController.restorePendingEdits(account);
         resetDialogSendDeduplication(account, dialogId);
         final Target target = new Target(classGuid, loadIndex);
         final int limit = Math.max(1, Math.min(50, requestedLimit));
@@ -1476,7 +1477,7 @@ public final class ZenoraHistoryController {
             String editedAt = row.isNull("edited_at") ? null : row.optString("edited_at", "");
             long editVersion = row.optLong("edit_version", 1L);
             ZenoraMessageMutationController.EditMetadata cachedEdit =
-                    ZenoraMessageMutationController.getMessageEditMetadata(account, roomId, rawId);
+                    ZenoraMessageMutationController.getLatestPendingEditMetadata(account, dialogId, roomId, rawId);
             if (cachedEdit != null && cachedEdit.body != null && cachedEdit.editVersion >= editVersion) {
                 body = cachedEdit.body;
                 editedAt = cachedEdit.editedAt;
@@ -1599,7 +1600,8 @@ public final class ZenoraHistoryController {
                 message.params.put("zenora_client_message_id", clientMessageId);
             }
             ZenoraMessageMutationController.EditMetadata editMetadata =
-                    ZenoraMessageMutationController.getMessageEditMetadata(account, roomId, messageId);
+                    ZenoraMessageMutationController.getLatestPendingEditMetadata(
+                            account, dialogId, roomId, messageId);
             if (editMetadata != null) {
                 ZenoraMessageMutationController.applyEditMetadata(
                         message, editMetadata.editedAt, editMetadata.editVersion);
@@ -1717,6 +1719,15 @@ public final class ZenoraHistoryController {
                 || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) {
             return;
         }
+        ZenoraMessageMutationController.EditMetadata pendingEdit =
+                ZenoraMessageMutationController.getLatestPendingEditMetadata(
+                        account, dialogId, roomId, messageId);
+        if (pendingEdit != null && pendingEdit.body != null
+                && pendingEdit.editVersion >= editVersion) {
+            body = pendingEdit.body;
+            editedAt = pendingEdit.editedAt;
+            editVersion = pendingEdit.editVersion;
+        }
         ZenoraMessageMutationController.rememberMessageEditMetadata(
                 account, roomId, messageId, editedAt, editVersion, body);
         MessageObject liveObject = getLiveMessageObject(account, dialogId, messageId);
@@ -1737,6 +1748,30 @@ public final class ZenoraHistoryController {
                     account, dialogId, roomId, messageId, body, editedAt, editVersion);
         }
         NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.dialogsNeedReload);
+    }
+
+    /** Apply the latest durable edit to an already materialized message or reply preview. */
+    public static void applyPendingEditOverlay(int account, long dialogId, long roomId,
+                                               int messageId, String body, long editVersion) {
+        if (messageId <= 0 || roomId <= 0L || editVersion <= 0L
+                || TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())
+                || ZenoraChatController.getRoomIdForDialog(account, dialogId) != roomId) return;
+        ZenoraMessageMutationController.rememberMessageEditMetadata(
+                account, roomId, messageId, null, editVersion, body);
+        MessageObject liveObject = getLiveMessageObject(account, dialogId, messageId);
+        if (liveObject != null && liveObject.messageOwner != null) {
+            String cachedRoom = liveObject.messageOwner.params == null ? null
+                    : liveObject.messageOwner.params.get("zenora_room_id");
+            if (TextUtils.isEmpty(cachedRoom) || String.valueOf(roomId).equals(cachedRoom)) {
+                ArrayList<TLRPC.MessageEntity> entities = MediaDataController.getInstance(account).getEntities(
+                        new CharSequence[]{body}, true);
+                applyEditedMessage(account, dialogId, roomId, liveObject, body,
+                        entities, null, editVersion);
+                return;
+            }
+        }
+        applyEditedMessageToCachedReplyPreview(account, dialogId, roomId,
+                messageId, body, null, editVersion);
     }
 
     private static void updateEditedTextObject(MessageObject object, String body,
@@ -2210,9 +2245,21 @@ public final class ZenoraHistoryController {
                 int messageId = (int) rawId;
                 String clientMessageId = (row.isNull("client_message_id") ? "" : row.optString("client_message_id", ""));
                 int serverDate = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
-                ZenoraMessageMutationController.rememberMessageEditMetadata(account,roomId,messageId,
-                        row.isNull("edited_at") ? null : row.optString("edited_at", ""),
-                        row.optLong("edit_version", 1L));
+                String canonicalEditedAt = row.isNull("edited_at")
+                        ? null : row.optString("edited_at", "");
+                long canonicalEditVersion = row.optLong("edit_version", 1L);
+                ZenoraMessageMutationController.rememberMessageEditMetadata(account, roomId, messageId,
+                        canonicalEditedAt, canonicalEditVersion, row.optString("text", ""));
+                ZenoraMessageMutationController.EditMetadata pendingEdit =
+                        ZenoraMessageMutationController.getLatestPendingEditMetadata(
+                                account, dialogId, roomId, messageId);
+                String effectiveEditedAt = canonicalEditedAt;
+                long effectiveEditVersion = canonicalEditVersion;
+                if (pendingEdit != null && pendingEdit.body != null
+                        && pendingEdit.editVersion >= canonicalEditVersion) {
+                    effectiveEditedAt = pendingEdit.editedAt;
+                    effectiveEditVersion = pendingEdit.editVersion;
+                }
                 boolean reconciledClientMessage = false;
                 if (!TextUtils.isEmpty(clientMessageId)) {
                     // Reconcile any still-pending local bubble with the server identity.
@@ -2225,7 +2272,9 @@ public final class ZenoraHistoryController {
                 }
                 if (!seenIds.add(messageId) || isSentMessageAlreadyApplied(account, dialogId, messageId)) continue;
 
-                String body = row.optString("text", "");
+                String body = pendingEdit != null && pendingEdit.body != null
+                        && pendingEdit.editVersion >= canonicalEditVersion
+                        ? pendingEdit.body : row.optString("text", "");
                 if (TextUtils.isEmpty(body) || TextUtils.isEmpty(body.trim())) continue;
                 int date = ZenoraChatController.parseHistoryDate(row.optString("created_at", ""));
                 if (date <= 0) continue;
@@ -2252,8 +2301,7 @@ public final class ZenoraHistoryController {
                 message.flags |= 1 << 8;
                 if (message.out) message.flags |= 1 << 1;
                 ZenoraMessageMutationController.applyEditMetadata(message,
-                        row.isNull("edited_at") ? null : row.optString("edited_at", ""),
-                        row.optLong("edit_version", 1L));
+                        effectiveEditedAt, effectiveEditVersion);
                 applyOrdinaryReplyHeader(message, replyToId);
                 MessageObject replyParent = getCachedReplyPreview(account, dialogId, replyToId);
                 if (replyParent != null) message.replyMessage = replyParent.messageOwner;
